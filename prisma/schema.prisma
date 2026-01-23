@@ -1,0 +1,511 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../node_modules/.prisma/client"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id    Int    @id @default(autoincrement())
+  email String @unique
+
+  /// For web login. Store a bcrypt/argon2 hash (never plaintext).
+  passwordHash String
+
+  /// Global role used to route after login (Option 1).
+  systemRole SystemRole @default(user)
+
+  tokenVersion      Int       @default(0)
+  passwordUpdatedAt DateTime?
+  resetTokens       PasswordResetToken[]
+
+  createdAt DateTime     @default(now())
+  status    EntityStatus @default(active)
+  updatedAt DateTime     @updatedAt
+
+  merchantUsers MerchantUser[]
+}
+model PasswordResetToken {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  tokenHash String   @unique @db.VarChar(255)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Merchant {
+  id                Int                @id @default(autoincrement())
+  name              String
+  status            EntityStatus       @default(active)
+  suspendedAt       DateTime?
+  archivedAt        DateTime?
+  statusReason      String?
+  statusUpdatedAt   DateTime           @default(now())
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  merchantConsumers MerchantConsumer[]
+  merchantUsers     MerchantUser[]
+  stores            Store[]
+  qrs               StoreQr[]
+  visits            Visit[]
+
+  // Billing (v2.02.1)
+  billingAccount BillingAccount?
+  invoices       Invoice[] // <-- required opposite of Invoice.merchant
+
+  @@index([status])
+}
+
+model Store {
+  id              Int             @id @default(autoincrement())
+  name            String
+  address1        String?
+  city            String?
+  state           String?
+  postal          String?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+  archivedAt      DateTime?
+  merchantId      Int
+  status          EntityStatus    @default(active)
+  statusReason    String?
+  statusUpdatedAt DateTime        @default(now())
+  suspendedAt     DateTime?
+  merchant        Merchant        @relation(fields: [merchantId], references: [id])
+  storeConsumers  StoreConsumer[]
+  qrs             StoreQr[]
+  storeUsers      StoreUser[]
+  visits          Visit[]
+
+  @@index([merchantId])
+  @@index([status])
+}
+
+model MerchantUser {
+  id              Int          @id @default(autoincrement())
+  merchantId      Int
+  userId          Int
+  role            MerchantRole
+  status          EntityStatus @default(active)
+  suspendedAt     DateTime?
+  archivedAt      DateTime?
+  statusReason    String?
+  statusUpdatedAt DateTime     @default(now())
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  merchant        Merchant     @relation(fields: [merchantId], references: [id])
+  user            User         @relation(fields: [userId], references: [id])
+  storeUsers      StoreUser[]
+
+  @@unique([merchantId, userId])
+  @@index([merchantId])
+  @@index([userId])
+}
+
+model StoreUser {
+  id              Int                  @id @default(autoincrement())
+  storeId         Int
+  merchantUserId  Int
+  permissionLevel StorePermissionLevel @default(admin)
+  status          EntityStatus         @default(active)
+  suspendedAt     DateTime?
+  archivedAt      DateTime?
+  statusReason    String?
+  statusUpdatedAt DateTime             @default(now())
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+  merchantUser    MerchantUser         @relation(fields: [merchantUserId], references: [id])
+  store           Store                @relation(fields: [storeId], references: [id])
+
+  @@unique([storeId, merchantUserId])
+  @@index([storeId])
+  @@index([merchantUserId])
+}
+
+model Consumer {
+  id                Int                @id @default(autoincrement())
+  /// Consumers can share an email address (NOT unique).
+  email             String?
+  firstName         String?
+  lastName          String?
+  phoneRaw          String?
+  phoneE164         String?            @unique @db.VarChar(20)
+  phoneCountry      String             @default("US")
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  archivedAt        DateTime?
+  status            EntityStatus       @default(active)
+  suspendedAt       DateTime?
+  phones            ConsumerPhone[]
+  merchantConsumers MerchantConsumer[]
+  storeConsumers    StoreConsumer[]
+  visits            Visit[]
+
+  @@index([email])
+  @@index([phoneE164])
+  @@index([status])
+}
+
+model ConsumerPhone {
+  id         Int          @id @default(autoincrement())
+  consumerId Int
+  phoneE164  String       @unique @db.VarChar(20)
+  isPrimary  Boolean      @default(false)
+  verifiedAt DateTime?
+  status     EntityStatus @default(active)
+  archivedAt DateTime?
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+  consumer   Consumer     @relation(fields: [consumerId], references: [id])
+
+  @@index([consumerId])
+  @@index([isPrimary])
+}
+
+model MerchantConsumer {
+  id              Int          @id @default(autoincrement())
+  merchantId      Int
+  consumerId      Int
+  status          EntityStatus @default(active)
+  suspendedAt     DateTime?
+  archivedAt      DateTime?
+  statusReason    String?
+  statusUpdatedAt DateTime     @default(now())
+  joinedAt        DateTime     @default(now())
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  consumer        Consumer     @relation(fields: [consumerId], references: [id])
+  merchant        Merchant     @relation(fields: [merchantId], references: [id])
+
+  @@unique([merchantId, consumerId])
+  @@index([merchantId])
+  @@index([consumerId])
+}
+
+model StoreConsumer {
+  id              Int          @id @default(autoincrement())
+  storeId         Int
+  consumerId      Int
+  status          EntityStatus @default(active)
+  suspendedAt     DateTime?
+  archivedAt      DateTime?
+  statusReason    String?
+  statusUpdatedAt DateTime     @default(now())
+  associatedAt    DateTime     @default(now())
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  consumer        Consumer     @relation(fields: [consumerId], references: [id])
+  store           Store        @relation(fields: [storeId], references: [id])
+
+  @@unique([storeId, consumerId])
+  @@index([storeId])
+  @@index([consumerId])
+}
+
+model StoreQr {
+  id         Int          @id @default(autoincrement())
+  storeId    Int
+  /// Put this token in the QR code payload (example: "pv:store:<token>")
+  token      String       @unique
+  expiresAt  DateTime?
+  createdAt  DateTime     @default(now())
+  merchantId Int
+  status     EntityStatus @default(active)
+  updatedAt  DateTime?    @updatedAt
+  merchant   Merchant     @relation(fields: [merchantId], references: [id])
+  store      Store        @relation(fields: [storeId], references: [id])
+  visits     Visit[]
+
+  @@index([storeId])
+  @@index([merchantId])
+  @@index([status])
+}
+
+model Visit {
+  id         Int         @id @default(autoincrement())
+  storeId    Int
+  consumerId Int?
+  qrId       Int?
+  createdAt  DateTime    @default(now())
+  merchantId Int
+  metadata   Json?
+  source     VisitSource @default(qr_scan)
+  consumer   Consumer?   @relation(fields: [consumerId], references: [id], onDelete: Restrict)
+  merchant   Merchant    @relation(fields: [merchantId], references: [id])
+  qr         StoreQr?    @relation(fields: [qrId], references: [id], onDelete: Restrict)
+  store      Store       @relation(fields: [storeId], references: [id])
+
+  @@index([storeId, createdAt])
+  @@index([consumerId, createdAt])
+  @@index([merchantId, createdAt])
+}
+
+/**
+ * ===============================
+ * Billing domain (v2.02.1)
+ * ===============================
+ */
+
+model BillingAccount {
+  id Int @id @default(autoincrement())
+
+  // 1:1 with Merchant
+  merchantId Int      @unique
+  merchant   Merchant @relation(fields: [merchantId], references: [id])
+
+  // Provider abstraction (opaque IDs only)
+  provider           BillingProvider @default(stripe)
+  providerCustomerId String?         @db.VarChar(255)
+
+  // Billing Contact (may be external)
+  billingEmail       String  @db.VarChar(320)
+  billingName        String? @db.VarChar(200)
+  billingPhone       String? @db.VarChar(32)
+  billingAddressJson Json?
+  policyOverridesJson Json?
+
+  status BillingAccountStatus @default(active)
+
+  paymentMethods PaymentMethod[]
+  invoices       Invoice[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([providerCustomerId])
+  @@index([status])
+}
+
+model PaymentMethod {
+  id Int @id @default(autoincrement())
+
+  billingAccountId Int
+  billingAccount   BillingAccount @relation(fields: [billingAccountId], references: [id])
+
+  // Provider abstraction (opaque ID)
+  providerPaymentMethodId String @db.VarChar(255)
+
+  // Safe display metadata only
+  type     PaymentMethodType? @default(card)
+  brand    String?            @db.VarChar(50)
+  last4    String?            @db.VarChar(4)
+  expMonth Int?
+  expYear  Int?
+
+  status PaymentMethodStatus @default(active)
+
+  // Replacement chain:
+  // Old methods point to the method that replaced them.
+  // One "new" method may replace multiple old ones -> one-to-many.
+  replacedById Int?
+  replacedBy   PaymentMethod?  @relation("PMReplacedBy", fields: [replacedById], references: [id])
+  replaces     PaymentMethod[] @relation("PMReplacedBy")
+
+  // Opposite relation for Payment.paymentMethod
+  payments Payment[]
+
+  createdAt DateTime @default(now())
+
+  @@unique([billingAccountId, providerPaymentMethodId])
+  @@index([billingAccountId, status])
+  @@index([providerPaymentMethodId])
+}
+
+model Invoice {
+  id Int @id @default(autoincrement())
+
+  billingAccountId Int
+  billingAccount   BillingAccount @relation(fields: [billingAccountId], references: [id])
+
+  // denormalized for admin queries
+  merchantId Int
+  merchant   Merchant @relation(fields: [merchantId], references: [id])
+
+  externalInvoiceId String? @db.VarChar(255)
+
+  periodStart  DateTime?
+  periodEnd    DateTime?
+  issuedAt     DateTime?
+  netTermsDays Int?
+  dueAt        DateTime?
+  status       InvoiceStatus @default(draft)
+
+  subtotalCents   Int @default(0)
+  taxCents        Int @default(0)
+  totalCents      Int @default(0)
+  amountPaidCents Int @default(0)
+
+  generationVersion Int @default(1)
+
+  relatedToInvoiceId Int?
+  relatedToInvoice   Invoice?  @relation("InvoiceRelated", fields: [relatedToInvoiceId], references: [id])
+  relatedInvoices    Invoice[] @relation("InvoiceRelated")
+
+  lineItems      InvoiceLineItem[]
+  payments       Payment[]
+  guestPayTokens GuestPayToken[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([merchantId, status])
+  @@index([billingAccountId, status])
+  @@index([externalInvoiceId])
+  @@index([relatedToInvoiceId])
+}
+
+model InvoiceLineItem {
+  id Int @id @default(autoincrement())
+
+  invoiceId Int
+  invoice   Invoice @relation(fields: [invoiceId], references: [id])
+
+  description String @db.VarChar(500)
+  quantity    Int    @default(1)
+
+  unitPriceCents Int?
+  amountCents    Int
+
+  sourceType  InvoiceLineSourceType
+  sourceRefId String?               @db.VarChar(255)
+
+  createdAt DateTime @default(now())
+
+  @@index([invoiceId])
+  @@index([sourceType, sourceRefId])
+}
+
+model Payment {
+  id Int @id @default(autoincrement())
+
+  invoiceId Int
+  invoice   Invoice @relation(fields: [invoiceId], references: [id])
+
+  amountCents Int
+  status      PaymentStatus @default(pending)
+
+  providerChargeId String? @db.VarChar(255)
+  payerEmail       String? @db.VarChar(320)
+
+  paymentMethodId Int?
+  paymentMethod   PaymentMethod? @relation(fields: [paymentMethodId], references: [id])
+
+  createdAt       DateTime @default(now())
+  statusUpdatedAt DateTime @default(now())
+
+  @@index([invoiceId, status])
+  @@index([providerChargeId])
+}
+
+model GuestPayToken {
+  id Int @id @default(autoincrement())
+
+  invoiceId Int
+  invoice   Invoice @relation(fields: [invoiceId], references: [id])
+
+  tokenHash String    @unique @db.VarChar(255)
+  expiresAt DateTime
+  usedAt    DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([invoiceId])
+  @@index([expiresAt])
+}
+
+/**
+ * ===============================
+ * Existing enums
+ * ===============================
+ */
+
+enum EntityStatus {
+  active
+  suspended
+  archived
+}
+
+enum SystemRole {
+  /// PerkValet global admin (routes to /admin)
+  pv_admin
+
+  /// Normal user (merchant-scoped roles apply via MerchantUser / StoreUser)
+  user
+}
+
+enum MerchantRole {
+  owner
+  merchant_admin
+  store_admin
+  store_subadmin
+}
+
+enum StorePermissionLevel {
+  admin
+  subadmin
+}
+
+enum VisitSource {
+  qr_scan
+  manual
+  import
+}
+
+/**
+ * ===============================
+ * Billing enums (v2.02.1)
+ * ===============================
+ */
+ 
+enum BillingProvider {
+  stripe
+  manual
+}
+
+enum BillingAccountStatus {
+  active
+  suspended
+  canceled
+}
+
+enum PaymentMethodType {
+  card
+  bank_account
+  other
+}
+
+enum PaymentMethodStatus {
+  active
+  replaced
+  expired
+}
+
+enum InvoiceStatus {
+  draft
+  issued
+  past_due
+  paid
+  void
+}
+
+enum InvoiceLineSourceType {
+  platform_fee
+  usage_fee
+  late_fee
+  adjustment
+}
+
+enum PaymentStatus {
+  pending
+  succeeded
+  failed
+  refunded
+}

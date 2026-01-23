@@ -1,0 +1,13 @@
+{
+  "graceDays": 0,
+  "lateFeeCents": 1500,
+  "lateFeeNetDays": 7,
+  "guestPayTokenDays": 7,
+  "allowedNetTermsDays": [
+    15,
+    30,
+    45
+  ],
+  "defaultNetTermsDays": 30,
+  "updatedAt": "2026-01-09T04:26:13.777Z"
+}
