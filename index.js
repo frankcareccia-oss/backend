@@ -1,6 +1,7 @@
 ﻿require("dotenv").config();
 
 const { registerPaymentsRoutes } = require("./src/payments/payments.routes");
+const { registerPosRoutes } = require("./src/pos/pos.routes");
 const fs = require("fs");
 const path = require("path");
 
@@ -707,6 +708,18 @@ app.post(
 );
 
 app.use(paymentsReg.router);
+
+
+  // POS-2: POS API (JWT-only, POS-only)
+  const posReg = registerPosRoutes(app, {
+    prisma,
+    sendError,
+    requireAuth: requireJwt,
+  });
+  app.use(posReg.router);
+
+  // PV-HOOK pos.routes.mounted tc=TC-POS-BOOT-01 sev=info stable=pos:router
+  emitPvHook("pos.routes.mounted", { tc: "TC-POS-BOOT-01", sev: "info", stable: "pos:router" });
 
 app.use(express.json());
 
