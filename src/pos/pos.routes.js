@@ -1,5 +1,7 @@
 // backend/src/pos/pos.routes.js
 const express = require("express");
+const { requireFreshTimestamp } = require("./pos.replay");
+const { requireIdempotency } = require("./pos.idempotency");
 
 /**
  * POS routes (NO-MIGRATIONS MODE)
@@ -16,6 +18,11 @@ const express = require("express");
  * Hooks (server-side, safe, structured):
  * - pos.visit.requested.api / succeeded.api / failed.api
  * - pos.reward.requested.api / succeeded.api / failed.api
+ *
+ * POS-3 (safety hardening):
+ * - Requires X-POS-Timestamp (replay protection)
+ * - Requires X-POS-Idempotency-Key (idempotency)
+ * - Hooks: pos.replay.reject, pos.idempotency.accept/replay/conflict
  */
 
 function pvHook(event, fields = {}) {
@@ -52,10 +59,18 @@ function registerPosRoutes(app, { prisma, sendError, requireAuth }) {
   if (!app) throw new Error("registerPosRoutes: app required");
   if (!prisma) throw new Error("registerPosRoutes: prisma required");
   if (!sendError) throw new Error("registerPosRoutes: sendError required");
-  if (typeof requireAuth !== "function") throw new Error("registerPosRoutes: requireAuth middleware required");
+  if (typeof requireAuth !== "function")
+    throw new Error("registerPosRoutes: requireAuth middleware required");
 
   const router = express.Router();
   router.use(express.json());
+
+  // POS-3 wiring: make hooks + sendError visible to middleware
+  router.use((req, res, next) => {
+    req.pvHook = pvHook;
+    res.locals.sendError = sendError;
+    next();
+  });
 
   async function requirePosContext(req, res) {
     const user = await prisma.user.findUnique({
@@ -110,7 +125,7 @@ function registerPosRoutes(app, { prisma, sendError, requireAuth }) {
     return { userId: user.id, merchantId, storeId };
   }
 
-  router.post("/pos/visit", requireAuth, async (req, res) => {
+  router.post("/pos/visit", requireAuth, requireFreshTimestamp, requireIdempotency, async (req, res) => {
     const identifier = req.body?.identifier;
 
     pvHook("pos.visit.requested.api", {
@@ -134,7 +149,7 @@ function registerPosRoutes(app, { prisma, sendError, requireAuth }) {
       const ctx = await requirePosContext(req, res);
       if (!ctx) return;
 
-      // STUB ONLY (POS-3 will wire Visit creation)
+      // STUB ONLY (POS-3 safety hardening wired; persistence comes later)
       pvHook("pos.visit.succeeded.api", {
         tc: "TC-POS-API-03",
         sev: "info",
@@ -159,7 +174,7 @@ function registerPosRoutes(app, { prisma, sendError, requireAuth }) {
     }
   });
 
-  router.post("/pos/reward", requireAuth, async (req, res) => {
+  router.post("/pos/reward", requireAuth, requireFreshTimestamp, requireIdempotency, async (req, res) => {
     const identifier = req.body?.identifier;
 
     pvHook("pos.reward.requested.api", {
@@ -183,7 +198,7 @@ function registerPosRoutes(app, { prisma, sendError, requireAuth }) {
       const ctx = await requirePosContext(req, res);
       if (!ctx) return;
 
-      // STUB ONLY (POS-3 will wire Reward grant)
+      // STUB ONLY (POS-3 safety hardening wired; persistence comes later)
       pvHook("pos.reward.succeeded.api", {
         tc: "TC-POS-API-07",
         sev: "info",
