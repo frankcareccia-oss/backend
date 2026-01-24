@@ -3,3 +3,5 @@
 dist/
 generated/
 npm-debug.log*
+.pos-events.ndjson
+
