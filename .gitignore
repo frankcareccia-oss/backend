@@ -4,4 +4,5 @@ dist/
 generated/
 npm-debug.log*
 .pos-events.ndjson
+.pos-events.ndjson.backup
 

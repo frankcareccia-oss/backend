@@ -243,9 +243,39 @@ model Visit {
   qr         StoreQr?    @relation(fields: [qrId], references: [id], onDelete: Restrict)
   store      Store       @relation(fields: [storeId], references: [id])
 
+  // POS-5A extensions (additive, safe)
+  posVisitId         String? @unique @db.VarChar(64)
+  posEventId         String? @db.VarChar(64)
+  posIdempotencyKey  String? @unique @db.VarChar(128)
+  posIdentifier      String? @db.VarChar(320)
+
   @@index([storeId, createdAt])
   @@index([consumerId, createdAt])
   @@index([merchantId, createdAt])
+  @@index([posVisitId])
+  @@index([posIdempotencyKey])
+}
+
+model PosReward {
+  // POS reward id is the stable external id: rew_<ulid>
+  id String @id @db.VarChar(64)
+
+  // Optional correlation to POS visit id (vis_<ulid>)
+  posVisitId String? @db.VarChar(64)
+
+  eventId        String? @db.VarChar(64)
+  idempotencyKey String  @unique @db.VarChar(128)
+
+  merchantId Int
+  storeId    Int
+  userId     Int
+
+  identifier  String @db.VarChar(320)
+  payloadJson Json?
+  createdAt   DateTime @default(now())
+
+  @@index([merchantId, storeId, createdAt])
+  @@index([posVisitId])
 }
 
 /**
