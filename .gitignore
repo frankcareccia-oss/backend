@@ -5,4 +5,10 @@ generated/
 npm-debug.log*
 .pos-events.ndjson
 .pos-events.ndjson.backup
+# POS temp helpers (local only)
+_*.js
+_migrations_backup/
+
+# Local baseline / scratch migrations (never commit)
+prisma/migrations/99999999999999_baseline_from_db/
 
