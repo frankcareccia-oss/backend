@@ -409,7 +409,18 @@ function buildCorsOptions() {
       return callback(new Error(`CORS blocked for origin: ${origin}`));
     },
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "x-api-key", "Authorization"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "x-api-key",
+      "x-idempotency-key",
+      "x-pv-hook",
+      "x-pv-testcase",
+      "x-pos-timestamp",
+      "x-pos-idempotency-key",
+      "x-pos-nonce",
+      "x-pos-signature",
+    ],
     credentials: false,
   };
 }
@@ -683,7 +694,11 @@ function isLateFeeInvoice(inv) {
    Middleware
 -------------------------------- */
 
-app.use(cors(buildCorsOptions()));
+// POS-7.4: Build CORS options once and add safe global OPTIONS handler
+const corsOptions = buildCorsOptions();
+app.use(cors(corsOptions));
+// IMPORTANT: use /.*/ (not "*") to avoid Express/path-to-regexp crashes
+app.options(/.*/, cors(corsOptions));
 
 /*
  * ===============================
