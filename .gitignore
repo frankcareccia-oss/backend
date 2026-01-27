@@ -13,3 +13,4 @@ _migrations_backup/
 prisma/migrations/99999999999999_baseline_from_db/
 
 index.js.bak.pos7
+.pos-associates.json
