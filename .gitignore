@@ -12,3 +12,4 @@ _migrations_backup/
 # Local baseline / scratch migrations (never commit)
 prisma/migrations/99999999999999_baseline_from_db/
 
+index.js.bak.pos7
