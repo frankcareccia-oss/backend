@@ -694,10 +694,12 @@ function isLateFeeInvoice(inv) {
    Middleware
 -------------------------------- */
 
-// POS-7.4: Build CORS options once and add safe global OPTIONS handler
+// Build once so we can safely reuse for preflight OPTIONS.
 const corsOptions = buildCorsOptions();
+
 app.use(cors(corsOptions));
-// IMPORTANT: use /.*/ (not "*") to avoid Express/path-to-regexp crashes
+
+// Safe global OPTIONS handler (regex avoids path-to-regexp '*' crash).
 app.options(/.*/, cors(corsOptions));
 
 /*
@@ -879,6 +881,115 @@ app.post("/auth/login", async (req, res) => {
 
     const landing = user.systemRole === "pv_admin" ? "/merchants" : "/merchant";
     return res.json({ accessToken, systemRole: user.systemRole, landing });
+  } catch (err) {
+    return handlePrismaError(err, res);
+  }
+});
+
+/* -----------------------------
+   POS-8A — Quick Login (shift code → JWT)
+   - Reads local .pos-associates.json (NOT committed)
+   - Maps code → { userEmail, storeId }
+   - Issues JWT for POS-only users (store_subadmin-only)
+-------------------------------- */
+
+const POS_ASSOC_FILE = path.join(__dirname, ".pos-associates.json");
+
+function loadPosAssociates() {
+  try {
+    if (!fs.existsSync(POS_ASSOC_FILE)) return [];
+    const raw = fs.readFileSync(POS_ASSOC_FILE, "utf-8");
+    const parsed = JSON.parse(raw);
+    const list = Array.isArray(parsed?.associates) ? parsed.associates : [];
+    return list
+      .map((x) => ({
+        code: String(x?.code || "").trim(),
+        userEmail: String(x?.userEmail || "").trim().toLowerCase(),
+        storeId: Number.isInteger(x?.storeId)
+          ? x.storeId
+          : Number.parseInt(String(x?.storeId || ""), 10),
+      }))
+      .filter((x) => x.code && x.userEmail && Number.isInteger(x.storeId) && x.storeId > 0);
+  } catch (e) {
+    console.warn("⚠️ POS-8A loadPosAssociates failed:", e?.message || e);
+    return [];
+  }
+}
+
+app.post("/pos/auth/login", async (req, res) => {
+  try {
+    const { code } = req.body || {};
+    const codeNorm = String(code || "").trim();
+    if (!codeNorm) return sendError(res, 400, "VALIDATION_ERROR", "code is required");
+
+    const assoc = loadPosAssociates().find((a) => a.code === codeNorm);
+    if (!assoc) return sendError(res, 401, "UNAUTHORIZED", "Invalid code");
+
+    // Resolve user by email (findMany works even if email isn't marked unique in Prisma client)
+    const users = await prisma.user.findMany({
+      where: { email: assoc.userEmail },
+      take: 1,
+    });
+    const user = Array.isArray(users) && users.length ? users[0] : null;
+
+    if (!user) return sendError(res, 401, "UNAUTHORIZED", "Invalid code");
+    if (user.status && user.status !== "active") return sendError(res, 403, "FORBIDDEN", "User is not active");
+
+    // POS must NOT be pv_admin and must be POS-only (store_subadmin-only)
+    const full = await prisma.user.findUnique({
+      where: { id: user.id },
+      select: {
+        id: true,
+        email: true,
+        status: true,
+        systemRole: true,
+        tokenVersion: true,
+        merchantUsers: {
+          where: { status: "active" },
+          select: { merchantId: true, role: true, status: true },
+        },
+      },
+    });
+
+    if (!full) return sendError(res, 401, "UNAUTHORIZED", "Invalid code");
+    if (full.systemRole === "pv_admin") return sendError(res, 403, "FORBIDDEN", "Admin cannot use POS");
+    if (!isPosOnlyMerchantUser(full)) return sendError(res, 403, "FORBIDDEN", "Not a POS associate");
+
+    // Store must belong to one of the user's merchants
+    const allowedMerchantIds = Array.isArray(full.merchantUsers)
+      ? full.merchantUsers.map((m) => m.merchantId).filter(Boolean)
+      : [];
+
+    const store = await prisma.store.findUnique({
+      where: { id: assoc.storeId },
+      select: { id: true, merchantId: true, status: true },
+    });
+
+    if (!store) return sendError(res, 404, "NOT_FOUND", "Store not found");
+    if (store.status && store.status !== "active") return sendError(res, 403, "FORBIDDEN", "Store is not active");
+    if (!allowedMerchantIds.includes(store.merchantId))
+      return sendError(res, 403, "FORBIDDEN", "Store not allowed for this associate");
+
+    const accessToken = jwt.sign(
+      {
+        userId: full.id,
+        tokenVersion: full.tokenVersion ?? 0,
+        pos: 1,
+        storeId: store.id,
+        merchantId: store.merchantId,
+      },
+      JWT_SECRET,
+      { expiresIn: JWT_EXPIRES_IN }
+    );
+
+    return res.json({
+      accessToken,
+      systemRole: full.systemRole,
+      landing: "/merchant/pos",
+      posSession: true,
+      storeId: store.id,
+      merchantId: store.merchantId,
+    });
   } catch (err) {
     return handlePrismaError(err, res);
   }
