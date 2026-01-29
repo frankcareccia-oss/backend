@@ -14,3 +14,9 @@ prisma/migrations/99999999999999_baseline_from_db/
 
 index.js.bak.pos7
 .pos-associates.json
+
+# Local POS dev files (never commit)
+.pos-shift-codes.json
+.pos-terminals.json
+index.js.BAK
+
