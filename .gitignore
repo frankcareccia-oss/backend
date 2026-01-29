@@ -20,3 +20,8 @@ index.js.bak.pos7
 .pos-terminals.json
 index.js.BAK
 
+
+# Workspace QA (kept outside backend repo)
+../qa/
+..\qa\
+
