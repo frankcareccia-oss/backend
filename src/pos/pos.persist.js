@@ -12,6 +12,14 @@
 //
 // NOTE: POS-3 idempotency/replay remains enforced by middleware upstream.
 // This module is called only on "first write" (not replay) when middleware is correct.
+//
+// POS-10:
+// - Accept optional body.consumerId and persist it:
+//   - Visit row: consumerId (nullable)
+//   - NDJSON lines: include consumerId (top-level) + payload remains unchanged
+// - Enforce store-scoped association when consumerId is provided:
+//   - Consumer.status must be active
+//   - StoreConsumer(storeId, consumerId) must exist with status=active
 
 const fs = require("fs");
 const path = require("path");
@@ -55,7 +63,54 @@ function appendNdjsonLine(filePath, obj) {
   fs.appendFileSync(filePath, line, { encoding: "utf8" });
 }
 
-function buildVisitEventLine({ evtId, visId, storeId, userId, body, idempotencyKey }) {
+function parseOptionalInt(value) {
+  if (value == null) return null;
+  const n = Number.parseInt(String(value), 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+async function assertConsumerStoreAssociation({ ctx, storeId, consumerId }) {
+  // Consumer exists + active
+  const consumer = await prisma.consumer.findUnique({
+    where: { id: consumerId },
+    select: { id: true, status: true },
+  });
+
+  if (!consumer) {
+    const err = new Error("consumerId not found");
+    err.code = "CONSUMER_NOT_FOUND";
+    throw err;
+  }
+  if (consumer.status && consumer.status !== "active") {
+    const err = new Error("consumerId is not active");
+    err.code = "CONSUMER_NOT_ACTIVE";
+    throw err;
+  }
+
+  // Store association exists + active
+  const sc = await prisma.storeConsumer.findUnique({
+    where: { storeId_consumerId: { storeId: Number(storeId), consumerId: Number(consumerId) } },
+    select: { id: true, status: true },
+  });
+
+  if (!sc || (sc.status && sc.status !== "active")) {
+    const err = new Error("consumerId not associated to store");
+    err.code = "CONSUMER_NOT_ASSOCIATED";
+    throw err;
+  }
+
+  emit(ctx, "pos.consumer.association.verified", {
+    tc: "TC-POS-10-ASSOC-01",
+    sev: "info",
+    stable: `store:${storeId}`,
+    storeId,
+    consumerId,
+  });
+
+  return true;
+}
+
+function buildVisitEventLine({ evtId, visId, storeId, userId, consumerId, body, idempotencyKey }) {
   return {
     eventType: "pos.visit",
     eventId: evtId,
@@ -63,6 +118,7 @@ function buildVisitEventLine({ evtId, visId, storeId, userId, body, idempotencyK
     rewardId: null,
     storeId,
     userId,
+    consumerId: consumerId || null,
     payload: body || null,
     idempotencyKey: idempotencyKey || null,
     timestamp: new Date().toISOString(),
@@ -70,7 +126,7 @@ function buildVisitEventLine({ evtId, visId, storeId, userId, body, idempotencyK
   };
 }
 
-function buildRewardEventLine({ evtId, rewId, storeId, userId, body, idempotencyKey }) {
+function buildRewardEventLine({ evtId, rewId, storeId, userId, consumerId, body, idempotencyKey }) {
   return {
     eventType: "pos.reward",
     eventId: evtId,
@@ -78,6 +134,7 @@ function buildRewardEventLine({ evtId, rewId, storeId, userId, body, idempotency
     rewardId: rewId,
     storeId,
     userId,
+    consumerId: consumerId || null,
     payload: body || null,
     idempotencyKey: idempotencyKey || null,
     timestamp: new Date().toISOString(),
@@ -102,11 +159,17 @@ async function persistVisit({ ctx, body, idempotencyKey }) {
     const identifier =
       body && (body.identifier || body.email) ? String(body.identifier || body.email) : null;
 
+    const consumerId = parseOptionalInt(body?.consumerId);
+
+    if (consumerId) {
+      await assertConsumerStoreAssociation({ ctx, storeId: store.id, consumerId });
+    }
+
     await prisma.visit.create({
       data: {
         storeId: store.id,
         merchantId: store.merchantId,
-        consumerId: null,
+        consumerId: consumerId || null,
         qrId: null,
         source: "manual",
         metadata: {
@@ -114,6 +177,7 @@ async function persistVisit({ ctx, body, idempotencyKey }) {
           eventType: "pos.visit",
           eventId: evtId,
           idempotencyKey,
+          consumerId: consumerId || null,
           payload: body || null,
           source: "pos",
         },
@@ -127,10 +191,15 @@ async function persistVisit({ ctx, body, idempotencyKey }) {
 
     // Hooks (QA/Support/Doc/Chatbot surfaced via pvHook naming conventions)
     emit(ctx, "pos.visit.persisted", {
+      tc: "TC-POS-API-03",
+      sev: "info",
+      stable: `store:${ctx.storeId}`,
       eventId: evtId,
       visitId: visId,
       storeId: ctx.storeId,
+      merchantId: store.merchantId,
       userId: ctx.userId,
+      consumerId: consumerId || null,
       idempotencyKey,
       timestamp: new Date().toISOString(),
       sink: "prisma",
@@ -144,6 +213,7 @@ async function persistVisit({ ctx, body, idempotencyKey }) {
         visId,
         storeId: ctx.storeId,
         userId: ctx.userId,
+        consumerId,
         body,
         idempotencyKey,
       });
@@ -155,6 +225,7 @@ async function persistVisit({ ctx, body, idempotencyKey }) {
         visitId: visId,
         storeId: ctx.storeId,
         userId: ctx.userId,
+        consumerId: consumerId || null,
         file: path.basename(ndjsonPath),
       });
     } catch (e) {
@@ -165,6 +236,7 @@ async function persistVisit({ ctx, body, idempotencyKey }) {
         visitId: visId,
         storeId: ctx.storeId,
         userId: ctx.userId,
+        consumerId: consumerId || null,
         error: e?.message || String(e),
       });
     }
@@ -177,6 +249,7 @@ async function persistVisit({ ctx, body, idempotencyKey }) {
       userId: ctx.userId,
       idempotencyKey,
       error: String(err),
+      code: err?.code || null,
     });
     throw err;
   }
@@ -204,6 +277,11 @@ async function persistReward({ ctx, body, idempotencyKey }) {
 
     const posVisitId = body && body.visitId ? String(body.visitId) : null;
 
+    const consumerId = parseOptionalInt(body?.consumerId);
+    if (consumerId) {
+      await assertConsumerStoreAssociation({ ctx, storeId: store.id, consumerId });
+    }
+
     await prisma.posReward.create({
       data: {
         id: rewId,
@@ -219,10 +297,15 @@ async function persistReward({ ctx, body, idempotencyKey }) {
     });
 
     emit(ctx, "pos.reward.persisted", {
+      tc: "TC-POS-API-07",
+      sev: "info",
+      stable: `store:${ctx.storeId}`,
       eventId: evtId,
       rewardId: rewId,
       storeId: ctx.storeId,
+      merchantId: store.merchantId,
       userId: ctx.userId,
+      consumerId: consumerId || null,
       idempotencyKey,
       timestamp: new Date().toISOString(),
       sink: "prisma",
@@ -236,6 +319,7 @@ async function persistReward({ ctx, body, idempotencyKey }) {
         rewId,
         storeId: ctx.storeId,
         userId: ctx.userId,
+        consumerId,
         body,
         idempotencyKey,
       });
@@ -247,6 +331,7 @@ async function persistReward({ ctx, body, idempotencyKey }) {
         rewardId: rewId,
         storeId: ctx.storeId,
         userId: ctx.userId,
+        consumerId: consumerId || null,
         file: path.basename(ndjsonPath),
       });
     } catch (e) {
@@ -256,6 +341,7 @@ async function persistReward({ ctx, body, idempotencyKey }) {
         rewardId: rewId,
         storeId: ctx.storeId,
         userId: ctx.userId,
+        consumerId: consumerId || null,
         error: e?.message || String(e),
       });
     }
@@ -268,6 +354,7 @@ async function persistReward({ ctx, body, idempotencyKey }) {
       userId: ctx.userId,
       idempotencyKey,
       error: String(err),
+      code: err?.code || null,
     });
     throw err;
   }

@@ -2,6 +2,10 @@
 // POS-6: Read/query helpers for POS persistence (Prisma) with hooks.
 // - All hooks are best-effort (never throw)
 // - ctx.pvHook is passed from routes
+//
+// POS-10:
+// - Visit rows may include consumerId (nullable)
+// - Rewards are stored in PosReward; consumerId is carried in payloadJson.consumerId (no Reward table yet)
 
 const { prisma } = require("../db/prisma");
 
@@ -14,6 +18,12 @@ function getHook(ctx) {
       // never throw from hooks
     }
   };
+}
+
+function parseOptionalInt(value) {
+  if (value == null) return null;
+  const n = Number.parseInt(String(value), 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
 }
 
 /**
@@ -40,6 +50,7 @@ async function getVisitByPosVisitId(posVisitId, ctx = {}) {
     visitPk: visit.id,
     storeId: visit.storeId,
     merchantId: visit.merchantId,
+    consumerId: visit.consumerId || null,
     posIdentifier: visit.posIdentifier || null,
   });
 
@@ -65,11 +76,14 @@ async function getRewardById(rewardId, ctx = {}) {
     return null;
   }
 
+  const consumerId = parseOptionalInt(reward?.payloadJson?.consumerId);
+
   // NOTE: PosReward uses `identifier` (not `posIdentifier`) per pos.persist.js.
   hook("pos.read.reward.found", {
     rewardId: id,
     storeId: reward.storeId,
     merchantId: reward.merchantId,
+    consumerId: consumerId || null,
     identifier: reward.identifier || null,
     posVisitId: reward.posVisitId || null,
   });
