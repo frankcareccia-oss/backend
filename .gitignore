@@ -25,3 +25,7 @@ index.js.BAK
 ../qa/
 ..\qa\
 
+
+# local scratch (do not commit)
+_local_scratch/
+
