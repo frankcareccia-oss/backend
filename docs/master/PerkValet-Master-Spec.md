@@ -9,6 +9,11 @@ This document is the single source of truth for PerkValet. It embeds prior speci
 
 ## Change Log
 
+### v2.03.1 (Embedded)
+- Recorded implementation status for POS-9 and POS-10
+- Clarified POS timestamp/idempotency requirements for POS write endpoints
+- No breaking changes to v2.03.0 content
+
 ### v2.03.0 (Embedded)
 - Embedded **Loyalty & Promotions Contract v1** as a new Normative section
 - No breaking changes to v2.02.1 behavior
@@ -49,9 +54,33 @@ This document is the single source of truth for PerkValet. It embeds prior speci
 ### 5.1 POS Auth & Provisioning
 *(From POS Spec — unchanged)*
 
-### 5.2 POS Identity (POS-9)
-- Customer preview/create endpoints
-- `consumerId` as canonical POS identity
+### 5.2 POS Identity and Consumer Linkage
+
+#### 5.2.1 POS-9 — Customer Preview + Create (Locked)
+- Backend endpoints:
+  - `POST /pos/customer/preview` (phone identityValue)
+  - `POST /pos/customer/create` (phone identityValue + **firstName required**, lastName optional)
+- Canonical identity output: `consumerId`
+- Git tag: `pos-9-locked`
+
+#### 5.2.2 POS-10 — Persist consumerId on Visit/Reward (Locked)
+- Backend behavior:
+  - `POST /pos/visit` accepts optional `consumerId`
+  - `POST /pos/reward` accepts optional `consumerId`
+  - When `consumerId` provided, backend validates:
+    - Consumer exists and is active
+    - Consumer is associated to the Store (`StoreConsumer` active)
+  - Persistence:
+    - Visits: NDJSON event + Prisma `Visit.consumerId`
+    - Rewards: NDJSON event + `PosReward.payloadJson.consumerId`
+- Git tag: `pos-10-locked`
+
+#### 5.2.3 POS Write Middleware Requirements (Normative)
+POS write endpoints that use replay/idempotency middleware MUST include:
+- `X-POS-Idempotency-Key` header
+- `X-POS-Timestamp` header (ISO timestamp)
+
+---
 
 ### 5.3 POS Idempotency & Replay
 *(From Backend Engineering Notes — unchanged)*
@@ -145,7 +174,7 @@ All hooks emit structured JSON lines with:
 
 ## 10. Appendices
 - POS-9: Customer Identity
-- POS-10: Consumer Linkage (planned)
+- POS-10: Consumer Linkage (implemented)
 
 ---
 
@@ -158,4 +187,4 @@ This embedded master file is the **canonical wrapper**. To complete the embed, p
 
 …into the marked sections above (or link to them in Appendix if you prefer).
 
-Once pasted, increment the Change Log with the embed completion entry (e.g., v2.03.1).
+Once pasted, increment the Change Log with the embed completion entry (e.g., v2.03.2).
