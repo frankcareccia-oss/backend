@@ -21,6 +21,10 @@ const { getVisitByPosVisitId, getRewardById } = posRead;
  * - GET  /pos/visit/:posVisitId
  * - GET  /pos/reward/:rewardId
  *
+ * POS-9 Customer Identity:
+ * - POST /pos/customer/preview
+ * - POST /pos/customer/create
+ *
  * POS Dashboard:
  * - GET  /pos/stats/today              (aliases: /pos/today)
  * - GET  /pos/activity/recent          (aliases: /pos/activity)
@@ -549,9 +553,165 @@ function registerPosRoutes(app, { prisma, sendError, requireAuth }) {
     return { userId: user.id, merchantId, storeId };
   }
 
+  // ===============================
+  // POS-9: Customer identity helpers
+  // ===============================
+
+  function requireNonEmptyString(value, fieldName) {
+    if (typeof value !== "string" || !value.trim()) {
+      const err = new Error(`${fieldName}_required`);
+      err.statusCode = 400;
+      err.code = `${fieldName}_required`;
+      throw err;
+    }
+    return value.trim();
+  }
+
+  function normalizePhoneE164(raw) {
+    const s = requireNonEmptyString(raw, "identityValue");
+    const digits = s.replace(/[^\d]/g, "");
+    if (digits.length < 10 || digits.length > 15) {
+      const err = new Error("invalid_phone");
+      err.statusCode = 400;
+      err.code = "invalid_phone";
+      throw err;
+    }
+    return `+${digits}`;
+  }
+
+  function requireFirstName(raw) {
+    return requireNonEmptyString(raw, "firstName");
+  }
+
+  function formatConsumerDisplayName(consumer) {
+    const first = String(consumer?.firstName || "").trim();
+    const last = String(consumer?.lastName || "").trim();
+    if (!first) return "Customer";
+    return last ? `${first} ${last.charAt(0)}.` : first;
+  }
+
+  async function isConsumerAssociatedToStore({ prisma, storeId, consumerId }) {
+    const sc = await prisma.storeConsumer.findUnique({
+      where: { storeId_consumerId: { storeId: Number(storeId), consumerId: Number(consumerId) } },
+      select: { id: true, status: true },
+    });
+    return Boolean(sc && sc.status === "active");
+  }
+
   // -----------------------------
   // READ endpoints
   // -----------------------------
+
+  // POS-9: Customer Preview (read-only, store-scoped)
+  router.post("/pos/customer/preview", requireAuth, async (req, res) => {
+    const hook = getHook(req);
+
+    hook("pos.customer.preview.requested.api", {
+      tc: "TC-POS-CUST-01",
+      sev: "info",
+      stable: "pos:customer:preview",
+      identifierMasked: maskIdentifier(req.body?.identityValue),
+    });
+
+    try {
+      const ctx = await requirePosContext(req, res);
+      if (!ctx) return;
+
+      const identityValueRaw = req.body?.identityValue;
+      if (!identityValueRaw) {
+        hook("pos.customer.preview.failed.api", {
+          tc: "TC-POS-CUST-02",
+          sev: "warn",
+          stable: "pos:customer:preview:validation",
+          reason: "identityValue_required",
+        });
+        return sendError(res, 400, "VALIDATION_ERROR", "identityValue is required");
+      }
+
+      const v = validateIdentifier(identityValueRaw);
+      if (!v.ok || v.kind !== "phone") {
+        hook("pos.customer.preview.failed.api", {
+          tc: "TC-POS-CUST-02",
+          sev: "warn",
+          stable: "pos:customer:preview:validation",
+          reason: "phone_required",
+          detail: v.ok ? `kind:${v.kind}` : v.reason,
+          identifierMasked: maskIdentifier(identityValueRaw),
+        });
+        return sendError(res, 400, "VALIDATION_ERROR", "phone identityValue is required");
+      }
+
+      const phoneE164 = normalizePhoneE164(identityValueRaw);
+
+      const consumer = await prisma.consumer.findUnique({
+        where: { phoneE164 },
+        select: { id: true, firstName: true, lastName: true, createdAt: true, status: true, archivedAt: true, suspendedAt: true },
+      });
+
+      // Store-scoped visibility: if not associated with this store, treat as not found.
+      if (!consumer || consumer.status !== "active") {
+        hook("pos.customer.preview.not_found.api", {
+          tc: "TC-POS-CUST-03",
+          sev: "info",
+          stable: `store:${ctx.storeId}`,
+          merchantId: ctx.merchantId,
+          storeId: ctx.storeId,
+          phoneE164Masked: maskIdentifier(phoneE164),
+          reason: consumer ? "not_active" : "no_consumer",
+        });
+        return res.json({ ok: true, found: false });
+      }
+
+      const associated = await isConsumerAssociatedToStore({
+        prisma,
+        storeId: ctx.storeId,
+        consumerId: consumer.id,
+      });
+
+      if (!associated) {
+        hook("pos.customer.preview.not_found.api", {
+          tc: "TC-POS-CUST-03",
+          sev: "info",
+          stable: `store:${ctx.storeId}`,
+          merchantId: ctx.merchantId,
+          storeId: ctx.storeId,
+          phoneE164Masked: maskIdentifier(phoneE164),
+          reason: "not_associated_to_store",
+        });
+        return res.json({ ok: true, found: false });
+      }
+
+      const displayName = formatConsumerDisplayName(consumer);
+
+      hook("pos.customer.preview.succeeded.api", {
+        tc: "TC-POS-CUST-04",
+        sev: "info",
+        stable: `store:${ctx.storeId}`,
+        merchantId: ctx.merchantId,
+        storeId: ctx.storeId,
+        consumerId: consumer.id,
+        displayName,
+      });
+
+      return res.json({
+        ok: true,
+        found: true,
+        customer: {
+          consumerId: consumer.id,
+          displayName,
+          createdAt: consumer.createdAt,
+        },
+      });
+    } catch (e) {
+      hook("pos.customer.preview.failed.api", {
+        tc: "TC-POS-CUST-05",
+        sev: "error",
+        stable: "pos:customer:preview:error",
+        error: e?.message || String(e),
+      });
+      return sendError(res, 500, "SERVER_ERROR", "Error");
+    }
+  });
 
   router.get("/pos/visit/:posVisitId", requireAuth, async (req, res) => {
     const hook = getHook(req);
@@ -784,6 +944,158 @@ function registerPosRoutes(app, { prisma, sendError, requireAuth }) {
   // -----------------------------
   // WRITE endpoints (POST)
   // -----------------------------
+
+  // POS-9: Customer Create (idempotent)
+  router.post("/pos/customer/create", requireAuth, async (req, res) => {
+    const hook = getHook(req);
+
+    hook("pos.customer.create.requested.api", {
+      tc: "TC-POS-CUST-06",
+      sev: "info",
+      stable: "pos:customer:create",
+      identifierMasked: maskIdentifier(req.body?.identityValue),
+    });
+
+    try {
+      const ctx = await requirePosContext(req, res);
+      if (!ctx) return;
+
+      const identityValueRaw = req.body?.identityValue;
+      if (!identityValueRaw) {
+        hook("pos.customer.create.failed.api", {
+          tc: "TC-POS-CUST-07",
+          sev: "warn",
+          stable: "pos:customer:create:validation",
+          reason: "identityValue_required",
+        });
+        return sendError(res, 400, "VALIDATION_ERROR", "identityValue is required");
+      }
+
+      const v = validateIdentifier(identityValueRaw);
+      if (!v.ok || v.kind !== "phone") {
+        hook("pos.customer.create.failed.api", {
+          tc: "TC-POS-CUST-07",
+          sev: "warn",
+          stable: "pos:customer:create:validation",
+          reason: "phone_required",
+          detail: v.ok ? `kind:${v.kind}` : v.reason,
+          identifierMasked: maskIdentifier(identityValueRaw),
+        });
+        return sendError(res, 400, "VALIDATION_ERROR", "phone identityValue is required");
+      }
+
+      let firstName = null;
+      let lastName = null;
+
+      try {
+        firstName = requireFirstName(req.body?.firstName);
+        lastName = typeof req.body?.lastName === "string" ? req.body.lastName.trim() : null;
+      } catch (e) {
+        hook("pos.customer.create.failed.api", {
+          tc: "TC-POS-CUST-07",
+          sev: "warn",
+          stable: "pos:customer:create:validation",
+          reason: e?.code || "name_validation",
+        });
+        return sendError(res, 400, "VALIDATION_ERROR", "firstName is required");
+      }
+
+      const phoneE164 = normalizePhoneE164(identityValueRaw);
+      const phoneRaw = String(identityValueRaw || "").trim();
+
+      // Idempotent create: first check if consumer exists.
+      let consumer = await prisma.consumer.findUnique({
+        where: { phoneE164 },
+        select: { id: true, firstName: true, lastName: true, createdAt: true, status: true },
+      });
+
+      let created = false;
+
+      if (!consumer) {
+        try {
+          consumer = await prisma.consumer.create({
+            data: {
+              firstName,
+              lastName: lastName || null,
+              phoneRaw,
+              phoneE164,
+              phoneCountry: "US",
+            },
+            select: { id: true, firstName: true, lastName: true, createdAt: true, status: true },
+          });
+          created = true;
+        } catch (e) {
+          // Handle race: unique constraint on phoneE164
+          if (e && (e.code === "P2002" || String(e.message || "").includes("Unique constraint"))) {
+            consumer = await prisma.consumer.findUnique({
+              where: { phoneE164 },
+              select: { id: true, firstName: true, lastName: true, createdAt: true, status: true },
+            });
+            created = false;
+          } else {
+            throw e;
+          }
+        }
+      }
+
+      if (!consumer || consumer.status !== "active") {
+        hook("pos.customer.create.failed.api", {
+          tc: "TC-POS-CUST-08",
+          sev: "warn",
+          stable: "pos:customer:create:not_active",
+          reason: consumer ? "consumer_not_active" : "consumer_missing_after_create",
+          phoneE164Masked: maskIdentifier(phoneE164),
+        });
+        return sendError(res, 409, "CONFLICT", "Consumer is not active");
+      }
+
+      // Ensure store+merchant associations (no-op if already exists)
+      await prisma.$transaction(async (tx) => {
+        await tx.merchantConsumer.upsert({
+          where: { merchantId_consumerId: { merchantId: Number(ctx.merchantId), consumerId: Number(consumer.id) } },
+          create: { merchantId: Number(ctx.merchantId), consumerId: Number(consumer.id) },
+          update: {},
+        });
+
+        await tx.storeConsumer.upsert({
+          where: { storeId_consumerId: { storeId: Number(ctx.storeId), consumerId: Number(consumer.id) } },
+          create: { storeId: Number(ctx.storeId), consumerId: Number(consumer.id) },
+          update: {},
+        });
+      });
+
+      const displayName = formatConsumerDisplayName(consumer);
+
+      hook("pos.customer.create.succeeded.api", {
+        tc: "TC-POS-CUST-09",
+        sev: "info",
+        stable: `store:${ctx.storeId}`,
+        merchantId: ctx.merchantId,
+        storeId: ctx.storeId,
+        consumerId: consumer.id,
+        created,
+        displayName,
+      });
+
+      return res.json({
+        ok: true,
+        created,
+        customer: {
+          consumerId: consumer.id,
+          displayName,
+          createdAt: consumer.createdAt,
+        },
+      });
+    } catch (e) {
+      hook("pos.customer.create.failed.api", {
+        tc: "TC-POS-CUST-10",
+        sev: "error",
+        stable: "pos:customer:create:error",
+        error: e?.message || String(e),
+      });
+      return sendError(res, 500, "SERVER_ERROR", "Error");
+    }
+  });
 
   router.post(
     "/pos/visit",
