@@ -5,6 +5,7 @@
 const { MAIL_CATEGORIES, assertValidMailCategory } = require("./mail.categories");
 const { sendViaDevTransport } = require("./mail.dev.transport");
 const { pvMailHook } = require("./mail.hooks");
+const { renderTemplate } = require("./templateRegistry");
 
 function normalizeTo(to) {
   if (Array.isArray(to)) return to.map(String);
@@ -50,11 +51,26 @@ async function sendMail(input) {
   assertNonEmptyString("subject", input.subject);
   assertNonEmptyString("template", input.template);
 
+  // Attempt template rendering for DEV artifacts. Never blocks send.
+  let rendered = null;
+  try {
+    rendered = renderTemplate(String(input.template), input.data || {});
+  } catch (e) {
+    pvMailHook("mail.template.render_failed", {
+      sev: "warn",
+      category,
+      template: input && input.template,
+      error: e?.message || String(e),
+    });
+    rendered = null;
+  }
+
   const msg = {
     category,
     to,
     subject: String(input.subject),
     template: String(input.template),
+    rendered, // { subject, text } or null
     data: input.data || {},
     meta: input.meta || {},
   };

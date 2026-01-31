@@ -1,5 +1,5 @@
 // backend/scripts/mail_smoke.js
-// DEV smoke test for Mail-Web-1.
+// DEV smoke test for Mail-Web-1 templates + transport.
 // Usage: node scripts/mail_smoke.js
 
 const { sendMail, MAIL_CATEGORIES } = require("../src/mail");
@@ -10,13 +10,18 @@ async function main() {
 
   const res = await sendMail({
     category: MAIL_CATEGORIES.INVOICE,
-    to: ["devnull@perkvalet.local"],
-    subject: "Mail-Web-1 smoke: invoice stub",
-    template: "invoice.stub",
+    to: ["devdude@perkvalet.local"],
+    subject: "Mail-Web-1 smoke: invoice guest pay template",
+    template: "invoice.guest_pay.stub",
     data: {
       invoiceId: "inv_smoke_001",
-      amountCents: 12345,
+      externalInvoiceId: "INV-SMOKE-001",
+      amountDueCents: 12345,
+      amountPaidCents: 0,
+      totalCents: 12345,
       merchantName: "Smoke Merchant",
+      payUrl: "http://localhost:3001/pay/SMOKE_TOKEN",
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
     },
     meta: {
       purpose: "smoke",
@@ -25,6 +30,7 @@ async function main() {
   });
 
   console.log("[mail_smoke] result:", res);
+  console.log("[mail_smoke] open the JSON file and confirm it includes: rendered.subject + rendered.text");
 }
 
 main().catch((err) => {
