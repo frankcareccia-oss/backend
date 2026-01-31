@@ -1,4 +1,4 @@
-// backend/src/mail/mail.dev.transport.js
+﻿// backend/src/mail/mail.dev.transport.js
 // DEV transport: console + file sink. Never sends real email.
 // Output: backend/.dev/mail/*.json
 
@@ -35,6 +35,7 @@ function isoForFilename(d) {
  * @param {string} msg.template
  * @param {object} msg.data
  * @param {object} msg.meta
+ * @param {object|null} msg.rendered
  */
 async function sendViaDevTransport(msg) {
   const now = new Date();
@@ -50,6 +51,7 @@ async function sendViaDevTransport(msg) {
     to: toArray,
     subject: safeString(msg.subject),
     template: safeString(msg.template),
+    rendered: msg.rendered || null,
     data: msg.data || {},
     meta: msg.meta || {},
   };
