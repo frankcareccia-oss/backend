@@ -29,3 +29,7 @@ index.js.BAK
 # local scratch (do not commit)
 _local_scratch/
 
+
+# Mail-Web-1 DEV mail sink (never commit)
+.dev/mail/
+
