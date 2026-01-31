@@ -1,7 +1,9 @@
+// backend/src/payments/stripehooks.js
 const Stripe = require("stripe");
 const { prisma } = require("../db/prisma");
 
 const { emitSystemHook } = require("../hooks/systemHooks");
+const { sendMail, MAIL_CATEGORIES } = require("../mail");
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
   apiVersion: process.env.STRIPE_API_VERSION || "2024-06-20",
@@ -48,6 +50,30 @@ async function handlePaymentIntentSucceeded(pi) {
       },
       timestamp: new Date(),
     });
+
+    // Mail-Web-1: DEV-safe email stub (never breaks webhook)
+    try {
+      await sendMail({
+        category: MAIL_CATEGORIES.INVOICE,
+        to: "devdude@perkvalet.local",
+        subject: `Payment succeeded for invoice ${updatedPayment.invoiceId || "(unlinked)"}`,
+        template: "invoice.payment_succeeded.stub",
+        data: {
+          paymentId: updatedPayment.id,
+          invoiceId: updatedPayment.invoiceId || null,
+          providerChargeId,
+          amountCents: updatedPayment.amountCents,
+          payerEmail: updatedPayment.payerEmail || null,
+        },
+        meta: {
+          source: "stripe:webhook",
+          eventType: "payment_intent.succeeded",
+        },
+      });
+    } catch (mailErr) {
+      // Non-fatal by design. Hooks/logging already handled inside mail adapter.
+      console.warn("[mail-web-1] mail stub failed (succeeded):", mailErr?.message || String(mailErr));
+    }
 
     // 2) Apply to invoice (if linked)
     if (!updatedPayment.invoiceId) return;
@@ -129,6 +155,28 @@ async function handlePaymentIntentFailed(pi) {
     },
     timestamp: new Date(),
   });
+
+  // Mail-Web-1: DEV-safe email stub (never breaks webhook)
+  try {
+    await sendMail({
+      category: MAIL_CATEGORIES.INVOICE,
+      to: "devdude@perkvalet.local",
+      subject: `Payment failed for invoice ${updated.invoiceId || "(unlinked)"}`,
+      template: "invoice.payment_failed.stub",
+      data: {
+        paymentId: updated.id,
+        invoiceId: updated.invoiceId || null,
+        providerChargeId,
+        payerEmail: updated.payerEmail || null,
+      },
+      meta: {
+        source: "stripe:webhook",
+        eventType: "payment_intent.payment_failed",
+      },
+    });
+  } catch (mailErr) {
+    console.warn("[mail-web-1] mail stub failed (failed):", mailErr?.message || String(mailErr));
+  }
 }
 
 /**
