@@ -2,6 +2,8 @@
 // DEV smoke test for Mail-Web-1 templates + transport.
 // Usage: node scripts/mail_smoke.js
 
+require("dotenv").config({ path: require("path").resolve(__dirname, "..", ".env") });
+
 const { sendMail, MAIL_CATEGORIES } = require("../src/mail");
 
 async function main() {
