@@ -1,5 +1,6 @@
 ﻿// backend/src/payments/payments.routes.js
 const express = require("express");
+const crypto = require("crypto");
 const { mintRawToken, sha256Hex, computeGuestTokenExpiry, now } = require("./guestToken");
 const { createPaymentIntent, verifyWebhook } = require("./stripe");
 
@@ -54,6 +55,57 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
     ""
   );
 
+  // ---------- ShortPay helpers (NO-MIGRATIONS) ----------
+  // Build a stable public pay URL without exposing raw tokens.
+  // Uses SHORTPAY_SECRET to produce /p/:code from GuestPayToken.id (base62 + HMAC).
+  const SHORTPAY_SECRET = String(process.env.SHORTPAY_SECRET || "").trim();
+  const BASE62 = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+  function base62Encode(num) {
+    const n0 = Number(num);
+    if (!Number.isFinite(n0) || n0 < 0) throw new Error("bad_num");
+    if (n0 === 0) return "0";
+    let n = Math.floor(n0);
+    let out = "";
+    while (n > 0) {
+      out = BASE62[n % 62] + out;
+      n = Math.floor(n / 62);
+    }
+    return out;
+  }
+
+  function hmacSig6(idPart, secret) {
+    const h = crypto.createHmac("sha256", Buffer.from(String(secret || ""), "utf8"));
+    h.update(Buffer.from(String(idPart || ""), "utf8"));
+    const digest = h.digest();
+    const u =
+      (((digest[0] << 24) | (digest[1] << 16) | (digest[2] << 8) | digest[3]) >>> 0) >>> 0;
+    return base62Encode(u).slice(-6).padStart(6, "0");
+  }
+
+  function buildShortPayCodeFromTokenId(tokenId) {
+    const idNum = Number(tokenId);
+    if (!Number.isInteger(idNum) || idNum <= 0) return "";
+    if (!SHORTPAY_SECRET) return "";
+    const idPart = base62Encode(idNum);
+    const sig = hmacSig6(idPart, SHORTPAY_SECRET);
+    return `${idPart}${sig}`;
+  }
+
+  function buildPayUrlFromTokenId(tokenId) {
+    const code = buildShortPayCodeFromTokenId(tokenId);
+    if (!code) return "";
+    return `${PUBLIC_BASE}/p/${encodeURIComponent(code)}`;
+  }
+
+  // IMPORTANT: backend uses this exact name in handlers
+  function isActiveGuestPayToken(tok) {
+    if (!tok) return false;
+    if (tok.usedAt) return false;
+    if (tok.expiresAt && tok.expiresAt.getTime() < Date.now()) return false;
+    return true;
+  }
+
   // ---------- helpers ----------
   function amountDueCents(invoice) {
     const due = (invoice.totalCents || 0) - (invoice.amountPaidCents || 0);
@@ -103,7 +155,7 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
     let t = null;
 
     // Preferred: caller passes a loaded GuestPayToken record
-    if (token && typeof token === 'object') {
+    if (token && typeof token === "object") {
       t = token;
     }
 
@@ -111,9 +163,9 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
     if (!t && guestPayTokenId != null) {
       const id = Number(guestPayTokenId);
       if (!Number.isInteger(id) || id <= 0) {
-        const err = new Error('Token not found');
+        const err = new Error("Token not found");
         err.status = 404;
-        err.code = 'NOT_FOUND';
+        err.code = "NOT_FOUND";
         throw err;
       }
       t = await prisma.guestPayToken.findUnique({
@@ -130,23 +182,31 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
 
       // Optional sanity check when invoiceId provided
       if (t && invoiceId != null && t.invoice && Number(invoiceId) !== Number(t.invoice.id)) {
-        const err = new Error('Token not found');
+        const err = new Error("Token not found");
         err.status = 404;
-        err.code = 'NOT_FOUND';
+        err.code = "NOT_FOUND";
         throw err;
       }
     }
 
     // Legacy path: caller passes raw token string (either tokenRaw or token as string)
     if (!t) {
-      const raw = (typeof token === 'string' && token.trim()) ? token.trim() : (typeof tokenRaw === 'string' ? tokenRaw.trim() : '');
+      const raw =
+        typeof token === "string" && token.trim()
+          ? token.trim()
+          : typeof tokenRaw === "string"
+          ? tokenRaw.trim()
+          : "";
       if (raw) {
         const tokenHash = sha256Hex(raw);
         t = await prisma.guestPayToken.findUnique({
           where: { tokenHash },
           include: {
             invoice: {
-              include: { billingAccount: { select: { providerCustomerId: true } }, merchant: { select: { id: true, name: true } } },
+              include: {
+                billingAccount: { select: { providerCustomerId: true } },
+                merchant: { select: { id: true, name: true } },
+              },
             },
           },
         });
@@ -154,9 +214,9 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
     }
 
     if (!t) {
-      const err = new Error('Token not found');
+      const err = new Error("Token not found");
       err.status = 404;
-      err.code = 'NOT_FOUND';
+      err.code = "NOT_FOUND";
       throw err;
     }
 
@@ -245,9 +305,7 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
         existingCreatedAt: existing.createdAt ? new Date(existing.createdAt).toISOString() : null,
       });
 
-      const err = new Error(
-        "A payment session already exists for this invoice. Please refresh the page."
-      );
+      const err = new Error("A payment session already exists for this invoice. Please refresh the page.");
       err.status = 409;
       err.code = "INTENT_EXISTS";
       throw err;
@@ -302,10 +360,11 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
   }
 
   /* =========================================================
-     ADMIN: Mint Guest Pay Token (Step 2)
+     ADMIN: Guest Pay Token (Billing-Security-1)
      ========================================================= */
 
   // POST /admin/invoices/:invoiceId/guest-pay-token
+  // IDP: returns existing active token if present; otherwise mints a new one.
   router.post("/admin/invoices/:invoiceId/guest-pay-token", requireAdminOrFail, async (req, res) => {
     try {
       const invoiceId = Number(req.params.invoiceId);
@@ -328,21 +387,55 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
         return sendError(res, 409, "not_payable", "Invoice is not payable");
       }
 
+      // Look for existing active token (idempotent return)
+      const existing = await prisma.guestPayToken.findFirst({
+        where: { invoiceId: inv.id, usedAt: null },
+        orderBy: { createdAt: "desc" },
+        select: { id: true, createdAt: true, expiresAt: true, usedAt: true },
+      });
+
+      if (existing && isActiveGuestPayToken(existing)) {
+        const payUrl = buildPayUrlFromTokenId(existing.id);
+
+        // PV-HOOK billing.guest_token.idempotent_returned tc=TC-GPT-10 sev=info stable=invoice:<invoiceId>
+        pvHook("billing.guest_token.idempotent_returned", {
+          tc: "TC-GPT-10",
+          sev: "info",
+          stable: `invoice:${inv.id}`,
+          invoiceId: inv.id,
+          tokenId: existing.id,
+          expiresAt: existing.expiresAt ? existing.expiresAt.toISOString() : null,
+        });
+
+        return res.json({
+          invoiceId: inv.id,
+          tokenId: existing.id,
+          payUrl: payUrl || null,
+          expiresAt: existing.expiresAt ? existing.expiresAt.toISOString() : null,
+          idempotent: true,
+        });
+      }
+
+      // Mint new token
       const raw = mintRawToken(32);
       const tokenHash = sha256Hex(raw);
       const expiresAt = computeGuestTokenExpiry({ dueAt: inv.dueAt });
 
-      // Invalidate existing active tokens by marking usedAt (no revokedAt yet)
+      // Rotate any unused tokens (safety)
       await prisma.guestPayToken.updateMany({
         where: { invoiceId: inv.id, usedAt: null },
         data: { usedAt: now() },
       });
 
-      await prisma.guestPayToken.create({
+      const created = await prisma.guestPayToken.create({
         data: { invoiceId: inv.id, tokenHash, expiresAt },
+        select: { id: true, expiresAt: true },
       });
 
-      const payUrl = `${PUBLIC_BASE}/pay/${encodeURIComponent(raw)}`;
+      // Prefer ShortPay URL; fallback to legacy raw token URL
+      const shortUrl = buildPayUrlFromTokenId(created.id);
+      const legacyUrl = `${PUBLIC_BASE}/pay/${encodeURIComponent(raw)}`;
+      const payUrl = shortUrl || legacyUrl;
 
       // PV-HOOK billing.guest_token.minted tc=TC-GPT-01 sev=info stable=invoice:<invoiceId>
       pvHook("billing.guest_token.minted", {
@@ -350,19 +443,97 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
         sev: "info",
         stable: `invoice:${inv.id}`,
         invoiceId: inv.id,
+        tokenId: created.id,
         expiresAt: expiresAt.toISOString(),
+        mode: "mint",
+        payUrlKind: shortUrl ? "shortpay" : "legacy",
       });
 
       return res.json({
         invoiceId: inv.id,
-        token: raw,
+        tokenId: created.id,
+        token: raw, // legacy/dev convenience only
         payUrl,
-        expiresAt: expiresAt.toISOString(),
+        expiresAt: (created.expiresAt || expiresAt).toISOString(),
+        idempotent: false,
       });
     } catch (e) {
       // PV-HOOK billing.guest_token.mint_failed tc=TC-GPT-02 sev=error stable=invoice:<invoiceId>
       pvHook("billing.guest_token.mint_failed", {
         tc: "TC-GPT-02",
+        sev: "error",
+        stable: `invoice:${req.params.invoiceId || "unknown"}`,
+        error: e?.message || String(e),
+      });
+      return sendError(res, 500, "server_error", e?.message || "Error");
+    }
+  });
+
+  // POST /admin/invoices/:invoiceId/guest-pay-token/regenerate
+  // Explicit rotation: revoke any existing unused tokens and mint a fresh one.
+  router.post("/admin/invoices/:invoiceId/guest-pay-token/regenerate", requireAdminOrFail, async (req, res) => {
+    try {
+      const invoiceId = Number(req.params.invoiceId);
+      if (!Number.isInteger(invoiceId) || invoiceId <= 0) {
+        return sendError(res, 400, "bad_request", "Invalid invoiceId");
+      }
+
+      const inv = await prisma.invoice.findUnique({
+        where: { id: invoiceId },
+        select: { id: true, status: true, dueAt: true, totalCents: true, amountPaidCents: true },
+      });
+
+      if (!inv) return sendError(res, 404, "not_found", "Invoice not found");
+
+      if (!(inv.status === "issued" || inv.status === "past_due")) {
+        return sendError(res, 409, "not_issuable", "Token can be minted only for issued or past_due invoices");
+      }
+      if (!isInvoicePayable(inv)) {
+        return sendError(res, 409, "not_payable", "Invoice is not payable");
+      }
+
+      const revoked = await prisma.guestPayToken.updateMany({
+        where: { invoiceId: inv.id, usedAt: null },
+        data: { usedAt: now() },
+      });
+
+      const raw = mintRawToken(32);
+      const tokenHash = sha256Hex(raw);
+      const expiresAt = computeGuestTokenExpiry({ dueAt: inv.dueAt });
+
+      const created = await prisma.guestPayToken.create({
+        data: { invoiceId: inv.id, tokenHash, expiresAt },
+        select: { id: true, expiresAt: true },
+      });
+
+      const shortUrl = buildPayUrlFromTokenId(created.id);
+      const legacyUrl = `${PUBLIC_BASE}/pay/${encodeURIComponent(raw)}`;
+      const payUrl = shortUrl || legacyUrl;
+
+      // PV-HOOK billing.guest_token.regenerated tc=TC-GPT-11 sev=warn stable=invoice:<invoiceId>
+      pvHook("billing.guest_token.regenerated", {
+        tc: "TC-GPT-11",
+        sev: "warn",
+        stable: `invoice:${inv.id}`,
+        invoiceId: inv.id,
+        tokenId: created.id,
+        revokedCount: revoked?.count || 0,
+        expiresAt: expiresAt.toISOString(),
+        payUrlKind: shortUrl ? "shortpay" : "legacy",
+      });
+
+      return res.json({
+        invoiceId: inv.id,
+        tokenId: created.id,
+        token: raw, // legacy/dev convenience only
+        payUrl,
+        expiresAt: (created.expiresAt || expiresAt).toISOString(),
+        regenerated: true,
+        revokedCount: revoked?.count || 0,
+      });
+    } catch (e) {
+      pvHook("billing.guest_token.regenerate_failed", {
+        tc: "TC-GPT-12",
         sev: "error",
         stable: `invoice:${req.params.invoiceId || "unknown"}`,
         error: e?.message || String(e),
@@ -382,15 +553,18 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
       const tok = await prisma.guestPayToken.findFirst({
         where: { invoiceId, usedAt: null },
         orderBy: { createdAt: "desc" },
-        select: { id: true, createdAt: true, expiresAt: true },
+        select: { id: true, createdAt: true, expiresAt: true, usedAt: true },
       });
+
+      const active = Boolean(tok && isActiveGuestPayToken(tok));
 
       return res.json({
         invoiceId,
-        active: Boolean(tok),
+        active,
         tokenId: tok?.id || null,
         createdAt: tok?.createdAt ? tok.createdAt.toISOString() : null,
         expiresAt: tok?.expiresAt ? tok.expiresAt.toISOString() : null,
+        payUrl: active && tok ? buildPayUrlFromTokenId(tok.id) || null : null,
       });
     } catch (e) {
       return sendError(res, 500, "server_error", e?.message || "Error");
