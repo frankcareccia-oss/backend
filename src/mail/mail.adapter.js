@@ -1,17 +1,26 @@
 // backend/src/mail/mail.adapter.js
 // Pluggable adapter. DEV-safe default. No vendor lock.
 //
-// Mail-Prod-1:
-// - Add SMTP transport behind MAIL_MODE=smtp
-// - Preserve DEV sink behavior (MAIL_MODE=dev default)
-// - Safety: mail failures never break API flows (best-effort send)
-// - Keep ENABLE_REAL_EMAIL for backwards compatibility but prefer MAIL_MODE.
+// Baseline preserved:
+// - MAIL_MODE=dev|smtp
+// - Always write DEV artifact (best-effort)
+// - SMTP best-effort; failures never break API flows
+// - Emits pvMailHook events
+//
+// Mail-Flow-1 additions (controlled):
+// - Optional MailEvent persistence (requires input.meta.prisma)
+// - Optional idempotency skip for auto sends with idempotencyKey (requires prisma)
+//
+// Mail-Flow-1 FIX:
+// - Never serialize prisma (or other non-JSON-safe objects) into DEV artifacts.
 
 const { MAIL_CATEGORIES, assertValidMailCategory } = require("./mail.categories");
 const { sendViaDevTransport } = require("./mail.dev.transport");
 const { sendViaSmtpTransport } = require("./mail.smtp.transport");
 const { pvMailHook } = require("./mail.hooks");
 const { renderTemplate } = require("./templateRegistry");
+
+const { hasSentByKey, createAttempt, markSent, markFailed } = require("./mail.events");
 
 function normalizeTo(to) {
   if (Array.isArray(to)) return to.map(String);
@@ -25,10 +34,6 @@ function assertNonEmptyString(name, value) {
 }
 
 function getMailMode() {
-  // Preferred:
-  //   MAIL_MODE=dev | smtp
-  // Back-compat:
-  //   ENABLE_REAL_EMAIL=true  => smtp
   const mode = String(process.env.MAIL_MODE || "").trim().toLowerCase();
   if (mode === "smtp") return "smtp";
   if (mode === "dev") return "dev";
@@ -43,18 +48,70 @@ function summarizeErr(e) {
   return e?.message || String(e);
 }
 
+function safeString(v) {
+  if (v === undefined || v === null) return "";
+  return String(v);
+}
+
+function getMeta(input) {
+  const meta = input && input.meta && typeof input.meta === "object" ? input.meta : {};
+  return meta;
+}
+
+/**
+ * Make meta safe for JSON.stringify in DEV artifacts.
+ * - Removes meta.prisma
+ * - Replaces any non-primitive values with a short string marker
+ */
+function sanitizeMetaForJson(meta) {
+  if (!meta || typeof meta !== "object") return {};
+
+  const out = {};
+  for (const [k, v] of Object.entries(meta)) {
+    if (k === "prisma") continue;
+
+    const t = typeof v;
+    if (v === null || t === "string" || t === "number" || t === "boolean") {
+      out[k] = v;
+      continue;
+    }
+
+    if (Array.isArray(v)) {
+      out[k] = v.map((x) => {
+        const tx = typeof x;
+        if (x === null || tx === "string" || tx === "number" || tx === "boolean") return x;
+        return "[nonjson]";
+      });
+      continue;
+    }
+
+    out[k] = "[nonjson]";
+  }
+  return out;
+}
+
+function getMailFlow(meta) {
+  const triggerType = safeString(meta.triggerType || meta.mailTriggerType || "manual"); // "auto" | "manual"
+  const idempotencyKey = meta.idempotencyKey ? safeString(meta.idempotencyKey) : null;
+
+  const actorRole = safeString(meta.actorRole || (triggerType === "auto" ? "system" : "operator") || "operator");
+  const actorUserId =
+    meta.actorUserId !== undefined && meta.actorUserId !== null ? Number(meta.actorUserId) : null;
+
+  const invoiceId =
+    meta.invoiceId !== undefined && meta.invoiceId !== null ? Number(meta.invoiceId) : null;
+  const paymentId =
+    meta.paymentId !== undefined && meta.paymentId !== null ? Number(meta.paymentId) : null;
+
+  const prisma = meta.prisma || null;
+
+  return { triggerType, idempotencyKey, actorRole, actorUserId, invoiceId, paymentId, prisma };
+}
+
 /**
  * Main entrypoint
- * @param {object} input
- * @param {string} input.category - invoice|support|marketing|system
- * @param {string|string[]} input.to
- * @param {string} input.subject
- * @param {string} input.template
- * @param {object} input.data
- * @param {object} input.meta
  */
 async function sendMail(input) {
-  // Hooks must never throw; adapter can throw for validation.
   pvMailHook("mail.send.requested", {
     category: input && input.category,
     template: input && input.template,
@@ -71,7 +128,41 @@ async function sendMail(input) {
   assertNonEmptyString("subject", input.subject);
   assertNonEmptyString("template", input.template);
 
-  // Attempt template rendering for DEV artifacts and SMTP subject/text. Never blocks send.
+  const meta = getMeta(input);
+  const flow = getMailFlow(meta);
+  const metaSafe = sanitizeMetaForJson(meta);
+
+  // Idempotency skip (auto only)
+  if (flow.prisma && flow.triggerType === "auto" && flow.idempotencyKey) {
+    try {
+      const alreadySent = await hasSentByKey({
+        prisma: flow.prisma,
+        triggerType: flow.triggerType,
+        idempotencyKey: flow.idempotencyKey,
+      });
+
+      if (alreadySent) {
+        pvMailHook("mail.send.skipped_idempotent", {
+          tc: "TC-MAIL-FLOW-10",
+          sev: "info",
+          stable: `mailkey:${flow.idempotencyKey}`,
+          category,
+          template: String(input.template),
+        });
+
+        return { ok: true, skipped: true, transport: "idempotent_skip" };
+      }
+    } catch (e) {
+      pvMailHook("mail.idempotency.check_failed", {
+        tc: "TC-MAIL-FLOW-11",
+        sev: "warn",
+        stable: flow.idempotencyKey ? `mailkey:${flow.idempotencyKey}` : "mailkey:none",
+        error: summarizeErr(e),
+      });
+    }
+  }
+
+  // Template rendering (best-effort)
   let rendered = null;
   try {
     rendered = renderTemplate(String(input.template), input.data || {});
@@ -90,14 +181,13 @@ async function sendMail(input) {
     to,
     subject: String(input.subject),
     template: String(input.template),
-    rendered, // { subject, text } or null
+    rendered,
     data: input.data || {},
-    meta: input.meta || {},
+    meta: metaSafe, // SAFE for JSON.stringify in dev transport
   };
 
   const mode = getMailMode();
 
-  // PV-HOOK mail.send.attempt tc=TC-MAIL-01 sev=info stable=mailmode:<mode>
   pvMailHook("mail.send.attempt", {
     tc: "TC-MAIL-01",
     sev: "info",
@@ -108,8 +198,35 @@ async function sendMail(input) {
     toCount: msg.to.length,
   });
 
-  // Always write DEV artifacts (so QA/support can inspect), even when SMTP is enabled.
-  // Failure to write dev artifact must never block.
+  // Create MailEvent attempt (best-effort)
+  let mailEventId = null;
+  if (flow.prisma) {
+    try {
+      const ev = await createAttempt({
+        prisma: flow.prisma,
+        category: category,
+        triggerType: flow.triggerType,
+        idempotencyKey: flow.idempotencyKey,
+        invoiceId: flow.invoiceId,
+        paymentId: flow.paymentId,
+        actorRole: flow.actorRole,
+        actorUserId: flow.actorUserId,
+        template: msg.template,
+        toEmail: msg.to[0] ? String(msg.to[0]) : "",
+      });
+      mailEventId = ev && ev.id ? ev.id : null;
+    } catch (e) {
+      pvMailHook("mail.event.create_failed", {
+        tc: "TC-MAIL-FLOW-12",
+        sev: "warn",
+        stable: flow.idempotencyKey ? `mailkey:${flow.idempotencyKey}` : "mailkey:none",
+        error: summarizeErr(e),
+      });
+      mailEventId = null;
+    }
+  }
+
+  // Always write DEV artifact (best-effort)
   try {
     await sendViaDevTransport(msg);
   } catch (e) {
@@ -121,7 +238,6 @@ async function sendMail(input) {
     });
   }
 
-  // Best-effort sending
   if (mode === "smtp") {
     try {
       const result = await sendViaSmtpTransport(msg);
@@ -137,6 +253,24 @@ async function sendMail(input) {
         messageId: result.messageId || null,
       });
 
+      if (flow.prisma && mailEventId) {
+        try {
+          await markSent({
+            prisma: flow.prisma,
+            mailEventId,
+            transport: result.transport || "smtp",
+            providerMessageId: result.messageId || null,
+          });
+        } catch (e) {
+          pvMailHook("mail.event.mark_sent_failed", {
+            tc: "TC-MAIL-FLOW-13",
+            sev: "warn",
+            stable: `mailEvent:${mailEventId}`,
+            error: summarizeErr(e),
+          });
+        }
+      }
+
       return result;
     } catch (e) {
       pvMailHook("mail.send.failure", {
@@ -148,7 +282,24 @@ async function sendMail(input) {
         error: summarizeErr(e),
       });
 
-      // Critical safety: DO NOT break API flows on mail failure.
+      if (flow.prisma && mailEventId) {
+        try {
+          await markFailed({
+            prisma: flow.prisma,
+            mailEventId,
+            error: summarizeErr(e),
+            transport: "smtp",
+          });
+        } catch (e2) {
+          pvMailHook("mail.event.mark_failed_failed", {
+            tc: "TC-MAIL-FLOW-14",
+            sev: "warn",
+            stable: `mailEvent:${mailEventId}`,
+            error: summarizeErr(e2),
+          });
+        }
+      }
+
       return {
         ok: false,
         transport: "smtp",
@@ -157,7 +308,6 @@ async function sendMail(input) {
     }
   }
 
-  // Default: DEV sink only (already written above); return a successful "dev" result
   pvMailHook("mail.send.completed", {
     tc: "TC-MAIL-05",
     sev: "info",
@@ -167,10 +317,25 @@ async function sendMail(input) {
     ok: true,
   });
 
-  return {
-    ok: true,
-    transport: "dev",
-  };
+  if (flow.prisma && mailEventId) {
+    try {
+      await markSent({
+        prisma: flow.prisma,
+        mailEventId,
+        transport: "dev",
+        providerMessageId: null,
+      });
+    } catch (e) {
+      pvMailHook("mail.event.mark_sent_failed", {
+        tc: "TC-MAIL-FLOW-13",
+        sev: "warn",
+        stable: `mailEvent:${mailEventId}`,
+        error: summarizeErr(e),
+      });
+    }
+  }
+
+  return { ok: true, transport: "dev" };
 }
 
 module.exports = {

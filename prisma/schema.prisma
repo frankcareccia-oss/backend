@@ -17,7 +17,7 @@ model User {
   /// Global role used to route after login (Option 1).
   systemRole SystemRole @default(user)
 
-  tokenVersion      Int       @default(0)
+  tokenVersion      Int                  @default(0)
   passwordUpdatedAt DateTime?
   resetTokens       PasswordResetToken[]
 
@@ -26,14 +26,18 @@ model User {
   updatedAt DateTime     @updatedAt
 
   merchantUsers MerchantUser[]
+
+  // Mail events (Mail-Flow-1)
+  mailEvents MailEvent[] @relation("MailEventActor")
 }
+
 model PasswordResetToken {
-  id        Int      @id @default(autoincrement())
+  id        Int       @id @default(autoincrement())
   userId    Int
-  tokenHash String   @unique @db.VarChar(255)
+  tokenHash String    @unique @db.VarChar(255)
   expiresAt DateTime
   usedAt    DateTime?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -243,39 +247,9 @@ model Visit {
   qr         StoreQr?    @relation(fields: [qrId], references: [id], onDelete: Restrict)
   store      Store       @relation(fields: [storeId], references: [id])
 
-  // POS-5A extensions (additive, safe)
-  posVisitId         String? @unique @db.VarChar(64)
-  posEventId         String? @db.VarChar(64)
-  posIdempotencyKey  String? @unique @db.VarChar(128)
-  posIdentifier      String? @db.VarChar(320)
-
   @@index([storeId, createdAt])
   @@index([consumerId, createdAt])
   @@index([merchantId, createdAt])
-  @@index([posVisitId])
-  @@index([posIdempotencyKey])
-}
-
-model PosReward {
-  // POS reward id is the stable external id: rew_<ulid>
-  id String @id @db.VarChar(64)
-
-  // Optional correlation to POS visit id (vis_<ulid>)
-  posVisitId String? @db.VarChar(64)
-
-  eventId        String? @db.VarChar(64)
-  idempotencyKey String  @unique @db.VarChar(128)
-
-  merchantId Int
-  storeId    Int
-  userId     Int
-
-  identifier  String @db.VarChar(320)
-  payloadJson Json?
-  createdAt   DateTime @default(now())
-
-  @@index([merchantId, storeId, createdAt])
-  @@index([posVisitId])
 }
 
 /**
@@ -296,10 +270,10 @@ model BillingAccount {
   providerCustomerId String?         @db.VarChar(255)
 
   // Billing Contact (may be external)
-  billingEmail       String  @db.VarChar(320)
-  billingName        String? @db.VarChar(200)
-  billingPhone       String? @db.VarChar(32)
-  billingAddressJson Json?
+  billingEmail        String  @db.VarChar(320)
+  billingName         String? @db.VarChar(200)
+  billingPhone        String? @db.VarChar(32)
+  billingAddressJson  Json?
   policyOverridesJson Json?
 
   status BillingAccountStatus @default(active)
@@ -382,6 +356,7 @@ model Invoice {
   lineItems      InvoiceLineItem[]
   payments       Payment[]
   guestPayTokens GuestPayToken[]
+  mailEvents     MailEvent[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -428,6 +403,8 @@ model Payment {
   paymentMethodId Int?
   paymentMethod   PaymentMethod? @relation(fields: [paymentMethodId], references: [id])
 
+  mailEvents MailEvent[]
+
   createdAt       DateTime @default(now())
   statusUpdatedAt DateTime @default(now())
 
@@ -449,6 +426,56 @@ model GuestPayToken {
 
   @@index([invoiceId])
   @@index([expiresAt])
+}
+
+/**
+ * ===============================
+ * Mail domain (Mail-Flow-1)
+ * ===============================
+ */
+
+model MailEvent {
+  id Int @id @default(autoincrement())
+
+  // Classification
+  category    String          @db.VarChar(80)
+  triggerType MailTriggerType
+
+  // Idempotency: auto sends must set this. manual sends may leave null.
+  idempotencyKey String? @db.VarChar(255)
+
+  // Optional linkages
+  invoiceId Int?
+  invoice   Invoice? @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+
+  paymentId Int?
+  payment   Payment? @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+
+  // Who initiated (system has null actorUserId)
+  actorRole   String @db.VarChar(40)
+  actorUserId Int?
+  actorUser   User?  @relation("MailEventActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  // Mail content + addressing
+  template String @db.VarChar(120)
+  toEmail  String @db.VarChar(320)
+
+  // Outcome
+  status            MailEventStatus @default(failed)
+  error             String?
+  transport         String?         @db.VarChar(40)
+  providerMessageId String?         @db.VarChar(255)
+
+  createdAt DateTime  @default(now())
+  sentAt    DateTime?
+
+  // Uniqueness: allows multiple NULL idempotencyKey values (Postgres)
+  @@unique([triggerType, idempotencyKey])
+  @@index([category])
+  @@index([invoiceId])
+  @@index([paymentId])
+  @@index([actorUserId])
+  @@index([createdAt])
 }
 
 /**
@@ -494,7 +521,7 @@ enum VisitSource {
  * Billing enums (v2.02.1)
  * ===============================
  */
- 
+
 enum BillingProvider {
   stripe
   manual
@@ -538,4 +565,20 @@ enum PaymentStatus {
   succeeded
   failed
   refunded
+}
+
+/**
+ * ===============================
+ * Mail enums (Mail-Flow-1)
+ * ===============================
+ */
+
+enum MailTriggerType {
+  auto
+  manual
+}
+
+enum MailEventStatus {
+  sent
+  failed
 }
