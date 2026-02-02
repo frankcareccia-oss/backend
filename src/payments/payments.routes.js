@@ -3,6 +3,7 @@ const express = require("express");
 const crypto = require("crypto");
 const { mintRawToken, sha256Hex, computeGuestTokenExpiry, now } = require("./guestToken");
 const { createPaymentIntent, verifyWebhook } = require("./stripe");
+const { ensureActiveGuestPayToken } = require("../billing/guestPayToken.service");
 
 /**
  * Payments + Guest Pay routes (NO-MIGRATIONS MODE)
@@ -365,6 +366,8 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
 
   // POST /admin/invoices/:invoiceId/guest-pay-token
   // IDP: returns existing active token if present; otherwise mints a new one.
+  // POST /admin/invoices/:invoiceId/guest-pay-token
+  // IDP: returns existing active token if present; otherwise mints a new one.
   router.post("/admin/invoices/:invoiceId/guest-pay-token", requireAdminOrFail, async (req, res) => {
     try {
       const invoiceId = Number(req.params.invoiceId);
@@ -372,91 +375,40 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
         return sendError(res, 400, "bad_request", "Invalid invoiceId");
       }
 
-      const inv = await prisma.invoice.findUnique({
-        where: { id: invoiceId },
-        select: { id: true, status: true, dueAt: true, totalCents: true, amountPaidCents: true },
+      const result = await ensureActiveGuestPayToken({
+        prisma,
+        invoiceId,
+        publicBaseUrl: PUBLIC_BASE,
+        forceRotate: false,
       });
 
-      if (!inv) return sendError(res, 404, "not_found", "Invoice not found");
-
-      // Only for payable, issued invoices
-      if (!(inv.status === "issued" || inv.status === "past_due")) {
-        return sendError(res, 409, "not_issuable", "Token can be minted only for issued or past_due invoices");
-      }
-      if (!isInvoicePayable(inv)) {
-        return sendError(res, 409, "not_payable", "Invoice is not payable");
-      }
-
-      // Look for existing active token (idempotent return)
-      const existing = await prisma.guestPayToken.findFirst({
-        where: { invoiceId: inv.id, usedAt: null },
-        orderBy: { createdAt: "desc" },
-        select: { id: true, createdAt: true, expiresAt: true, usedAt: true },
-      });
-
-      if (existing && isActiveGuestPayToken(existing)) {
-        const payUrl = buildPayUrlFromTokenId(existing.id);
-
+      if (result && result.idempotent) {
         // PV-HOOK billing.guest_token.idempotent_returned tc=TC-GPT-10 sev=info stable=invoice:<invoiceId>
         pvHook("billing.guest_token.idempotent_returned", {
           tc: "TC-GPT-10",
           sev: "info",
-          stable: `invoice:${inv.id}`,
-          invoiceId: inv.id,
-          tokenId: existing.id,
-          expiresAt: existing.expiresAt ? existing.expiresAt.toISOString() : null,
+          stable: `invoice:${invoiceId}`,
+          invoiceId,
+          tokenId: result.tokenId,
+          expiresAt: result.expiresAt || null,
         });
 
-        return res.json({
-          invoiceId: inv.id,
-          tokenId: existing.id,
-          payUrl: payUrl || null,
-          expiresAt: existing.expiresAt ? existing.expiresAt.toISOString() : null,
-          idempotent: true,
-        });
+        return res.json(result);
       }
-
-      // Mint new token
-      const raw = mintRawToken(32);
-      const tokenHash = sha256Hex(raw);
-      const expiresAt = computeGuestTokenExpiry({ dueAt: inv.dueAt });
-
-      // Rotate any unused tokens (safety)
-      await prisma.guestPayToken.updateMany({
-        where: { invoiceId: inv.id, usedAt: null },
-        data: { usedAt: now() },
-      });
-
-      const created = await prisma.guestPayToken.create({
-        data: { invoiceId: inv.id, tokenHash, expiresAt },
-        select: { id: true, expiresAt: true },
-      });
-
-      // Prefer ShortPay URL; fallback to legacy raw token URL
-      const shortUrl = buildPayUrlFromTokenId(created.id);
-      const legacyUrl = `${PUBLIC_BASE}/pay/${encodeURIComponent(raw)}`;
-      const payUrl = shortUrl || legacyUrl;
 
       // PV-HOOK billing.guest_token.minted tc=TC-GPT-01 sev=info stable=invoice:<invoiceId>
       pvHook("billing.guest_token.minted", {
         tc: "TC-GPT-01",
         sev: "info",
-        stable: `invoice:${inv.id}`,
-        invoiceId: inv.id,
-        tokenId: created.id,
-        expiresAt: expiresAt.toISOString(),
+        stable: `invoice:${invoiceId}`,
+        invoiceId,
+        tokenId: result.tokenId,
+        expiresAt: result.expiresAt,
         mode: "mint",
-        payUrlKind: shortUrl ? "shortpay" : "legacy",
+        payUrlKind: result.payUrlKind || null,
       });
 
-      return res.json({
-        invoiceId: inv.id,
-        tokenId: created.id,
-        token: raw, // legacy/dev convenience only
-        payUrl,
-        expiresAt: (created.expiresAt || expiresAt).toISOString(),
-        idempotent: false,
-      });
+      return res.json(result);
     } catch (e) {
       // PV-HOOK billing.guest_token.mint_failed tc=TC-GPT-02 sev=error stable=invoice:<invoiceId>
       pvHook("billing.guest_token.mint_failed", {
@@ -471,6 +423,8 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
 
   // POST /admin/invoices/:invoiceId/guest-pay-token/regenerate
   // Explicit rotation: revoke any existing unused tokens and mint a fresh one.
+  // POST /admin/invoices/:invoiceId/guest-pay-token/regenerate
+  // Explicit rotation: revoke any existing unused tokens and mint a fresh one.
   router.post("/admin/invoices/:invoiceId/guest-pay-token/regenerate", requireAdminOrFail, async (req, res) => {
     try {
       const invoiceId = Number(req.params.invoiceId);
@@ -478,59 +432,26 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
         return sendError(res, 400, "bad_request", "Invalid invoiceId");
       }
 
-      const inv = await prisma.invoice.findUnique({
-        where: { id: invoiceId },
-        select: { id: true, status: true, dueAt: true, totalCents: true, amountPaidCents: true },
+      const result = await ensureActiveGuestPayToken({
+        prisma,
+        invoiceId,
+        publicBaseUrl: PUBLIC_BASE,
+        forceRotate: true,
       });
-
-      if (!inv) return sendError(res, 404, "not_found", "Invoice not found");
-
-      if (!(inv.status === "issued" || inv.status === "past_due")) {
-        return sendError(res, 409, "not_issuable", "Token can be minted only for issued or past_due invoices");
-      }
-      if (!isInvoicePayable(inv)) {
-        return sendError(res, 409, "not_payable", "Invoice is not payable");
-      }
-
-      const revoked = await prisma.guestPayToken.updateMany({
-        where: { invoiceId: inv.id, usedAt: null },
-        data: { usedAt: now() },
-      });
-
-      const raw = mintRawToken(32);
-      const tokenHash = sha256Hex(raw);
-      const expiresAt = computeGuestTokenExpiry({ dueAt: inv.dueAt });
-
-      const created = await prisma.guestPayToken.create({
-        data: { invoiceId: inv.id, tokenHash, expiresAt },
-        select: { id: true, expiresAt: true },
-      });
-
-      const shortUrl = buildPayUrlFromTokenId(created.id);
-      const legacyUrl = `${PUBLIC_BASE}/pay/${encodeURIComponent(raw)}`;
-      const payUrl = shortUrl || legacyUrl;
 
       // PV-HOOK billing.guest_token.regenerated tc=TC-GPT-11 sev=warn stable=invoice:<invoiceId>
       pvHook("billing.guest_token.regenerated", {
         tc: "TC-GPT-11",
         sev: "warn",
-        stable: `invoice:${inv.id}`,
-        invoiceId: inv.id,
-        tokenId: created.id,
-        revokedCount: revoked?.count || 0,
-        expiresAt: expiresAt.toISOString(),
-        payUrlKind: shortUrl ? "shortpay" : "legacy",
+        stable: `invoice:${invoiceId}`,
+        invoiceId,
+        tokenId: result.tokenId,
+        revokedCount: result.revokedCount || 0,
+        expiresAt: result.expiresAt,
+        payUrlKind: result.payUrlKind || null,
       });
 
-      return res.json({
-        invoiceId: inv.id,
-        tokenId: created.id,
-        token: raw, // legacy/dev convenience only
-        payUrl,
-        expiresAt: (created.expiresAt || expiresAt).toISOString(),
-        regenerated: true,
-        revokedCount: revoked?.count || 0,
-      });
+      return res.json(result);
     } catch (e) {
       pvHook("billing.guest_token.regenerate_failed", {
         tc: "TC-GPT-12",
