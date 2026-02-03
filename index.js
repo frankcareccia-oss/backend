@@ -16,6 +16,7 @@ const jwt = require("jsonwebtoken");
 
 const { prisma } = require("./src/db/prisma");
 const { startInvoiceMailRunScheduler } = require("./src/jobs/invoiceMailRun.scheduler");
+const { startInvoiceReminderMailRunScheduler } = require("./src/jobs/invoiceReminderMailRun.scheduler");
 const { normalizePhone } = require("./utils/phone");
 
 const app = express();
@@ -2507,6 +2508,12 @@ app.post("/scan", scanLimiter, async (req, res) => {
 
 // Mail-Flow-3: Invoice Mail Run Scheduler (env-guarded)
 startInvoiceMailRunScheduler({
+  prisma,
+  publicBaseUrl: process.env.PUBLIC_BASE_URL,
+});
+
+// Mail-Flow-4: Invoice Reminder Scheduler (env-guarded)
+startInvoiceReminderMailRunScheduler({
   prisma,
   publicBaseUrl: process.env.PUBLIC_BASE_URL,
 });
