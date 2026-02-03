@@ -1,5 +1,4 @@
 ﻿require("dotenv").config();
-
 const { registerPaymentsRoutes } = require("./src/payments/payments.routes");
 const { registerPosRoutes } = require("./src/pos/pos.routes");
 const { registerPosProvisionRoutes } = require("./src/pos/pos.provision.routes");
@@ -16,6 +15,7 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 
 const { prisma } = require("./src/db/prisma");
+const { startInvoiceMailRunScheduler } = require("./src/jobs/invoiceMailRun.scheduler");
 const { normalizePhone } = require("./utils/phone");
 
 const app = express();
@@ -2503,6 +2503,13 @@ app.post("/scan", scanLimiter, async (req, res) => {
 /* -----------------------------
    Server
 -------------------------------- */
+
+
+// Mail-Flow-3: Invoice Mail Run Scheduler (env-guarded)
+startInvoiceMailRunScheduler({
+  prisma,
+  publicBaseUrl: process.env.PUBLIC_BASE_URL,
+});
 
 app.listen(PORT, () => {
   console.log(`PerkValet backend listening on http://localhost:${PORT}`);
