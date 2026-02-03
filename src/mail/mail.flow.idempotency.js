@@ -1,10 +1,18 @@
-﻿// backend/src/payments/payments.routes.js
+// backend/src/payments/payments.routes.js
 const express = require("express");
 const crypto = require("crypto");
 const { mintRawToken, sha256Hex, computeGuestTokenExpiry, now } = require("./guestToken");
 const { createPaymentIntent, verifyWebhook } = require("./stripe");
-const { ensureActiveGuestPayToken } = require("../billing/guestPayToken.service");
-const { sendPaymentReceiptEmail } = require("../jobs/paymentReceiptMail.job");
+
+// Mail-Flow-1
+const { sendOnce } = require("../mail/mail.flow.dispatch");
+const {
+  keyGuestPayMint,
+  keyGuestPayRegenerated,
+  keyPaymentSucceeded,
+  keyPaymentFailed,
+} = require("../mail/mail.flow.idempotency");
+const { MAIL_CATEGORIES } = require("../mail/mail.adapter");
 
 /**
  * Payments + Guest Pay routes (NO-MIGRATIONS MODE)
@@ -56,6 +64,29 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
     /\/$/,
     ""
   );
+
+  function safeEmail(v) {
+    const s = String(v ?? "").trim();
+    // Super-light sanity check; do not over-validate.
+    if (!s) return null;
+    if (!s.includes("@")) return null;
+    return s;
+  }
+
+  async function bestEffortSendMail(args) {
+    // Safety: mail failures never break API flows.
+    try {
+      return await sendOnce(args);
+    } catch (e) {
+      pvHook("mail.flow.failure_nonblocking", {
+        tc: "TC-MAIL-FLOW-99",
+        sev: "warn",
+        stable: "mailflow:nonblocking",
+        error: e?.message || String(e),
+      });
+      return { ok: false, nonblocking: true, error: e?.message || String(e) };
+    }
+  }
 
   // ---------- ShortPay helpers (NO-MIGRATIONS) ----------
   // Build a stable public pay URL without exposing raw tokens.
@@ -367,8 +398,7 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
 
   // POST /admin/invoices/:invoiceId/guest-pay-token
   // IDP: returns existing active token if present; otherwise mints a new one.
-  // POST /admin/invoices/:invoiceId/guest-pay-token
-  // IDP: returns existing active token if present; otherwise mints a new one.
+  // Mail-Flow-1: optional notifyEmail in body triggers idempotent email.
   router.post("/admin/invoices/:invoiceId/guest-pay-token", requireAdminOrFail, async (req, res) => {
     try {
       const invoiceId = Number(req.params.invoiceId);
@@ -376,40 +406,137 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
         return sendError(res, 400, "bad_request", "Invalid invoiceId");
       }
 
-      const result = await ensureActiveGuestPayToken({
-        prisma,
-        invoiceId,
-        publicBaseUrl: PUBLIC_BASE,
-        forceRotate: false,
+      const inv = await prisma.invoice.findUnique({
+        where: { id: invoiceId },
+        select: { id: true, status: true, dueAt: true, totalCents: true, amountPaidCents: true },
       });
 
-      if (result && result.idempotent) {
+      if (!inv) return sendError(res, 404, "not_found", "Invoice not found");
+
+      // Only for payable, issued invoices
+      if (!(inv.status === "issued" || inv.status === "past_due")) {
+        return sendError(res, 409, "not_issuable", "Token can be minted only for issued or past_due invoices");
+      }
+      if (!isInvoicePayable(inv)) {
+        return sendError(res, 409, "not_payable", "Invoice is not payable");
+      }
+
+      const notifyEmail = safeEmail(req.body?.notifyEmail);
+
+      // Look for existing active token (idempotent return)
+      const existing = await prisma.guestPayToken.findFirst({
+        where: { invoiceId: inv.id, usedAt: null },
+        orderBy: { createdAt: "desc" },
+        select: { id: true, createdAt: true, expiresAt: true, usedAt: true },
+      });
+
+      if (existing && isActiveGuestPayToken(existing)) {
+        const payUrl = buildPayUrlFromTokenId(existing.id);
+
         // PV-HOOK billing.guest_token.idempotent_returned tc=TC-GPT-10 sev=info stable=invoice:<invoiceId>
         pvHook("billing.guest_token.idempotent_returned", {
           tc: "TC-GPT-10",
           sev: "info",
-          stable: `invoice:${invoiceId}`,
-          invoiceId,
-          tokenId: result.tokenId,
-          expiresAt: result.expiresAt || null,
+          stable: `invoice:${inv.id}`,
+          invoiceId: inv.id,
+          tokenId: existing.id,
+          expiresAt: existing.expiresAt ? existing.expiresAt.toISOString() : null,
         });
 
-        return res.json(result);
+        // Mail-Flow-1: optional notify
+        if (notifyEmail && payUrl) {
+          await bestEffortSendMail({
+            idempotencyKey: keyGuestPayMint({ invoiceId: inv.id, tokenId: existing.id }),
+            category: MAIL_CATEGORIES.INVOICE,
+            to: notifyEmail,
+            subject: `Invoice ${inv.id} payment link`,
+            template: "invoice.guest_pay.stub",
+            data: {
+              invoiceId: inv.id,
+              payUrl,
+              expiresAt: existing.expiresAt ? existing.expiresAt.toISOString() : null,
+            },
+            meta: {
+              flow: "guest_pay_token_mint",
+              tokenId: existing.id,
+              payUrl,
+            },
+          });
+        }
+
+        return res.json({
+          invoiceId: inv.id,
+          tokenId: existing.id,
+          payUrl: payUrl || null,
+          expiresAt: existing.expiresAt ? existing.expiresAt.toISOString() : null,
+          idempotent: true,
+          notifyEmail: notifyEmail || null,
+        });
       }
+
+      // Mint new token
+      const raw = mintRawToken(32);
+      const tokenHash = sha256Hex(raw);
+      const expiresAt = computeGuestTokenExpiry({ dueAt: inv.dueAt });
+
+      // Rotate any unused tokens (safety)
+      await prisma.guestPayToken.updateMany({
+        where: { invoiceId: inv.id, usedAt: null },
+        data: { usedAt: now() },
+      });
+
+      const created = await prisma.guestPayToken.create({
+        data: { invoiceId: inv.id, tokenHash, expiresAt },
+        select: { id: true, expiresAt: true },
+      });
+
+      // Prefer ShortPay URL; fallback to legacy raw token URL
+      const shortUrl = buildPayUrlFromTokenId(created.id);
+      const legacyUrl = `${PUBLIC_BASE}/pay/${encodeURIComponent(raw)}`;
+      const payUrl = shortUrl || legacyUrl;
 
       // PV-HOOK billing.guest_token.minted tc=TC-GPT-01 sev=info stable=invoice:<invoiceId>
       pvHook("billing.guest_token.minted", {
         tc: "TC-GPT-01",
         sev: "info",
-        stable: `invoice:${invoiceId}`,
-        invoiceId,
-        tokenId: result.tokenId,
-        expiresAt: result.expiresAt,
+        stable: `invoice:${inv.id}`,
+        invoiceId: inv.id,
+        tokenId: created.id,
+        expiresAt: expiresAt.toISOString(),
         mode: "mint",
-        payUrlKind: result.payUrlKind || null,
+        payUrlKind: shortUrl ? "shortpay" : "legacy",
       });
 
-      return res.json(result);
+      // Mail-Flow-1: optional notify
+      if (notifyEmail && payUrl) {
+        await bestEffortSendMail({
+          idempotencyKey: keyGuestPayMint({ invoiceId: inv.id, tokenId: created.id }),
+          category: MAIL_CATEGORIES.INVOICE,
+          to: notifyEmail,
+          subject: `Invoice ${inv.id} payment link`,
+          template: "invoice.guest_pay.stub",
+          data: {
+            invoiceId: inv.id,
+            payUrl,
+            expiresAt: (created.expiresAt || expiresAt).toISOString(),
+          },
+          meta: {
+            flow: "guest_pay_token_mint",
+            tokenId: created.id,
+            payUrl,
+          },
+        });
+      }
+
+      return res.json({
+        invoiceId: inv.id,
+        tokenId: created.id,
+        token: raw, // legacy/dev convenience only
+        payUrl,
+        expiresAt: (created.expiresAt || expiresAt).toISOString(),
+        idempotent: false,
+        notifyEmail: notifyEmail || null,
+      });
     } catch (e) {
       // PV-HOOK billing.guest_token.mint_failed tc=TC-GPT-02 sev=error stable=invoice:<invoiceId>
       pvHook("billing.guest_token.mint_failed", {
@@ -424,8 +551,7 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
 
   // POST /admin/invoices/:invoiceId/guest-pay-token/regenerate
   // Explicit rotation: revoke any existing unused tokens and mint a fresh one.
-  // POST /admin/invoices/:invoiceId/guest-pay-token/regenerate
-  // Explicit rotation: revoke any existing unused tokens and mint a fresh one.
+  // Mail-Flow-1: optional notifyEmail in body triggers idempotent email for the NEW token.
   router.post("/admin/invoices/:invoiceId/guest-pay-token/regenerate", requireAdminOrFail, async (req, res) => {
     try {
       const invoiceId = Number(req.params.invoiceId);
@@ -433,26 +559,85 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
         return sendError(res, 400, "bad_request", "Invalid invoiceId");
       }
 
-      const result = await ensureActiveGuestPayToken({
-        prisma,
-        invoiceId,
-        publicBaseUrl: PUBLIC_BASE,
-        forceRotate: true,
+      const inv = await prisma.invoice.findUnique({
+        where: { id: invoiceId },
+        select: { id: true, status: true, dueAt: true, totalCents: true, amountPaidCents: true },
       });
+
+      if (!inv) return sendError(res, 404, "not_found", "Invoice not found");
+
+      if (!(inv.status === "issued" || inv.status === "past_due")) {
+        return sendError(res, 409, "not_issuable", "Token can be minted only for issued or past_due invoices");
+      }
+      if (!isInvoicePayable(inv)) {
+        return sendError(res, 409, "not_payable", "Invoice is not payable");
+      }
+
+      const notifyEmail = safeEmail(req.body?.notifyEmail);
+
+      const revoked = await prisma.guestPayToken.updateMany({
+        where: { invoiceId: inv.id, usedAt: null },
+        data: { usedAt: now() },
+      });
+
+      const raw = mintRawToken(32);
+      const tokenHash = sha256Hex(raw);
+      const expiresAt = computeGuestTokenExpiry({ dueAt: inv.dueAt });
+
+      const created = await prisma.guestPayToken.create({
+        data: { invoiceId: inv.id, tokenHash, expiresAt },
+        select: { id: true, expiresAt: true },
+      });
+
+      const shortUrl = buildPayUrlFromTokenId(created.id);
+      const legacyUrl = `${PUBLIC_BASE}/pay/${encodeURIComponent(raw)}`;
+      const payUrl = shortUrl || legacyUrl;
 
       // PV-HOOK billing.guest_token.regenerated tc=TC-GPT-11 sev=warn stable=invoice:<invoiceId>
       pvHook("billing.guest_token.regenerated", {
         tc: "TC-GPT-11",
         sev: "warn",
-        stable: `invoice:${invoiceId}`,
-        invoiceId,
-        tokenId: result.tokenId,
-        revokedCount: result.revokedCount || 0,
-        expiresAt: result.expiresAt,
-        payUrlKind: result.payUrlKind || null,
+        stable: `invoice:${inv.id}`,
+        invoiceId: inv.id,
+        tokenId: created.id,
+        revokedCount: revoked?.count || 0,
+        expiresAt: expiresAt.toISOString(),
+        payUrlKind: shortUrl ? "shortpay" : "legacy",
       });
 
-      return res.json(result);
+      // Mail-Flow-1: optional notify
+      if (notifyEmail && payUrl) {
+        await bestEffortSendMail({
+          idempotencyKey: keyGuestPayRegenerated({ invoiceId: inv.id, tokenId: created.id }),
+          category: MAIL_CATEGORIES.INVOICE,
+          to: notifyEmail,
+          subject: `Invoice ${inv.id} payment link (regenerated)`,
+          template: "invoice.guest_pay.stub",
+          data: {
+            invoiceId: inv.id,
+            payUrl,
+            expiresAt: (created.expiresAt || expiresAt).toISOString(),
+            regenerated: true,
+          },
+          meta: {
+            flow: "guest_pay_token_regenerate",
+            tokenId: created.id,
+            revokedCount: revoked?.count || 0,
+            payUrl,
+          },
+        });
+      }
+
+      return res.json({
+        invoiceId: inv.id,
+        tokenId: created.id,
+        token: raw, // legacy/dev convenience only
+        payUrl,
+        expiresAt: (created.expiresAt || expiresAt).toISOString(),
+        regenerated: true,
+        revokedCount: revoked?.count || 0,
+        notifyEmail: notifyEmail || null,
+      });
     } catch (e) {
       pvHook("billing.guest_token.regenerate_failed", {
         tc: "TC-GPT-12",
@@ -769,7 +954,7 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
       try {
         const payment = await prisma.payment.findFirst({
           where: { providerChargeId: intentId },
-          select: { id: true, status: true, invoiceId: true, amountCents: true },
+          select: { id: true, status: true, invoiceId: true, amountCents: true, payerEmail: true },
         });
 
         if (!payment) {
@@ -903,49 +1088,33 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
             }
           });
 
-          // Mail-Flow-5: Payment receipt email (env-guarded; non-blocking)
-          if (PAYMENT_RECEIPT_ENABLED) {
-            try {
-              await sendPaymentReceiptEmail({
-                prisma,
+          // Mail-Flow-1: receipt to payerEmail (if known), idempotent per payment.
+          const payer = safeEmail(payment.payerEmail);
+          if (payer && payment.invoiceId) {
+            await bestEffortSendMail({
+              idempotencyKey: keyPaymentSucceeded({ invoiceId: payment.invoiceId, paymentId: payment.id }),
+              category: MAIL_CATEGORIES.INVOICE,
+              to: payer,
+              subject: `Payment received for invoice ${payment.invoiceId}`,
+              template: "invoice.payment_succeeded.stub",
+              data: {
+                invoiceId: payment.invoiceId,
                 paymentId: payment.id,
-                publicBaseUrl: PUBLIC_BASE,
-                dryRun: PAYMENT_RECEIPT_DRY_RUN,
-              });
-              // PV-HOOK billing.receipt_email.queued tc=TC-REC-01 sev=info stable=payment:<paymentId>
-              pvHook("billing.receipt_email.queued", {
-                tc: "TC-REC-01",
-                sev: "info",
-                stable: `payment:${payment.id}`,
+                amountCents: payment.amountCents || 0,
+              },
+              meta: {
+                flow: "payment_succeeded",
                 paymentId: payment.id,
                 invoiceId: payment.invoiceId,
-                dryRun: PAYMENT_RECEIPT_DRY_RUN ? 1 : 0,
-              });
-            } catch (e) {
-              // PV-HOOK billing.receipt_email.failed tc=TC-REC-02 sev=error stable=payment:<paymentId>
-              pvHook("billing.receipt_email.failed", {
-                tc: "TC-REC-02",
-                sev: "error",
-                stable: `payment:${payment.id}`,
-                paymentId: payment.id,
-                invoiceId: payment.invoiceId,
-                error: e?.message || String(e),
-              });
-            }
-          } else {
-            // PV-HOOK billing.receipt_email.disabled tc=TC-REC-00 sev=info stable=payment:<paymentId>
-            pvHook("billing.receipt_email.disabled", {
-              tc: "TC-REC-00",
-              sev: "info",
-              stable: `payment:${payment.id}`,
-              paymentId: payment.id,
-              invoiceId: payment.invoiceId,
+                intentId,
+              },
             });
           }
 
           return res.status(200).json({ received: true });
         }
 
+        // NOTE: Your event.type here may differ based on stripe lib. Leaving as-is but we mail off it.
         if (event.type === "payment_intent.payment_failed") {
           // PV-HOOK billing.webhook.payment_failed tc=TC-PAY-05 sev=warn stable=stripe_pi:<intentId>
           pvHook("billing.webhook.payment_failed", {
@@ -964,6 +1133,30 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
               data: { status: "failed", statusUpdatedAt: now() },
             });
           }
+
+          // Mail-Flow-1: failure notice to payerEmail (if known), idempotent per payment.
+          const payer = safeEmail(payment.payerEmail);
+          if (payer && payment.invoiceId) {
+            await bestEffortSendMail({
+              idempotencyKey: keyPaymentFailed({ invoiceId: payment.invoiceId, paymentId: payment.id }),
+              category: MAIL_CATEGORIES.INVOICE,
+              to: payer,
+              subject: `Payment failed for invoice ${payment.invoiceId}`,
+              template: "invoice.payment_failed.stub",
+              data: {
+                invoiceId: payment.invoiceId,
+                paymentId: payment.id,
+                amountCents: payment.amountCents || 0,
+              },
+              meta: {
+                flow: "payment_failed",
+                paymentId: payment.id,
+                invoiceId: payment.invoiceId,
+                intentId,
+              },
+            });
+          }
+
           return res.status(200).json({ received: true });
         }
 
