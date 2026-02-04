@@ -2,7 +2,7 @@
 const express = require("express");
 const crypto = require("crypto");
 const { mintRawToken, sha256Hex, computeGuestTokenExpiry, now } = require("./guestToken");
-const { createPaymentIntent, verifyWebhook } = require("./stripe");
+const { createPaymentIntent, retrievePaymentIntent, verifyWebhook } = require("./stripe");
 const { ensureActiveGuestPayToken } = require("../billing/guestPayToken.service");
 const { sendPaymentReceiptEmail } = require("../jobs/paymentReceiptMail.job");
 
@@ -293,25 +293,73 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
       select: { id: true, providerChargeId: true, createdAt: true },
     });
 
-    if (existing) {
-      // PV-HOOK billing.payment_intent.duplicate tc=TC-PAY-03 sev=warn stable=invoice:<invoiceId>
-      pvHook("billing.payment_intent.duplicate", {
-        tc: "TC-PAY-03",
-        sev: "warn",
-        stable: `invoice:${invoice.id}`,
-        invoiceId: invoice.id,
-        amountCents: due,
-        source: "guest_pay",
-        existingPaymentId: existing.id,
-        existingIntentId: existing.providerChargeId,
-        existingCreatedAt: existing.createdAt ? new Date(existing.createdAt).toISOString() : null,
-      });
 
-      const err = new Error("A payment session already exists for this invoice. Please refresh the page.");
-      err.status = 409;
-      err.code = "INTENT_EXISTS";
+    if (existing) {
+  // PV-HOOK billing.payment_intent.duplicate tc=TC-PAY-03 sev=warn stable=invoice:<invoiceId>
+  pvHook("billing.payment_intent.duplicate", {
+    tc: "TC-PAY-03",
+    sev: "warn",
+    stable: `invoice:${invoice.id}`,
+    invoiceId: invoice.id,
+    amountCents: due,
+    source: "guest_pay",
+    existingPaymentId: existing.id,
+    existingIntentId: existing.providerChargeId,
+    existingCreatedAt: existing.createdAt ? new Date(existing.createdAt).toISOString() : null,
+  });
+
+  // Resume: return existing clientSecret instead of blocking with 409.
+  try {
+    const resumed = await retrievePaymentIntent({ intentId: existing.providerChargeId });
+
+    if (!resumed?.clientSecret) {
+      const err = new Error("Unable to resume payment session (missing clientSecret)");
+      err.status = 500;
+      err.code = "RESUME_FAILED";
       throw err;
     }
+    // PV-HOOK billing.payment_intent.resumed tc=TC-PAY-07 sev=info stable=stripe_pi:<intentId>
+    pvHook("billing.payment_intent.resumed", {
+      tc: "TC-PAY-07",
+      sev: "info",
+      stable: `stripe_pi:${resumed.intentId}`,
+      intentId: resumed.intentId,
+      paymentId: existing.id,
+      invoiceId: invoice.id,
+      amountCents: due,
+      source: "guest_pay",
+      status: resumed.status || null,
+    });
+
+    return {
+      paymentId: existing.id,
+      provider: "stripe",
+      clientSecret: resumed.clientSecret,
+      reused: true,
+      intentId: resumed.intentId,
+    };
+  } catch (e) {
+    // PV-HOOK billing.payment_intent.resume_failed tc=TC-PAY-08 sev=error stable=stripe_pi:<intentId>
+    pvHook("billing.payment_intent.resume_failed", {
+      tc: "TC-PAY-08",
+      sev: "error",
+      stable: `stripe_pi:${existing.providerChargeId || "unknown"}`,
+      intentId: existing.providerChargeId || null,
+      paymentId: existing.id,
+      invoiceId: invoice.id,
+      amountCents: due,
+      source: "guest_pay",
+      error: e?.message || String(e),
+    });
+
+    const err = new Error("Unable to resume payment session");
+    err.status = 500;
+    err.code = "RESUME_FAILED";
+    throw err;
+  }
+}
+
+
 
     // Create Payment row
     const payment = await prisma.payment.create({

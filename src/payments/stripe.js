@@ -54,6 +54,24 @@ async function createPaymentIntent({
 }
 
 /**
+ * Retrieve an existing PaymentIntent and return { intentId, clientSecret, status }.
+ * Used for guest-pay resume when INTENT_EXISTS.
+ */
+async function retrievePaymentIntent({ intentId }) {
+  const stripe = getStripe();
+  const id = String(intentId || "").trim();
+  if (!id) throw new Error("retrievePaymentIntent: intentId required");
+
+  const intent = await stripe.paymentIntents.retrieve(id);
+
+  return {
+    intentId: intent.id,
+    clientSecret: intent.client_secret,
+    status: intent.status,
+  };
+}
+
+/**
  * Verify Stripe webhook signature and return event.
  * Caller must pass raw body Buffer and Stripe-Signature header.
  */
@@ -74,5 +92,6 @@ function verifyWebhook({ rawBody, signatureHeader }) {
 
 module.exports = {
   createPaymentIntent,
+  retrievePaymentIntent,
   verifyWebhook,
 };
