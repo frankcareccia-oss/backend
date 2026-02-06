@@ -1538,11 +1538,556 @@ app.use(
    Admin gate (JWT + admin key)
 -------------------------------- */
 
-app.use(["/merchants", "/stores", "/users", "/admin", "/billing"], requireJwt, requireAdmin);
+function requireJwtOrAdminKey(req, res, next) {
+  // If admin key is valid, skip JWT entirely (automation / scripts).
+  const headerKey = req.headers["x-api-key"];
+  const devQueryKey = req.query?.key;
+
+  const okHeader = typeof headerKey === "string" && headerKey === ADMIN_API_KEY;
+  const okDevQuery =
+    NODE_ENV !== "production" &&
+    typeof devQueryKey === "string" &&
+    devQueryKey === ADMIN_API_KEY;
+
+  // Dev convenience: if ADMIN_API_KEY is empty, allow through in non-prod.
+  if (NODE_ENV !== "production" && !ADMIN_API_KEY) return next();
+
+  if (okHeader || okDevQuery) return next();
+
+  // Otherwise require JWT, then requireAdmin (pv_admin JWT path).
+  return requireJwt(req, res, () => requireAdmin(req, res, next));
+}
+
+app.use(["/merchants", "/stores", "/users", "/admin", "/billing"], requireJwtOrAdminKey);
+
 
 /* -----------------------------
    Admin: Merchants (JWT + admin key)
 -------------------------------- */
+/* =============================
+   Admin-HR-1: Merchant Users
+   - Merchant-scoped roles + contact fields + status lifecycle
+   - NO Prisma/schema edits. NO migrations.
+   ============================= */
+
+/* -----------------------------
+   Admin-HR-1: helpers
+-------------------------------- */
+
+function pvAssertMerchantRole(role) {
+  if (!["owner", "merchant_admin", "store_admin", "store_subadmin"].includes(role)) {
+    return { http: 400, code: "VALIDATION_ERROR", message: "Invalid MerchantRole" };
+  }
+  return null;
+}
+
+// MerchantUser contact fields are DB-only (schema.prisma is frozen in this thread).
+// We detect columns at runtime and attach them to API responses when present.
+let __pvMuContactColsCache = null;
+
+async function pvResolveMerchantUserContactColumns(prisma) {
+  if (__pvMuContactColsCache) return __pvMuContactColsCache;
+
+  try {
+    const rows = await prisma.$queryRawUnsafe(`
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema = 'public'
+        AND lower(table_name) = 'merchantuser'
+    `);
+
+    const cols = Array.isArray(rows) ? rows.map((r) => String(r.column_name)) : [];
+    const phoneCandidates = ["phoneContact", "contactPhone", "phone_contact", "phone", "phoneRaw", "phoneE164"];
+    const emailCandidates = ["emailContact", "contactEmail", "email_contact", "email"];
+
+    const phoneCol = phoneCandidates.find((c) => cols.includes(c)) || null;
+    const emailCol = emailCandidates.find((c) => cols.includes(c)) || null;
+
+    __pvMuContactColsCache = { phoneCol, emailCol };
+    return __pvMuContactColsCache;
+  } catch {
+    __pvMuContactColsCache = { phoneCol: null, emailCol: null };
+    return __pvMuContactColsCache;
+  }
+}
+
+function pvQuoteIdent(name) {
+  // Defensive: only allow simple identifiers discovered from information_schema.
+  // No quotes, no spaces, no punctuation.
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(String(name || ""))) return null;
+  return `"${name}"`;
+}
+
+async function pvAttachMerchantUserContacts(prisma, merchantId, items) {
+  if (!Array.isArray(items) || items.length === 0) return items;
+
+  const cols = await pvResolveMerchantUserContactColumns(prisma);
+  if (!cols.phoneCol && !cols.emailCol) return items;
+
+  const phoneIdent = cols.phoneCol ? pvQuoteIdent(cols.phoneCol) : null;
+  const emailIdent = cols.emailCol ? pvQuoteIdent(cols.emailCol) : null;
+  if ((cols.phoneCol && !phoneIdent) || (cols.emailCol && !emailIdent)) return items;
+
+  const selectParts = ['"id"'];
+  if (phoneIdent) selectParts.push(`${phoneIdent} as "contactPhone"`);
+  if (emailIdent) selectParts.push(`${emailIdent} as "contactEmail"`);
+
+  const rows = await prisma.$queryRawUnsafe(
+    `SELECT ${selectParts.join(", ")} FROM "MerchantUser" WHERE "merchantId" = $1`,
+    merchantId
+  );
+
+  const map = new Map();
+  (rows || []).forEach((r) => {
+    map.set(Number(r.id), {
+      contactPhone: r?.contactPhone ?? null,
+      contactEmail: r?.contactEmail ?? null,
+    });
+  });
+
+  return items.map((x) => {
+    const extra = map.get(Number(x.id)) || { contactPhone: null, contactEmail: null };
+    return { ...x, ...extra };
+  });
+}
+
+async function pvReadMerchantUserContacts(prisma, merchantUserId) {
+  const cols = await pvResolveMerchantUserContactColumns(prisma);
+  if (!cols.phoneCol && !cols.emailCol) return { contactPhone: null, contactEmail: null };
+
+  const phoneIdent = cols.phoneCol ? pvQuoteIdent(cols.phoneCol) : null;
+  const emailIdent = cols.emailCol ? pvQuoteIdent(cols.emailCol) : null;
+  if ((cols.phoneCol && !phoneIdent) || (cols.emailCol && !emailIdent)) return { contactPhone: null, contactEmail: null };
+
+  const selectParts = ['"id"'];
+  if (phoneIdent) selectParts.push(`${phoneIdent} as "contactPhone"`);
+  if (emailIdent) selectParts.push(`${emailIdent} as "contactEmail"`);
+
+  const rows = await prisma.$queryRawUnsafe(
+    `SELECT ${selectParts.join(", ")} FROM "MerchantUser" WHERE "id" = $1`,
+    merchantUserId
+  );
+  const r = Array.isArray(rows) && rows.length ? rows[0] : null;
+  return { contactPhone: r?.contactPhone ?? null, contactEmail: r?.contactEmail ?? null };
+}
+
+/* -----------------------------
+   Admin-HR-1: endpoints
+-------------------------------- */
+
+/**
+ * GET /admin/merchants/:merchantId/users
+ * Returns MerchantUsers for a merchant with embedded User identity, plus optional contact fields.
+ */
+app.get("/admin/merchants/:merchantId/users", async (req, res) => {
+  const merchantId = parseIntParam(req.params.merchantId);
+  if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantId");
+
+  try {
+    const list = await prisma.merchantUser.findMany({
+      where: { merchantId },
+      include: {
+        user: {
+          select: {
+            id: true,
+            email: true,
+            systemRole: true,
+            status: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    const withContacts = await pvAttachMerchantUserContacts(prisma, merchantId, list);
+
+    emitPvHook("admin.hr.merchantUsers.list", {
+      tc: "TC-ADMIN-HR-01",
+      sev: "info",
+      merchantId,
+      count: withContacts.length,
+    });
+
+    return res.json(withContacts);
+  } catch (e) {
+    return handlePrismaError(e, res);
+  }
+});
+
+/**
+ * GET /admin/merchant-users/:merchantUserId
+ * Detail view: MerchantUser + embedded User identity (+ optional contact fields).
+ */
+app.get("/admin/merchant-users/:merchantUserId", async (req, res) => {
+  const id = parseIntParam(req.params.merchantUserId);
+  if (!id) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantUserId");
+
+  try {
+    const mu = await prisma.merchantUser.findUnique({
+      where: { id },
+      include: {
+        user: {
+          select: {
+            id: true,
+            email: true,
+            systemRole: true,
+            status: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+        },
+      },
+    });
+    if (!mu) return sendError(res, 404, "MERCHANT_USER_NOT_FOUND", "MerchantUser not found");
+
+    const contacts = await pvReadMerchantUserContacts(prisma, mu.id);
+    const out = { ...mu, ...contacts };
+
+    emitPvHook("admin.hr.merchantUser.get", {
+      tc: "TC-ADMIN-HR-01B",
+      sev: "info",
+      merchantId: mu.merchantId,
+      merchantUserId: mu.id,
+    });
+
+    return res.json(out);
+  } catch (e) {
+    return handlePrismaError(e, res);
+  }
+});
+
+/**
+ * PATCH /admin/merchant-users/:merchantUserId
+ * Body may include: role, statusReason, contactPhone, contactEmail
+ * Note: status transitions are handled by suspend/reactivate/archive endpoints.
+ */
+app.patch("/admin/merchant-users/:merchantUserId", async (req, res) => {
+  const id = parseIntParam(req.params.merchantUserId);
+  if (!id) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantUserId");
+
+  const { role, statusReason, contactPhone, contactEmail } = req.body || {};
+
+  if (role) {
+    const err = pvAssertMerchantRole(role);
+    if (err) return sendError(res, err.http, err.code, err.message);
+  }
+  if (statusReason !== undefined && statusReason !== null && typeof statusReason !== "string") {
+    return sendError(res, 400, "VALIDATION_ERROR", "statusReason must be a string or null");
+  }
+
+  try {
+    // Update Prisma-managed fields first.
+    const updated = await prisma.merchantUser.update({
+      where: { id },
+      data: {
+        ...(role ? { role } : {}),
+        ...(statusReason !== undefined ? { statusReason } : {}),
+        ...(statusReason !== undefined ? { statusUpdatedAt: new Date() } : {}),
+      },
+      select: { id: true, merchantId: true },
+    });
+
+    // Update optional DB-only contact fields (if columns exist).
+    await (async () => {
+      const cols = await pvResolveMerchantUserContactColumns(prisma);
+      if (!cols.phoneCol && !cols.emailCol) return;
+
+      const sets = [];
+      const params = [];
+      let idx = 1;
+
+      if (cols.phoneCol && contactPhone !== undefined) {
+        const ident = pvQuoteIdent(cols.phoneCol);
+        if (ident) {
+          sets.push(`${ident} = $${idx++}`);
+          params.push(contactPhone ?? null);
+        }
+      }
+      if (cols.emailCol && contactEmail !== undefined) {
+        const ident = pvQuoteIdent(cols.emailCol);
+        if (ident) {
+          sets.push(`${ident} = $${idx++}`);
+          params.push(contactEmail ?? null);
+        }
+      }
+
+      if (sets.length === 0) return;
+
+      const sql = `UPDATE "MerchantUser" SET ${sets.join(", ")}, "updatedAt" = NOW() WHERE "id" = $${idx}`;
+      params.push(id);
+      await prisma.$executeRawUnsafe(sql, ...params);
+    })();
+
+    emitPvHook("admin.hr.merchantUser.update", {
+      tc: "TC-ADMIN-HR-02",
+      sev: "info",
+      merchantId: updated.merchantId,
+      merchantUserId: updated.id,
+    });
+
+    // Return the fresh detail payload.
+    const mu = await prisma.merchantUser.findUnique({
+      where: { id },
+      include: {
+        user: {
+          select: {
+            id: true,
+            email: true,
+            systemRole: true,
+            status: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+        },
+      },
+    });
+    const contacts = await pvReadMerchantUserContacts(prisma, id);
+
+    return res.json({ ...mu, ...contacts });
+  } catch (e) {
+    return handlePrismaError(e, res);
+  }
+});
+
+/**
+ * POST /admin/merchant-users/:merchantUserId/suspend
+ */
+app.post("/admin/merchant-users/:merchantUserId/suspend", async (req, res) => {
+  const id = parseIntParam(req.params.merchantUserId);
+  if (!id) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantUserId");
+
+  try {
+    const mu = await prisma.merchantUser.update({
+      where: { id },
+      data: {
+        status: "suspended",
+        suspendedAt: new Date(),
+        statusUpdatedAt: new Date(),
+      },
+    });
+
+    emitPvHook("admin.hr.merchantUser.suspend", {
+      tc: "TC-ADMIN-HR-03",
+      sev: "info",
+      merchantId: mu.merchantId,
+      merchantUserId: mu.id,
+    });
+
+    return res.json(mu);
+  } catch (e) {
+    return handlePrismaError(e, res);
+  }
+});
+
+/**
+ * POST /admin/merchant-users/:merchantUserId/reactivate
+ */
+app.post("/admin/merchant-users/:merchantUserId/reactivate", async (req, res) => {
+  const id = parseIntParam(req.params.merchantUserId);
+  if (!id) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantUserId");
+
+  try {
+    const mu = await prisma.merchantUser.update({
+      where: { id },
+      data: {
+        status: "active",
+        suspendedAt: null,
+        statusUpdatedAt: new Date(),
+      },
+    });
+
+    emitPvHook("admin.hr.merchantUser.reactivate", {
+      tc: "TC-ADMIN-HR-04",
+      sev: "info",
+      merchantId: mu.merchantId,
+      merchantUserId: mu.id,
+    });
+
+    return res.json(mu);
+  } catch (e) {
+    return handlePrismaError(e, res);
+  }
+});
+
+/**
+ * POST /admin/merchant-users/:merchantUserId/archive
+ */
+app.post("/admin/merchant-users/:merchantUserId/archive", async (req, res) => {
+  const id = parseIntParam(req.params.merchantUserId);
+  if (!id) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantUserId");
+
+  try {
+    const mu = await prisma.merchantUser.update({
+      where: { id },
+      data: {
+        status: "archived",
+        archivedAt: new Date(),
+        statusUpdatedAt: new Date(),
+      },
+    });
+
+    emitPvHook("admin.hr.merchantUser.archive", {
+      tc: "TC-ADMIN-HR-05",
+      sev: "info",
+      merchantId: mu.merchantId,
+      merchantUserId: mu.id,
+    });
+
+    return res.json(mu);
+  } catch (e) {
+    return handlePrismaError(e, res);
+  }
+});
+
+/**
+ * GET /admin/users
+ * Query param: email (optional, substring match, case-insensitive)
+ * Returns identity-only fields (NEVER passwordHash).
+ */
+app.get("/admin/users", async (req, res) => {
+  try {
+    const q = String(req.query?.email || "").trim().toLowerCase();
+    const where = q ? { email: { contains: q, mode: "insensitive" } } : {};
+
+    const users = await prisma.user.findMany({
+      where,
+      take: 25,
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        email: true,
+        systemRole: true,
+        status: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    emitPvHook("admin.hr.users.search", { tc: "TC-ADMIN-HR-06", sev: "info", q, count: users.length });
+    return res.json(users);
+  } catch (e) {
+    return handlePrismaError(e, res);
+  }
+});
+
+/**
+ * POST /admin/merchants/:merchantId/users
+ * Attach an existing user OR create a new user, then upsert MerchantUser membership.
+ *
+ * Body (either):
+ *  - { userId, role, contactPhone?, contactEmail? }
+ *  - { email, tempPassword, role, contactPhone?, contactEmail? }
+ */
+app.post("/admin/merchants/:merchantId/users", async (req, res) => {
+  const merchantId = parseIntParam(req.params.merchantId);
+  if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantId");
+
+  const { userId, email, tempPassword, role, contactPhone, contactEmail } = req.body || {};
+
+  const roleErr = pvAssertMerchantRole(role);
+  if (roleErr) return sendError(res, roleErr.http, roleErr.code, roleErr.message);
+
+  try {
+    const merchant = await prisma.merchant.findUnique({ where: { id: merchantId }, select: { id: true } });
+    if (!merchant) return sendError(res, 404, "MERCHANT_NOT_FOUND", "Merchant not found");
+
+    let user = null;
+
+    if (userId) {
+      const uid = parseIntParam(userId);
+      if (!uid) return sendError(res, 400, "VALIDATION_ERROR", "Invalid userId");
+      user = await prisma.user.findUnique({
+        where: { id: uid },
+        select: { id: true, email: true, systemRole: true, status: true, createdAt: true, updatedAt: true },
+      });
+      if (!user) return sendError(res, 404, "USER_NOT_FOUND", "User not found");
+    } else {
+      const e = String(email || "").trim().toLowerCase();
+      if (!e) return sendError(res, 400, "VALIDATION_ERROR", "email is required when userId is not provided");
+      const pw = String(tempPassword || "").trim();
+      if (!pw) return sendError(res, 400, "VALIDATION_ERROR", "tempPassword is required when creating a user");
+
+      const existing = await prisma.user.findUnique({
+        where: { email: e },
+        select: { id: true, email: true, systemRole: true, status: true, createdAt: true, updatedAt: true },
+      });
+
+      if (existing) {
+        user = existing;
+      } else {
+        const hash = await bcrypt.hash(pw, 12);
+        user = await prisma.user.create({
+          data: { email: e, passwordHash: hash, systemRole: "user", status: "active" },
+          select: { id: true, email: true, systemRole: true, status: true, createdAt: true, updatedAt: true },
+        });
+      }
+    }
+
+    const mu = await prisma.merchantUser.upsert({
+      where: { merchantId_userId: { merchantId, userId: user.id } },
+      update: {
+        role,
+        status: "active",
+        suspendedAt: null,
+        statusUpdatedAt: new Date(),
+      },
+      create: {
+        merchantId,
+        userId: user.id,
+        role,
+        status: "active",
+        statusUpdatedAt: new Date(),
+      },
+    });
+
+    // Optional DB-only contacts
+    await (async () => {
+      const cols = await pvResolveMerchantUserContactColumns(prisma);
+      if (!cols.phoneCol && !cols.emailCol) return;
+
+      const sets = [];
+      const params = [];
+      let idx = 1;
+
+      if (cols.phoneCol && contactPhone !== undefined) {
+        const ident = pvQuoteIdent(cols.phoneCol);
+        if (ident) {
+          sets.push(`${ident} = $${idx++}`);
+          params.push(contactPhone ?? null);
+        }
+      }
+      if (cols.emailCol && contactEmail !== undefined) {
+        const ident = pvQuoteIdent(cols.emailCol);
+        if (ident) {
+          sets.push(`${ident} = $${idx++}`);
+          params.push(contactEmail ?? null);
+        }
+      }
+
+      if (sets.length === 0) return;
+
+      const sql = `UPDATE "MerchantUser" SET ${sets.join(", ")}, "updatedAt" = NOW() WHERE "id" = $${idx}`;
+      params.push(mu.id);
+      await prisma.$executeRawUnsafe(sql, ...params);
+    })();
+
+    emitPvHook("admin.hr.merchantUser.createOrAttach", {
+      tc: "TC-ADMIN-HR-07",
+      sev: "info",
+      merchantId,
+      userId: user.id,
+      merchantUserId: mu.id,
+      role,
+    });
+
+    const contacts = await pvReadMerchantUserContacts(prisma, mu.id);
+    return res.json({ ...mu, user, ...contacts });
+  } catch (e) {
+    return handlePrismaError(e, res);
+  }
+});
 
 app.post("/merchants", async (req, res) => {
   const { name, billingEmail } = req.body || {};
