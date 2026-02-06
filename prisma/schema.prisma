@@ -98,6 +98,8 @@ model MerchantUser {
   merchantId      Int
   userId          Int
   role            MerchantRole
+  contactEmail    String?      @db.VarChar(320)
+  contactPhone    String?      @db.VarChar(32)
   status          EntityStatus @default(active)
   suspendedAt     DateTime?
   archivedAt      DateTime?
