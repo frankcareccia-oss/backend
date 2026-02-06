@@ -292,6 +292,13 @@ function buildMerchantPortalRouter(deps) {
         email: mu.user?.email || null,
         role: mu.role,
         status: mu.status,
+        statusReason: mu.statusReason ?? null,
+
+        // Contact (may be null)
+        phoneRaw: mu.phoneRaw ?? null,
+        phoneE164: mu.phoneE164 ?? null,
+        phoneCountry: mu.phoneCountry ?? null,
+
         userStatus: mu.user?.status || null,
       }));
 
@@ -383,12 +390,33 @@ function buildMerchantPortalRouter(deps) {
     const userId = parseIntParam(req.params.userId);
     if (!userId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid userId");
 
-    const { merchantId: midRaw, role, status } = req.body || {};
+    const { merchantId: midRaw, role, status, statusReason, phoneRaw, phoneE164, phoneCountry } = req.body || {};
     const merchantId = parseIntParam(midRaw);
     if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "merchantId is required");
 
     const roleNorm = role !== undefined ? normalizeRole(role) : null;
     const statusNorm = status !== undefined ? normalizeMemberStatus(status) : null;
+
+    function normOptString(v, { maxLen } = {}) {
+      if (v === undefined) return undefined; // means "not provided"
+      if (v === null) return null;
+      const s = String(v).trim();
+      if (!s) return null;
+      if (maxLen && s.length > maxLen) return s.slice(0, maxLen);
+      return s;
+    }
+
+    const statusReasonNorm = normOptString(statusReason, { maxLen: 200 });
+    const phoneRawNorm = normOptString(phoneRaw, { maxLen: 32 });
+    const phoneE164Norm = normOptString(phoneE164, { maxLen: 32 });
+    const phoneCountryNorm = normOptString(phoneCountry, { maxLen: 8 });
+
+    const hasMembershipPatch = role !== undefined || status !== undefined;
+    const hasContactPatch =
+      statusReason !== undefined ||
+      phoneRaw !== undefined ||
+      phoneE164 !== undefined ||
+      phoneCountry !== undefined;
 
     if (role !== undefined && !roleNorm) {
       return sendError(res, 400, "VALIDATION_ERROR", "role must be owner|merchant_admin|store_admin|store_subadmin");
@@ -396,8 +424,8 @@ function buildMerchantPortalRouter(deps) {
     if (status !== undefined && !statusNorm) {
       return sendError(res, 400, "VALIDATION_ERROR", "status must be active|suspended");
     }
-    if (role === undefined && status === undefined) {
-      return sendError(res, 400, "VALIDATION_ERROR", "Provide role and/or status");
+    if (!hasMembershipPatch && !hasContactPatch) {
+      return sendError(res, 400, "VALIDATION_ERROR", "Provide role/status and/or contact fields");
     }
 
     try {
@@ -410,12 +438,19 @@ function buildMerchantPortalRouter(deps) {
 
       if (!mu) return sendError(res, 404, "NOT_FOUND", "Membership not found");
 
+      const data = {
+        ...(role !== undefined ? { role: roleNorm } : null),
+        ...(status !== undefined ? { status: statusNorm } : null),
+
+        ...(statusReason !== undefined ? { statusReason: statusReasonNorm } : null),
+        ...(phoneRaw !== undefined ? { phoneRaw: phoneRawNorm } : null),
+        ...(phoneE164 !== undefined ? { phoneE164: phoneE164Norm } : null),
+        ...(phoneCountry !== undefined ? { phoneCountry: phoneCountryNorm } : null),
+      };
+
       const updated = await prisma.merchantUser.update({
         where: { id: mu.id },
-        data: {
-          ...(roleNorm ? { role: roleNorm } : null),
-          ...(statusNorm ? { status: statusNorm } : null),
-        },
+        data,
       });
 
       if (typeof emitPvHook === "function") {
@@ -423,8 +458,14 @@ function buildMerchantPortalRouter(deps) {
           merchantId,
           actorUserId: acting.id,
           targetUserId: userId,
-          role: roleNorm || null,
-          status: statusNorm || null,
+          // membership
+          role: role !== undefined ? roleNorm : null,
+          status: status !== undefined ? statusNorm : null,
+          // contact/reason
+          statusReason: statusReason !== undefined ? statusReasonNorm : null,
+          phoneRaw: phoneRaw !== undefined ? phoneRawNorm : null,
+          phoneE164: phoneE164 !== undefined ? phoneE164Norm : null,
+          phoneCountry: phoneCountry !== undefined ? phoneCountryNorm : null,
         });
       }
 
