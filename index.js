@@ -299,6 +299,37 @@ function buildResetUrl(req, token) {
   return `${proto}://${host}/reset-password?token=${encodeURIComponent(token)}`;
 }
 
+
+/* -----------------------------
+   Invite token helpers (Staff onboarding)
+-------------------------------- */
+
+async function pvIssueInviteToken(prisma, req, userId, emailNorm) {
+  // Reuse PasswordResetToken + /reset-password UI for both "invite set-password" and "forgot password".
+  const token = crypto.randomBytes(32).toString("hex");
+  const pepper = process.env.RESET_TOKEN_PEPPER || JWT_SECRET;
+  const tokenHash = sha256Hex(`${pepper}:${token}`);
+
+  const minutes = Number(process.env.INVITE_TOKEN_MINUTES || process.env.RESET_TOKEN_MINUTES || 24 * 60);
+  const expiresAt = new Date(Date.now() + minutes * 60 * 1000);
+
+  await prisma.passwordResetToken.create({
+    data: { userId, tokenHash, expiresAt },
+  });
+
+  const resetUrl = buildResetUrl(req, token);
+
+  // Email stub for dev (later replace with real mail delivery)
+  console.log("[AUTH][EMAIL_STUB] invite/set-password", {
+    to: emailNorm,
+    resetUrl,
+    expiresAt: expiresAt.toISOString(),
+  });
+
+  return { resetUrl, expiresAt };
+}
+
+
 /* -----------------------------
    Prisma error mapping
 -------------------------------- */
@@ -1419,6 +1450,33 @@ app.post("/auth/reset-password", async (req, res) => {
   }
 });
 
+/**
+ * POST /admin/users/invite
+ * Resend an invite / set-password link to an existing staff user (dev email stub).
+ * Body: { email }
+ * Auth: requireAdmin (pv_admin JWT or x-api-key)
+ */
+app.post("/admin/users/invite", requireAdmin, async (req, res) => {
+  try {
+    const { email } = req.body || {};
+    const emailNorm = String(email || "").trim().toLowerCase();
+    if (!emailNorm) return sendError(res, 400, "VALIDATION_ERROR", "email is required");
+
+    const user = await prisma.user.findUnique({
+      where: { email: emailNorm },
+      select: { id: true, email: true, status: true },
+    });
+    if (!user) return sendError(res, 404, "USER_NOT_FOUND", "User not found");
+    if (user.status && user.status !== "active") return sendError(res, 400, "INVALID_STATE", "User is not active");
+
+    await pvIssueInviteToken(prisma, req, user.id, user.email);
+    return res.json({ ok: true });
+  } catch (err) {
+    return handlePrismaError(err, res);
+  }
+});
+
+
 app.post("/auth/change-password", requireJwt, async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body || {};
@@ -1980,11 +2038,11 @@ app.get("/admin/users", async (req, res) => {
  *  - { userId, role, contactPhone?, contactEmail? }
  *  - { email, tempPassword, role, contactPhone?, contactEmail? }
  */
-app.post("/admin/merchants/:merchantId/users", async (req, res) => {
+app.post("/admin/merchants/:merchantId/users", requireAdmin, async (req, res) => {
   const merchantId = parseIntParam(req.params.merchantId);
   if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantId");
 
-  const { userId, email, tempPassword, role, contactPhone, contactEmail } = req.body || {};
+  const { userId, email, role, contactPhone, contactEmail, sendInvite } = req.body || {};
 
   const roleErr = pvAssertMerchantRole(role);
   if (roleErr) return sendError(res, roleErr.http, roleErr.code, roleErr.message);
@@ -1994,34 +2052,44 @@ app.post("/admin/merchants/:merchantId/users", async (req, res) => {
     if (!merchant) return sendError(res, 404, "MERCHANT_NOT_FOUND", "Merchant not found");
 
     let user = null;
+    let shouldInvite = Boolean(sendInvite);
 
     if (userId) {
       const uid = parseIntParam(userId);
       if (!uid) return sendError(res, 400, "VALIDATION_ERROR", "Invalid userId");
+
       user = await prisma.user.findUnique({
         where: { id: uid },
-        select: { id: true, email: true, systemRole: true, status: true, createdAt: true, updatedAt: true },
+        select: { id: true, email: true, systemRole: true, status: true, passwordUpdatedAt: true, createdAt: true, updatedAt: true },
       });
       if (!user) return sendError(res, 404, "USER_NOT_FOUND", "User not found");
+      // If the user has never set a password, default to inviting (unless explicitly disabled)
+      if (sendInvite === undefined && !user.passwordUpdatedAt) shouldInvite = true;
     } else {
       const e = String(email || "").trim().toLowerCase();
       if (!e) return sendError(res, 400, "VALIDATION_ERROR", "email is required when userId is not provided");
-      const pw = String(tempPassword || "").trim();
-      if (!pw) return sendError(res, 400, "VALIDATION_ERROR", "tempPassword is required when creating a user");
 
       const existing = await prisma.user.findUnique({
         where: { email: e },
-        select: { id: true, email: true, systemRole: true, status: true, createdAt: true, updatedAt: true },
+        select: { id: true, email: true, systemRole: true, status: true, passwordUpdatedAt: true, createdAt: true, updatedAt: true },
       });
 
       if (existing) {
         user = existing;
+        if (sendInvite === undefined && !user.passwordUpdatedAt) shouldInvite = true;
       } else {
-        const hash = await bcrypt.hash(pw, 12);
+        // Create the user WITHOUT requiring the creator to choose a password.
+        // passwordHash must be non-null; we store a strong random hash placeholder until the user sets a real password.
+        const placeholder = crypto.randomBytes(32).toString("hex");
+        const hash = await bcrypt.hash(placeholder, 12);
+
         user = await prisma.user.create({
           data: { email: e, passwordHash: hash, systemRole: "user", status: "active" },
-          select: { id: true, email: true, systemRole: true, status: true, createdAt: true, updatedAt: true },
+          select: { id: true, email: true, systemRole: true, status: true, passwordUpdatedAt: true, createdAt: true, updatedAt: true },
         });
+
+        // New user: invite by default unless explicitly disabled
+        if (sendInvite === undefined) shouldInvite = true;
       }
     }
 
@@ -2073,6 +2141,12 @@ app.post("/admin/merchants/:merchantId/users", async (req, res) => {
       await prisma.$executeRawUnsafe(sql, ...params);
     })();
 
+    // Issue an invite token (reuse PasswordResetToken + /reset-password UI).
+    let invite = null;
+    if (shouldInvite && user.status === "active") {
+      invite = await pvIssueInviteToken(prisma, req, user.id, user.email);
+    }
+
     emitPvHook("admin.hr.merchantUser.createOrAttach", {
       tc: "TC-ADMIN-HR-07",
       sev: "info",
@@ -2080,10 +2154,11 @@ app.post("/admin/merchants/:merchantId/users", async (req, res) => {
       userId: user.id,
       merchantUserId: mu.id,
       role,
+      invited: Boolean(invite),
     });
 
     const contacts = await pvReadMerchantUserContacts(prisma, mu.id);
-    return res.json({ ...mu, user, ...contacts });
+    return res.json({ ...mu, user: { ...user, passwordUpdatedAt: user.passwordUpdatedAt ?? null }, ...contacts, inviteSent: Boolean(invite) });
   } catch (e) {
     return handlePrismaError(e, res);
   }

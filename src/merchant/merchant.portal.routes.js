@@ -1,5 +1,6 @@
 // backend/src/merchant/merchant.portal.routes.js
 const express = require("express");
+const { ensureActiveGuestPayToken } = require("../billing/guestPayToken.service");
 
 /**
  * Merchant portal routes (JWT only), extracted from index.js.
@@ -7,6 +8,10 @@ const express = require("express");
  * IMPORTANT: Extraction-only step.
  * - No behavior changes intended.
  * - Keep existing route shapes, validation, and pvHook emissions.
+ *
+ * NOTE (Billing UI enablement):
+ * We add a minimal "payCode/payUrl" enrichment on merchant invoice detail so the
+ * existing merchant UI can show "Pay Now" when appropriate.
  */
 function buildMerchantPortalRouter(deps) {
   if (!deps) throw new Error("buildMerchantPortalRouter: deps is required");
@@ -47,6 +52,23 @@ function buildMerchantPortalRouter(deps) {
     return roles.every((r) => r === "store_subadmin");
   }
 
+  function getPublicBaseUrl(req) {
+    // Prefer explicit env; fallback to request host (good for localhost).
+    const env = String(process.env.PUBLIC_BASE_URL || "").trim();
+    if (env) return env.replace(/\/+$/, "");
+    const proto = (req.headers["x-forwarded-proto"] || req.protocol || "http").toString().split(",")[0].trim();
+    const host = (req.headers["x-forwarded-host"] || req.get("host") || "").toString().split(",")[0].trim();
+    return `${proto}://${host}`.replace(/\/+$/, "");
+  }
+
+  function extractPayCodeFromPayUrl(payUrl) {
+    // expected: http(s)://host/p/<code>
+    if (!payUrl || typeof payUrl !== "string") return "";
+    const idx = payUrl.lastIndexOf("/p/");
+    if (idx < 0) return "";
+    return String(payUrl.slice(idx + 3)).trim();
+  }
+
   /**
    * Thread U — Merchant user management helpers
    */
@@ -60,6 +82,14 @@ function buildMerchantPortalRouter(deps) {
   function canManageStoresForMerchant(user, merchantId) {
     // Store management is restricted to owner/merchant_admin (same as user management)
     return canManageUsersForMerchant(user, merchantId);
+  }
+
+  // IMPORTANT: store_admin does NOT pay invoices (PerkValet rule).
+  function canPayInvoicesForMerchant(user, merchantId) {
+    const mus = Array.isArray(user?.merchantUsers) ? user.merchantUsers : [];
+    const m = mus.find((x) => x.status === "active" && x.merchantId === merchantId);
+    if (!m) return false;
+    return m.role === "owner" || m.role === "merchant_admin";
   }
 
   async function requireMerchantStoreManager(req, res, merchantId) {
@@ -176,7 +206,7 @@ function buildMerchantPortalRouter(deps) {
    * NOTE: We intentionally keep these merchant-scoped routes separate from admin /stores APIs.
    */
   router.post("/stores", requireJwt, async (req, res) => {
-    const { merchantId: midRaw, name, address1, city, state } = req.body || {};
+    const { merchantId: midRaw, name, address1, city, state, postal } = req.body || {};
     const merchantId = parseIntParam(midRaw);
 
     if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "merchantId is required");
@@ -200,6 +230,7 @@ function buildMerchantPortalRouter(deps) {
             address1: address1 != null ? String(address1).trim() || null : null,
             city: city != null ? String(city).trim() || null : null,
             state: state != null ? String(state).trim() || null : null,
+            postal: postal != null ? String(postal).trim() || null : null,
             status: "active",
           },
         });
@@ -268,6 +299,88 @@ function buildMerchantPortalRouter(deps) {
     }
   });
 
+  // T5: Merchant store profile editing (merchant_admin only)
+  // PATCH /merchant/stores/:storeId/profile
+  // Body supports: name, address1, city, state, postal
+  router.patch("/stores/:storeId/profile", requireJwt, async (req, res) => {
+    const storeId = parseIntParam(req.params.storeId);
+    if (!storeId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid storeId");
+
+    const { name, address1, city, state, postal } = req.body || {};
+
+    function normOptString(v, { maxLen, upper } = {}) {
+      if (v === undefined) return undefined; // not provided
+      if (v === null) return null;
+      const s0 = String(v).trim();
+      if (!s0) return null;
+      const s = upper ? s0.toUpperCase() : s0;
+      if (maxLen && s.length > maxLen) return s.slice(0, maxLen);
+      return s;
+    }
+
+    const nameNorm = normOptString(name, { maxLen: 200 });
+
+    if (name !== undefined && !nameNorm) {
+      return sendError(res, 400, "VALIDATION_ERROR", "name cannot be empty");
+    }
+    const address1Norm = normOptString(address1, { maxLen: 200 });
+    const cityNorm = normOptString(city, { maxLen: 120 });
+    const stateNorm = normOptString(state, { maxLen: 8, upper: true });
+    const postalNorm = normOptString(postal, { maxLen: 20 });
+
+    const hasAny =
+      name !== undefined ||
+      address1 !== undefined ||
+      city !== undefined ||
+      state !== undefined ||
+      postal !== undefined;
+
+    if (!hasAny) {
+      return sendError(res, 400, "VALIDATION_ERROR", "Provide at least one profile field to update");
+    }
+
+    try {
+      const store = await prisma.store.findUnique({
+        where: { id: storeId },
+        select: { id: true, merchantId: true },
+      });
+      if (!store) return sendError(res, 404, "STORE_NOT_FOUND", "Store not found");
+
+      const acting = await requireMerchantStoreManager(req, res, store.merchantId);
+      if (!acting) return;
+
+      const updated = await prisma.store.update({
+        where: { id: storeId },
+        data: {
+          ...(name !== undefined ? { name: nameNorm } : null),
+          ...(address1 !== undefined ? { address1: address1Norm } : null),
+          ...(city !== undefined ? { city: cityNorm } : null),
+          ...(state !== undefined ? { state: stateNorm } : null),
+          ...(postal !== undefined ? { postal: postalNorm } : null),
+        },
+      });
+
+      if (typeof emitPvHook === "function") {
+        emitPvHook("merchant.stores.profile", {
+          merchantId: store.merchantId,
+          storeId,
+          actorUserId: acting.id,
+          fields: {
+            ...(name !== undefined ? { name: Boolean(nameNorm) } : null),
+            ...(address1 !== undefined ? { address1: Boolean(address1Norm) } : null),
+            ...(city !== undefined ? { city: Boolean(cityNorm) } : null),
+            ...(state !== undefined ? { state: Boolean(stateNorm) } : null),
+            ...(postal !== undefined ? { postal: Boolean(postalNorm) } : null),
+          },
+        });
+      }
+
+      return res.json(updated);
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
   /* -----------------------------
      Thread U — Merchant user management endpoints
   -------------------------------- */
@@ -282,7 +395,20 @@ function buildMerchantPortalRouter(deps) {
 
       const rows = await prisma.merchantUser.findMany({
         where: { merchantId },
-        include: { user: { select: { id: true, email: true, status: true } } },
+        include: {
+          user: {
+            select: {
+              id: true,
+              email: true,
+              status: true,
+              firstName: true,
+              lastName: true,
+              phoneRaw: true,
+              phoneE164: true,
+              phoneCountry: true,
+            },
+          },
+        },
         orderBy: [{ userId: "asc" }],
         take: 500,
       });
@@ -294,10 +420,17 @@ function buildMerchantPortalRouter(deps) {
         status: mu.status,
         statusReason: mu.statusReason ?? null,
 
-        // Contact (may be null)
-        phoneRaw: mu.phoneRaw ?? null,
-        phoneE164: mu.phoneE164 ?? null,
-        phoneCountry: mu.phoneCountry ?? null,
+        // Identity (person-level; may be null)
+        firstName: mu.user?.firstName ?? null,
+        lastName: mu.user?.lastName ?? null,
+        phoneRaw: mu.user?.phoneRaw ?? null,
+        phoneE164: mu.user?.phoneE164 ?? null,
+        phoneCountry: mu.user?.phoneCountry ?? null,
+
+        // Legacy fields (do not edit; kept for backward compatibility)
+        contactEmail: mu.contactEmail ?? null,
+        // Legacy phone surface area: prefer person-level phone if present
+        contactPhone: (mu.user?.phoneRaw ?? mu.user?.phoneE164 ?? mu.contactPhone) ?? null,
 
         userStatus: mu.user?.status || null,
       }));
@@ -390,33 +523,65 @@ function buildMerchantPortalRouter(deps) {
     const userId = parseIntParam(req.params.userId);
     if (!userId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid userId");
 
-    const { merchantId: midRaw, role, status, statusReason, phoneRaw, phoneE164, phoneCountry } = req.body || {};
+    const {
+      merchantId: midRaw,
+
+      // Membership (MerchantUser)
+      role,
+      status,
+      statusReason,
+      // Legacy alias from earlier UI iterations
+      reason,
+
+      // Identity (User)
+      firstName,
+      lastName,
+      phoneRaw,
+      phoneE164,
+      phoneCountry,
+      // Legacy aliases from earlier UI iterations
+      contactPhone,
+      phone,
+    } = req.body || {};
+
     const merchantId = parseIntParam(midRaw);
     if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "merchantId is required");
 
     const roleNorm = role !== undefined ? normalizeRole(role) : null;
     const statusNorm = status !== undefined ? normalizeMemberStatus(status) : null;
 
-    function normOptString(v, { maxLen } = {}) {
+    function normOptString(v, { maxLen, upper } = {}) {
       if (v === undefined) return undefined; // means "not provided"
       if (v === null) return null;
-      const s = String(v).trim();
-      if (!s) return null;
+      const s0 = String(v).trim();
+      if (!s0) return null;
+      const s = upper ? s0.toUpperCase() : s0;
       if (maxLen && s.length > maxLen) return s.slice(0, maxLen);
       return s;
     }
 
-    const statusReasonNorm = normOptString(statusReason, { maxLen: 200 });
-    const phoneRawNorm = normOptString(phoneRaw, { maxLen: 32 });
-    const phoneE164Norm = normOptString(phoneE164, { maxLen: 32 });
-    const phoneCountryNorm = normOptString(phoneCountry, { maxLen: 8 });
+    // MerchantUser fields
+    const statusReasonNorm = normOptString(statusReason !== undefined ? statusReason : reason, { maxLen: 200 });
 
-    const hasMembershipPatch = role !== undefined || status !== undefined;
-    const hasContactPatch =
-      statusReason !== undefined ||
+    // User identity fields
+    const firstNameNorm = normOptString(firstName, { maxLen: 80 });
+    const lastNameNorm = normOptString(lastName, { maxLen: 80 });
+    const phoneRawNorm = normOptString(phoneRaw !== undefined ? phoneRaw : (contactPhone !== undefined ? contactPhone : phone), { maxLen: 32 });
+    const phoneE164Norm = normOptString(phoneE164, { maxLen: 20 });
+    const phoneCountryNorm = normOptString(phoneCountry, { maxLen: 8, upper: true });
+
+    const statusReasonProvided = statusReason !== undefined || reason !== undefined;
+    const phoneRawProvided = phoneRaw !== undefined || contactPhone !== undefined || phone !== undefined;
+
+    const hasMembershipPatch = role !== undefined || status !== undefined || statusReason !== undefined || reason !== undefined;
+    const hasUserPatch =
+      firstName !== undefined ||
+      lastName !== undefined ||
       phoneRaw !== undefined ||
       phoneE164 !== undefined ||
-      phoneCountry !== undefined;
+      phoneCountry !== undefined ||
+      contactPhone !== undefined ||
+      phone !== undefined;
 
     if (role !== undefined && !roleNorm) {
       return sendError(res, 400, "VALIDATION_ERROR", "role must be owner|merchant_admin|store_admin|store_subadmin");
@@ -424,8 +589,8 @@ function buildMerchantPortalRouter(deps) {
     if (status !== undefined && !statusNorm) {
       return sendError(res, 400, "VALIDATION_ERROR", "status must be active|suspended");
     }
-    if (!hasMembershipPatch && !hasContactPatch) {
-      return sendError(res, 400, "VALIDATION_ERROR", "Provide role/status and/or contact fields");
+    if (!hasMembershipPatch && !hasUserPatch) {
+      return sendError(res, 400, "VALIDATION_ERROR", "Provide membership and/or identity fields");
     }
 
     try {
@@ -438,38 +603,62 @@ function buildMerchantPortalRouter(deps) {
 
       if (!mu) return sendError(res, 404, "NOT_FOUND", "Membership not found");
 
-      const data = {
-        ...(role !== undefined ? { role: roleNorm } : null),
-        ...(status !== undefined ? { status: statusNorm } : null),
+      // STRICT OWNERSHIP:
+      // - User identity fields update User
+      // - Membership fields update MerchantUser
+      let updatedMembership = null;
 
-        ...(statusReason !== undefined ? { statusReason: statusReasonNorm } : null),
-        ...(phoneRaw !== undefined ? { phoneRaw: phoneRawNorm } : null),
-        ...(phoneE164 !== undefined ? { phoneE164: phoneE164Norm } : null),
-        ...(phoneCountry !== undefined ? { phoneCountry: phoneCountryNorm } : null),
-      };
+      await prisma.$transaction(async (tx) => {
+        if (hasUserPatch) {
+          const userData = {
+            ...(firstName !== undefined ? { firstName: firstNameNorm } : null),
+            ...(lastName !== undefined ? { lastName: lastNameNorm } : null),
+            ...(phoneRawProvided ? { phoneRaw: phoneRawNorm } : null),
+            ...(phoneE164 !== undefined ? { phoneE164: phoneE164Norm } : null),
+            ...(phoneCountry !== undefined ? { phoneCountry: phoneCountryNorm ?? "US" } : null),
+          };
 
-      const updated = await prisma.merchantUser.update({
-        where: { id: mu.id },
-        data,
+          // If caller explicitly sets phoneCountry to null/empty, normalize back to default "US"
+          if (phoneCountry !== undefined && !userData.phoneCountry) {
+            userData.phoneCountry = "US";
+          }
+
+          await tx.user.update({
+            where: { id: userId },
+            data: userData,
+          });
+        }
+
+        if (hasMembershipPatch) {
+          const membershipData = {
+            ...(role !== undefined ? { role: roleNorm } : null),
+            ...(status !== undefined ? { status: statusNorm } : null),
+            ...(statusReasonProvided ? { statusReason: statusReasonNorm } : null),
+            ...(status !== undefined ? { statusUpdatedAt: new Date() } : null),
+            ...(status !== undefined && statusNorm === "suspended" ? { suspendedAt: new Date() } : null),
+            ...(status !== undefined && statusNorm === "active" ? { suspendedAt: null } : null),
+          };
+
+          updatedMembership = await tx.merchantUser.update({
+            where: { id: mu.id },
+            data: membershipData,
+          });
+        }
       });
 
       if (typeof emitPvHook === "function") {
-        emitPvHook("merchant.users.update_membership", {
+        emitPvHook("merchant.users.update_membership_or_identity", {
           merchantId,
           actorUserId: acting.id,
           targetUserId: userId,
-          // membership
-          role: role !== undefined ? roleNorm : null,
-          status: status !== undefined ? statusNorm : null,
-          // contact/reason
-          statusReason: statusReason !== undefined ? statusReasonNorm : null,
-          phoneRaw: phoneRaw !== undefined ? phoneRawNorm : null,
-          phoneE164: phoneE164 !== undefined ? phoneE164Norm : null,
-          phoneCountry: phoneCountry !== undefined ? phoneCountryNorm : null,
+          changed: {
+            membership: Boolean(hasMembershipPatch),
+            identity: Boolean(hasUserPatch),
+          },
         });
       }
 
-      return res.json({ ok: true, membership: updated });
+      return res.json({ ok: true, membership: updatedMembership });
     } catch (err) {
       return handlePrismaError(err, res);
     }
@@ -536,7 +725,7 @@ function buildMerchantPortalRouter(deps) {
         select: {
           id: true,
           systemRole: true,
-          merchantUsers: { where: { status: "active" }, select: { merchantId: true, role: true } },
+          merchantUsers: { where: { status: "active" }, select: { merchantId: true, role: true, status: true } },
         },
       });
 
@@ -559,6 +748,34 @@ function buildMerchantPortalRouter(deps) {
       if (!inv) return sendError(res, 404, "INVOICE_NOT_FOUND", "Invoice not found");
       if (!merchantIds.includes(inv.merchantId)) return sendError(res, 403, "FORBIDDEN", "Invoice not accessible");
 
+      // Enrich with payCode/payUrl when eligible.
+      let payCode = null;
+      let payUrl = null;
+      let payExpiresAt = null;
+
+      const unpaid = Number(inv.totalCents || 0) > Number(inv.amountPaidCents || 0);
+      const issued = String(inv.status || "").toLowerCase() === "issued";
+
+      if (issued && unpaid && canPayInvoicesForMerchant(user, inv.merchantId)) {
+        try {
+          const result = await ensureActiveGuestPayToken({
+            prisma,
+            invoiceId: inv.id,
+            publicBaseUrl: getPublicBaseUrl(req),
+            forceRotate: false,
+          });
+
+          payUrl = result?.payUrl || null;
+          payExpiresAt = result?.expiresAt || null;
+          const code = extractPayCodeFromPayUrl(payUrl);
+          payCode = code ? code : null;
+        } catch (e) {
+          // Non-fatal: invoice detail still returns; UI just won’t show Pay Now.
+          // Keep this quiet; callers can inspect logs if needed.
+          // (We intentionally do NOT emit pvHook here to preserve existing emissions contract.)
+        }
+      }
+
       return res.json({
         invoice: {
           id: inv.id,
@@ -575,6 +792,11 @@ function buildMerchantPortalRouter(deps) {
           relatedToInvoiceId: inv.relatedToInvoiceId ?? null,
           externalInvoiceId: inv.externalInvoiceId ?? null,
           generationVersion: inv.generationVersion,
+
+          // UI enablement (MerchantInvoiceDetail.jsx reads these)
+          payCode,
+          payUrl,
+          payExpiresAt,
         },
         lineItems: inv.lineItems,
         payments: inv.payments,

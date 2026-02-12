@@ -188,3 +188,61 @@ This embedded master file is the **canonical wrapper**. To complete the embed, p
 …into the marked sections above (or link to them in Appendix if you prefer).
 
 Once pasted, increment the Change Log with the embed completion entry (e.g., v2.03.2).
+
+## UI Design System — Color Palette (Locked v1)
+
+This palette applies across:
+- Consumer mobile UI
+- Merchant POS (tablet / laptop)
+- Admin & marketing web surfaces
+
+Consistency across devices is a first-order requirement.
+
+### Palette B (Primary)
+
+**Primary Teal (CTA / active states)**  
+- Hex: `#1F8A8A`  
+- RGB: `rgb(31, 138, 138)`
+
+**Deep Slate (primary text / headers)**  
+- Hex: `#102A33`  
+- RGB: `rgb(16, 42, 51)`
+
+**Accent Orange (emphasis only, limited use)**  
+- Hex: `#FF6B2C`  
+- RGB: `rgb(255, 107, 44)`
+
+**App Background (page canvas)**  
+- Hex: `#F3F6F8`  
+- RGB: `rgb(243, 246, 248)`
+
+**Card / Panel Surface**  
+- Hex: `#FFFFFF`  
+- RGB: `rgb(255, 255, 255)`
+
+**Border / Divider**  
+- Hex: `#DCE4EA`  
+- RGB: `rgb(220, 228, 234)`
+
+**Muted / Secondary Text**  
+- Hex: `#60707A`  
+- RGB: `rgb(96, 112, 122)`
+
+**Disabled Button Background**  
+- Hex: `#D9E4E6`  
+- RGB: `rgb(217, 228, 230)`
+
+**Disabled Button Text**  
+- Hex: `#6B7C85`  
+- RGB: `rgb(107, 124, 133)`
+
+**Enabled Primary Button Text**  
+- Hex: `#FFFFFF`  
+- RGB: `rgb(255, 255, 255)`
+
+### Usage Rules
+
+- The **page canvas** uses App Background color and is **full-bleed** (no rounded outer container).
+- Cards and panels may have rounded corners and subtle shadows.
+- Primary CTAs use Primary Teal with white text.
+- Accent Orange is reserved for emphasis or marketing accents — not default actions.

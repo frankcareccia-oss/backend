@@ -858,55 +858,26 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
             });
             if (!inv) return;
 
-            // No reconciliation into draft/void invoices
-            if (inv.status === "void" || inv.status === "draft") return;
-
-            // THREAD M: append-only payment allocation (idempotent)
-            await tx.paymentAllocation.createMany({
-              data: [
-                {
-                  paymentId: payment.id,
-                  invoiceId: inv.id,
-                  amountCents: payment.amountCents || 0,
-                },
-              ],
-              skipDuplicates: true,
+            // V1: full-payment only. Derive "paid" from succeeded payments for this invoice.
+            // (We intentionally do NOT use PaymentAllocation yet — partial payments are deferred.)
+            const paidAgg = await tx.payment.aggregate({
+              where: { invoiceId: payment.invoiceId, status: "succeeded" },
+              _sum: { amountCents: true },
             });
 
-            const newPaid = (inv.amountPaidCents || 0) + (payment.amountCents || 0);
-            const fullyPaid = newPaid >= (inv.totalCents || 0);
-
-            // PV-HOOK billing.invoice.payment_applied tc=TC-INV-03 sev=info stable=invoice:<invoiceId>
-            pvHook("billing.invoice.payment_applied", {
-              tc: "TC-INV-03",
-              sev: "info",
-              stable: `invoice:${inv.id}`,
-              invoiceId: inv.id,
-              paymentId: payment.id,
-              appliedCents: payment.amountCents,
-              newPaid,
-              totalCents: inv.totalCents || 0,
-            });
+            const totalCents = typeof inv.totalCents === "number" ? inv.totalCents : 0;
+            const paidRaw = paidAgg?._sum?.amountCents || 0;
+            const paidCents = Math.max(0, Math.min(totalCents, paidRaw));
+            const fullyPaid = totalCents > 0 && paidCents >= totalCents;
 
             await tx.invoice.update({
-              where: { id: inv.id },
+              where: { id: payment.invoiceId },
               data: {
-                amountPaidCents: newPaid,
-                status: fullyPaid ? "paid" : inv.status,
-              },
+                amountPaidCents: paidCents,
+                status: fullyPaid ? "paid" : inv.status,              },
             });
 
-            if (fullyPaid) {
-              // PV-HOOK billing.invoice.marked_paid tc=TC-INV-04 sev=info stable=invoice:<invoiceId>
-              pvHook("billing.invoice.marked_paid", {
-                tc: "TC-INV-04",
-                sev: "info",
-                stable: `invoice:${inv.id}`,
-                invoiceId: inv.id,
-              });
-            }
-
-            // Cleanup stale pending attempts by marking them FAILED (not provider failure)
+// Cleanup stale pending attempts by marking them FAILED (not provider failure)
             // PV-HOOK billing.payment_attempts.cleaned tc=TC-PAY-06 sev=info stable=invoice:<invoiceId>
             const cleaned = await tx.payment.updateMany({
               where: {
