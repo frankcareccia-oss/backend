@@ -8,7 +8,6 @@ const path = require("path");
 
 const QRCode = require("qrcode");
 const crypto = require("crypto");
-const { sendMail } = require("./src/mail");
 const express = require("express");
 const cors = require("cors");
 
@@ -439,17 +438,6 @@ function pvSecHook(event, fields = {}) {
   }
 }
 
-async function pvDbNow(prisma) {
-  try {
-    const rows = await prisma.$queryRaw`SELECT now() as now`;
-    const v = rows && rows[0] && rows[0].now ? rows[0].now : null;
-    return v ? new Date(v) : new Date();
-  } catch {
-    return new Date();
-  }
-}
-
-
 function hashWithPepper(raw) {
   const pepper = process.env.DEVICE_ID_PEPPER || JWT_SECRET || "dev-secret-change-me";
   return crypto.createHash("sha256").update(String(pepper) + ":" + String(raw)).digest("hex");
@@ -483,16 +471,6 @@ async function isPrivilegedRequest(req) {
 
 async function findActiveTrustedDevice(userId, deviceIdHash) {
   if (!userId || !deviceIdHash) return null;
-  // Defensive: if Prisma client is missing the trustedDevice delegate, treat as untrusted
-  // (prevents 500s and keeps the device gate deterministic).
-  if (!prisma?.trustedDevice?.findFirst) {
-    pvSecHook("security.device.prisma_delegate_missing", {
-      tc: "TC-SEC-DEV-STATUS-01",
-      hasPrisma: !!prisma,
-      hasTrustedDevice: !!prisma?.trustedDevice,
-    });
-    return null;
-  }
   const now = new Date();
   return prisma.trustedDevice.findFirst({
     where: {
@@ -558,6 +536,48 @@ function buildVerifyDoneUrl({ returnTo }) {
   return url.toString();
 }
 
+async function sendZeptoMail({ toEmail, toName, subject, htmlbody, textbody }) {
+  const apiKey = process.env.ZEPTOMAIL_API_KEY;
+  const fromEmail = process.env.ZEPTOMAIL_FROM_EMAIL;
+  const fromName = process.env.ZEPTOMAIL_FROM_NAME || "PerkValet";
+  if (!apiKey || !fromEmail) {
+    throw new Error("ZEPTOMAIL_API_KEY and ZEPTOMAIL_FROM_EMAIL are required");
+  }
+
+  const payload = {
+    from: { address: fromEmail, name: fromName },
+    to: [{ email_address: { address: toEmail, name: toName || toEmail } }],
+    subject,
+    htmlbody,
+  };
+  if (textbody) payload.textbody = textbody;
+
+  const resp = await fetch("https://api.zeptomail.com/v1.1/email", {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      Authorization: `Zoho-enczapikey ${apiKey}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const bodyText = await resp.text();
+  let bodyJson = null;
+  try {
+    bodyJson = JSON.parse(bodyText);
+  } catch {
+    // ok
+  }
+
+  if (!resp.ok) {
+    const msg = bodyJson?.message || bodyJson?.error?.details || bodyText || "ZeptoMail send failed";
+    throw new Error(msg);
+  }
+
+  return bodyJson;
+}
+
 async function sendDeviceVerifyEmail({ userId, toEmail, deviceIdHash, returnTo }) {
   const user = await prisma.user.findUnique({
     where: { id: userId },
@@ -568,8 +588,7 @@ async function sendDeviceVerifyEmail({ userId, toEmail, deviceIdHash, returnTo }
   const rawToken = crypto.randomBytes(32).toString("hex");
   const tokenHash = hashWithPepper(rawToken);
 
-  const now = await pvDbNow(prisma);
-  const expiresAt = new Date(now.getTime() + DEVICE_VERIFY_TTL_MIN * 60 * 1000);
+  const expiresAt = new Date(Date.now() + DEVICE_VERIFY_TTL_MIN * 60 * 1000);
 
   await prisma.deviceVerifyToken.create({
     data: {
@@ -581,57 +600,76 @@ async function sendDeviceVerifyEmail({ userId, toEmail, deviceIdHash, returnTo }
   });
 
   const verifyUrl = buildVerifyUrl({ token: rawToken, returnTo });
-  const effectiveTo = toEmail || user.email;
+  const subject = "Verify this device for PerkValet admin access";
+  const name = [user.firstName, user.lastName].filter(Boolean).join(" ") || user.email;
 
-  // Use the shared mail adapter (SMTP/dev/idempotency + MailEvent) instead of a hard-coded Zepto API call.
-  // This keeps behavior consistent across environments and makes delivery deterministic when MAIL_MODE=smtp.
-  const idempotencyKey = `security:device-verify:${user.id}:${deviceIdHash}:${expiresAt.toISOString()}`;
+  const htmlbody = `
+    <div style="font-family: Arial, sans-serif; line-height: 1.5;">
+      <h2 style="margin: 0 0 12px 0;">Verify this device</h2>
+      <p style="margin: 0 0 12px 0;">Hi ${name},</p>
+      <p style="margin: 0 0 12px 0;">
+        For security, PerkValet requires device verification for admin access. Click the button below to verify this device.
+      </p>
+      <p style="margin: 16px 0;">
+        <a href="${verifyUrl}" style="background:#111;color:#fff;padding:10px 14px;border-radius:8px;text-decoration:none;">
+          Verify device
+        </a>
+      </p>
+      <p style="margin: 12px 0 0 0; font-size: 12px; color: #444;">
+        If the button doesn't work, copy and paste this URL into your browser:<br/>
+        ${verifyUrl}
+      </p>
+    </div>
+  `.trim();
+
+  const mailEvent = await prisma.mailEvent.create({
+    data: {
+      category: "security",
+      triggerType: "auto",
+      idempotencyKey: `security:device-verify:${user.id}:${deviceIdHash}:${expiresAt.toISOString()}`,
+      actorRole: "system",
+      actorUserId: user.id,
+      template: "device_verify",
+      toEmail: toEmail || user.email,
+      status: "failed",
+      transport: "zeptomail",
+    },
+  });
 
   try {
-    const res = await sendMail({
-      idempotencyKey,
-      category: "system",
-      to: [effectiveTo],
-      subject: "PerkValet device verification",
-      template: "security.device_verify",
+    const resp = await sendZeptoMail({
+      toEmail: toEmail || user.email,
+      toName: name,
+      subject,
+      htmlbody,
+      textbody: `Verify this device: ${verifyUrl}`,
+    });
+
+    await prisma.mailEvent.update({
+      where: { id: mailEvent.id },
       data: {
-        toEmail: effectiveTo,
-        email: user.email,
-        link: verifyUrl,
-        returnTo: returnTo || "/merchants",
-        userId: user.id,
-        deviceIdHash,
-        expiresAt: expiresAt.toISOString(),
-      },
-      meta: {
-        purpose: "device_verify",
-        actorRole: "system",
-        actorUserId: user.id,
+        status: "sent",
+        sentAt: new Date(),
+        providerMessageId: resp?.data?.message_id || resp?.message_id || resp?.data?.request_id || null,
       },
     });
 
-    pvSecHook("security.device.email.sent", {
-      tc: "TC-SEC-DEV-EMAIL-01",
-      ok: !!res?.ok,
-      transport: res?.transport,
-      messageId: res?.messageId || null,
-      idempotencyKey,
-      toEmail: effectiveTo,
-    });
-
-    return { ok: !!res?.ok, transport: res?.transport, messageId: res?.messageId || null };
+    pvSecHook("security.device.email.sent", { tc: "TC-SEC-DEV-EMAIL-01", mailEventId: mailEvent.id });
+    return { ok: true };
   } catch (err) {
+    await prisma.mailEvent.update({
+      where: { id: mailEvent.id },
+      data: { status: "failed", error: err?.message || "send failed" },
+    });
     pvSecHook("security.device.email.sent", {
       tc: "TC-SEC-DEV-EMAIL-01",
+      mailEventId: mailEvent.id,
       ok: false,
       error: err?.message,
-      idempotencyKey,
-      toEmail: effectiveTo,
     });
     return { ok: false, error: err?.message || "send failed" };
   }
 }
-
 
 
 /* -----------------------------
@@ -1787,26 +1825,6 @@ app.post("/auth/device/start", requireJwt, async (req, res) => {
   }
 });
 
-app.get("/auth/device/status", requireJwt, async (req, res) => {
-  try {
-    const deviceIdHash = getDeviceIdHash(req);
-    if (!deviceIdHash) {
-      return res.json({ trusted: false });
-    }
-
-    const td = await findActiveTrustedDevice(req.userId, deviceIdHash);
-    if (!td) {
-      return res.json({ trusted: false });
-    }
-
-    return res.json({ trusted: true, expiresAt: td.expiresAt });
-  } catch (err) {
-    try { console.error("[security.device.status.failed]", err); } catch {}
-    pvSecHook("security.device.status.failed", { tc: "TC-SEC-DEV-STATUS-01", error: err?.message, stack: err?.stack });
-    return sendError(res, 500, "SERVER_ERROR", "Failed to check device status");
-  }
-});
-
 app.get("/auth/device/verify", async (req, res) => {
   try {
     const rawToken = String(req.query?.token || "").trim();
@@ -1815,7 +1833,7 @@ app.get("/auth/device/verify", async (req, res) => {
     if (!rawToken) return sendError(res, 400, "BAD_REQUEST", "Missing token");
 
     const tokenHash = hashWithPepper(rawToken);
-    const now = await pvDbNow(prisma);
+    const now = new Date();
 
     const rec = await prisma.deviceVerifyToken.findUnique({
       where: { tokenHash },

@@ -13,6 +13,10 @@
 //
 // Mail-Flow-1 FIX:
 // - Never serialize prisma (or other non-JSON-safe objects) into DEV artifacts.
+//
+// Security-V1 FIX (2026-02):
+// - Propagate rendered template output (subject/text/html/body) into msg fields
+//   so transports can send real content instead of header-only placeholders.
 
 const { MAIL_CATEGORIES, assertValidMailCategory } = require("./mail.categories");
 const { sendViaDevTransport } = require("./mail.dev.transport");
@@ -109,6 +113,41 @@ function getMailFlow(meta) {
 }
 
 /**
+ * Normalize rendered template output so downstream transports can reliably pick it up.
+ * Supports multiple historical shapes:
+ * - { subject, text, html }
+ * - { subject, body }
+ * - { subject, bodyText, bodyHtml }
+ */
+function normalizeRendered(rendered) {
+  if (!rendered || typeof rendered !== "object") {
+    return { subject: null, text: null, html: null, body: null };
+  }
+
+  const subject = rendered.subject != null && String(rendered.subject).trim()
+    ? String(rendered.subject)
+    : null;
+
+  const textCandidate =
+    rendered.text ?? rendered.body ?? rendered.bodyText ?? null;
+  const htmlCandidate =
+    rendered.html ?? rendered.bodyHtml ?? null;
+
+  const text = textCandidate != null && String(textCandidate).trim()
+    ? String(textCandidate)
+    : null;
+
+  const html = htmlCandidate != null && String(htmlCandidate).trim()
+    ? String(htmlCandidate)
+    : null;
+
+  // body is a compatibility alias for transports that only read msg.body
+  const body = text;
+
+  return { subject, text, html, body };
+}
+
+/**
  * Main entrypoint
  */
 async function sendMail(input) {
@@ -125,6 +164,7 @@ async function sendMail(input) {
   const to = normalizeTo(input.to);
   if (!to.length) throw new Error("to is required");
 
+  // Keep input.subject requirement for existing callers, but we may override from template output.
   assertNonEmptyString("subject", input.subject);
   assertNonEmptyString("template", input.template);
 
@@ -176,14 +216,24 @@ async function sendMail(input) {
     rendered = null;
   }
 
+  const norm = normalizeRendered(rendered);
+
   const msg = {
     category,
     to,
-    subject: String(input.subject),
+
+    // Prefer template subject if provided; otherwise fall back to caller subject.
+    subject: norm.subject || String(input.subject),
+
     template: String(input.template),
     rendered,
     data: input.data || {},
     meta: metaSafe, // SAFE for JSON.stringify in dev transport
+
+    // Transport-friendly fields so real content isn't lost.
+    text: norm.text,
+    html: norm.html,
+    body: norm.body,
   };
 
   const mode = getMailMode();

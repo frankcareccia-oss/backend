@@ -1,19 +1,10 @@
 // backend/src/mail/templateRegistry.js
-// Purpose: avoid relying on src/mail/templates/index.js, which is not a template
-// registry in this repo.
+// Purpose: stable explicit template registry.
 //
 // Contract:
 // - Keep this registry stable and explicit.
 // - renderTemplate(name, data) -> { subject, text, html? }
 // - Unknown template should throw (adapter will catch + log).
-//
-// Mail-Flow-1 stubs already supported:
-// - invoice.guest_pay.stub
-// - invoice.payment_succeeded.stub
-// - invoice.payment_failed.stub
-//
-// Mail-Flow-2 addition:
-// - invoice.issued  -> templates/invoice.issued.stub
 
 "use strict";
 
@@ -32,7 +23,7 @@ function loadTemplate(name) {
       return require("./templates/invoice.guest_pay.stub");
 
     case "invoice.guest_pay":
-      // Back-compat alias (if any callers used the short name)
+      // Back-compat alias
       return require("./templates/invoice.guest_pay.stub");
 
     case "invoice.payment_succeeded.stub":
@@ -54,8 +45,15 @@ function loadTemplate(name) {
       return require("./templates/invoice.issued.stub");
 
     case "invoice.issued.stub":
-      // Allow explicit stub name too
       return require("./templates/invoice.issued.stub");
+
+    // Security-V1
+    case "security.device_verify":
+      return require("./templates/security.device_verify");
+
+    // Optional alias (if any older caller used a short name)
+    case "device_verify":
+      return require("./templates/security.device_verify");
 
     default: {
       const err = new Error(`Unknown template: ${safeString(name)}`);
@@ -72,12 +70,14 @@ function renderTemplate(name, data) {
     err.code = "MAIL_TEMPLATE_INVALID";
     throw err;
   }
+
   const out = tmpl(data || {});
   if (!out || typeof out !== "object") {
     const err = new Error(`Template returned invalid payload: ${safeString(name)}`);
     err.code = "MAIL_TEMPLATE_INVALID_RESULT";
     throw err;
   }
+
   // Require at least subject + text; html is optional.
   if (!safeString(out.subject) || !safeString(out.text)) {
     const err = new Error(
@@ -86,6 +86,7 @@ function renderTemplate(name, data) {
     err.code = "MAIL_TEMPLATE_MISSING_FIELDS";
     throw err;
   }
+
   return out;
 }
 

@@ -1,100 +1,109 @@
 // backend/src/mail/mail.smtp.transport.js
-// Mail-Prod-1: SMTP transport using nodemailer.
-// Safety: transport MAY throw; adapter catches and converts to best-effort result.
+// SMTP transport (best-effort). Does not throw unless misconfigured.
 
 const nodemailer = require("nodemailer");
 
-function env(name, fallback = "") {
-  return String(process.env[name] || fallback).trim();
-}
-
 function must(name) {
-  const v = env(name);
-  if (!v) throw new Error(`${name} is required for MAIL_MODE=smtp`);
-  return v;
+  const v = process.env[name];
+  if (!v || String(v).trim() === "") throw new Error(`${name} is required`);
+  return String(v).trim();
 }
 
-function num(name, fallback) {
-  const raw = env(name, String(fallback ?? ""));
-  const n = Number(raw);
-  if (!Number.isFinite(n) || n <= 0) throw new Error(`${name} must be a positive number`);
-  return n;
-}
-
-function bool(name, fallback = false) {
-  const raw = env(name, fallback ? "true" : "false").toLowerCase();
-  return raw === "true" || raw === "1" || raw === "yes";
-}
-
-function buildTransport() {
-  const host = must("SMTP_HOST");
-  const port = num("SMTP_PORT", 587);
-  const secure = bool("SMTP_SECURE", port === 465);
-
-  const user = env("SMTP_USER");
-  const pass = env("SMTP_PASS");
-
-  const auth =
-    user && pass
-      ? {
-          user,
-          pass,
-        }
-      : undefined;
-
-  return nodemailer.createTransport({
-    host,
-    port,
-    secure,
-    auth,
-  });
+function safeString(v) {
+  if (v === undefined || v === null) return "";
+  return String(v);
 }
 
 function normalizeText(msg) {
-  // Prefer rendered.text (template output) if available; otherwise use meta-provided fields.
-  const renderedText = msg?.rendered?.text ? String(msg.rendered.text) : "";
+  // Prefer adapter-normalized fields first (newer)
+  const topText = msg?.text ? String(msg.text) : "";
+  if (topText.trim()) return topText;
+
+  const body = msg?.body ? String(msg.body) : "";
+  if (body.trim()) return body;
+
+  // Back-compat: rendered.text or rendered.body/bodyText
+  const rendered =
+    msg && msg.rendered && typeof msg.rendered === "object" ? msg.rendered : null;
+
+  const renderedText =
+    rendered && (rendered.text || rendered.body || rendered.bodyText)
+      ? String(rendered.text || rendered.body || rendered.bodyText)
+      : "";
   if (renderedText.trim()) return renderedText;
 
+  // Legacy: meta.text
   const fallback = msg?.meta?.text ? String(msg.meta.text) : "";
   if (fallback.trim()) return fallback;
 
-  return `Category: ${String(msg?.category || "")}\nTemplate: ${String(msg?.template || "")}`;
+  // Last resort
+  return `Category: ${safeString(msg?.category)}\nTemplate: ${safeString(msg?.template)}`;
 }
 
-/**
- * @param {object} msg
- * @param {string} msg.category
- * @param {string[]} msg.to
- * @param {string} msg.subject
- * @param {object|null} msg.rendered
- * @param {object} msg.meta
- */
+function normalizeHtml(msg) {
+  // Prefer adapter-normalized fields first (newer)
+  const topHtml = msg?.html ? String(msg.html) : "";
+  if (topHtml.trim()) return topHtml;
+
+  // Back-compat: rendered.html or rendered.bodyHtml
+  const rendered =
+    msg && msg.rendered && typeof msg.rendered === "object" ? msg.rendered : null;
+
+  const renderedHtml =
+    rendered && (rendered.html || rendered.bodyHtml)
+      ? String(rendered.html || rendered.bodyHtml)
+      : "";
+  if (renderedHtml.trim()) return renderedHtml;
+
+  // Legacy: meta.html
+  const fallback = msg?.meta?.html ? String(msg.meta.html) : "";
+  if (fallback.trim()) return fallback;
+
+  return "";
+}
+
 async function sendViaSmtpTransport(msg) {
   const from = must("SMTP_FROM");
 
-  const transport = buildTransport();
+  const host = must("SMTP_HOST");
+  const port = Number(must("SMTP_PORT"));
+  const user = must("SMTP_USER");
+  const pass = must("SMTP_PASS");
 
-  const info = await transport.sendMail({
-    from,
-    to: msg.to.join(", "),
-    subject: msg.subject,
-    text: normalizeText(msg),
-    // Optional: allow override via meta.html
-    ...(msg?.meta?.html ? { html: String(msg.meta.html) } : {}),
-    headers: {
-      "X-PerkValet-Category": String(msg.category || ""),
-      "X-PerkValet-Template": String(msg.template || ""),
-    },
+  const secure = String(process.env.SMTP_SECURE || "").trim().toLowerCase() === "true";
+
+  const transporter = nodemailer.createTransport({
+    host,
+    port,
+    secure,
+    auth: { user, pass },
   });
+
+  const text = normalizeText(msg);
+  const html = normalizeHtml(msg);
+
+  const mailOptions = {
+    from,
+    to: Array.isArray(msg.to) ? msg.to.join(",") : String(msg.to || ""),
+    subject: safeString(msg.subject) || "PerkValet message",
+    text,
+
+    // Only include html if we have it; otherwise nodemailer uses text.
+    ...(html.trim() ? { html } : {}),
+
+    headers: {
+      "X-PerkValet-Category": safeString(msg.category),
+      "X-PerkValet-Template": safeString(msg.template),
+    },
+  };
+
+  const info = await transporter.sendMail(mailOptions);
 
   return {
     ok: true,
     transport: "smtp",
-    messageId: info && info.messageId ? String(info.messageId) : null,
-    response: info && info.response ? String(info.response) : null,
+    messageId: info && info.messageId ? info.messageId : null,
   };
 }
 
-module.exports = {
-  sendViaSmtpTransport,
-};
+module.exports = { sendViaSmtpTransport };

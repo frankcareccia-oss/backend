@@ -1,4 +1,4 @@
-﻿require("dotenv").config();
+require("dotenv").config();
 const { registerPaymentsRoutes } = require("./src/payments/payments.routes");
 const { registerPosRoutes } = require("./src/pos/pos.routes");
 const { registerPosProvisionRoutes } = require("./src/pos/pos.provision.routes");
@@ -8,7 +8,6 @@ const path = require("path");
 
 const QRCode = require("qrcode");
 const crypto = require("crypto");
-const { sendMail } = require("./src/mail");
 const express = require("express");
 const cors = require("cors");
 
@@ -426,215 +425,6 @@ async function requireJwt(req, res, next) {
 }
 
 /* -----------------------------
-   Security-V1: Trusted Device + Email Verification
--------------------------------- */
-const DEVICE_VERIFY_TTL_MIN = Number(process.env.DEVICE_VERIFY_TTL_MIN || 15);
-const TRUSTED_DEVICE_TTL_DAYS = Number(process.env.TRUSTED_DEVICE_TTL_DAYS || 90);
-
-function pvSecHook(event, fields = {}) {
-  try {
-    emitPvHook(event, { ...fields, stable: fields?.stable || "security:v1:trusted-device" });
-  } catch {
-    // never break runtime for logging
-  }
-}
-
-async function pvDbNow(prisma) {
-  try {
-    const rows = await prisma.$queryRaw`SELECT now() as now`;
-    const v = rows && rows[0] && rows[0].now ? rows[0].now : null;
-    return v ? new Date(v) : new Date();
-  } catch {
-    return new Date();
-  }
-}
-
-
-function hashWithPepper(raw) {
-  const pepper = process.env.DEVICE_ID_PEPPER || JWT_SECRET || "dev-secret-change-me";
-  return crypto.createHash("sha256").update(String(pepper) + ":" + String(raw)).digest("hex");
-}
-
-function getRawDeviceId(req) {
-  const v = req?.headers?.["x-pv-device-id"];
-  if (!v) return "";
-  return String(v).trim();
-}
-
-function getDeviceIdHash(req) {
-  const raw = getRawDeviceId(req);
-  if (!raw) return "";
-  return hashWithPepper(raw);
-}
-
-async function isMerchantAdminUserId(userId) {
-  const mu = await prisma.merchantUser.findFirst({
-    where: { userId, role: "merchant_admin", status: "active" },
-    select: { id: true },
-  });
-  return !!mu;
-}
-
-async function isPrivilegedRequest(req) {
-  if (req?.systemRole === "pv_admin") return true;
-  if (!req?.userId) return false;
-  return isMerchantAdminUserId(req.userId);
-}
-
-async function findActiveTrustedDevice(userId, deviceIdHash) {
-  if (!userId || !deviceIdHash) return null;
-  // Defensive: if Prisma client is missing the trustedDevice delegate, treat as untrusted
-  // (prevents 500s and keeps the device gate deterministic).
-  if (!prisma?.trustedDevice?.findFirst) {
-    pvSecHook("security.device.prisma_delegate_missing", {
-      tc: "TC-SEC-DEV-STATUS-01",
-      hasPrisma: !!prisma,
-      hasTrustedDevice: !!prisma?.trustedDevice,
-    });
-    return null;
-  }
-  const now = new Date();
-  return prisma.trustedDevice.findFirst({
-    where: {
-      userId,
-      deviceIdHash,
-      revokedAt: null,
-      expiresAt: { gt: now },
-    },
-  });
-}
-
-async function touchTrustedDevice(id) {
-  try {
-    await prisma.trustedDevice.update({
-      where: { id },
-      data: { lastSeenAt: new Date() },
-    });
-  } catch {
-    // ignore
-  }
-}
-
-async function requireTrustedDeviceIfPrivileged(req, res, next) {
-  try {
-    const privileged = await isPrivilegedRequest(req);
-    if (!privileged) return next();
-
-    const deviceIdHash = getDeviceIdHash(req);
-    if (!deviceIdHash) {
-      pvSecHook("security.device.required", { tc: "TC-SEC-DEV-01", reason: "missing_device_id" });
-      return sendError(res, 401, "DEVICE_ID_REQUIRED", "Missing device identifier header");
-    }
-
-    pvSecHook("security.device.check", { tc: "TC-SEC-DEV-01" });
-
-    const td = await findActiveTrustedDevice(req.userId, deviceIdHash);
-    if (!td) {
-      pvSecHook("security.device.required", { tc: "TC-SEC-DEV-01", reason: "not_trusted" });
-      return sendError(res, 403, "DEVICE_VERIFICATION_REQUIRED", "Device verification required");
-    }
-
-    await touchTrustedDevice(td.id);
-    pvSecHook("security.device.trusted", { tc: "TC-SEC-DEV-01" });
-    return next();
-  } catch (err) {
-    pvSecHook("security.device.verify.failed", { tc: "TC-SEC-DEV-01", error: err?.message });
-    return sendError(res, 403, "DEVICE_NOT_TRUSTED", "This browser is not enabled for admin actions. Please verify this device.");
-  }
-}
-
-function buildVerifyUrl({ token, returnTo }) {
-  const base = process.env.API_PUBLIC_URL || "http://localhost:3001";
-  const url = new URL("/auth/device/verify", base);
-  url.searchParams.set("token", token);
-  if (returnTo) url.searchParams.set("returnTo", returnTo);
-  return url.toString();
-}
-
-function buildVerifyDoneUrl({ returnTo }) {
-  const base = process.env.APP_PUBLIC_URL || "http://localhost:5173";
-  const url = new URL("/verify-device/done", base);
-  if (returnTo) url.searchParams.set("returnTo", returnTo);
-  return url.toString();
-}
-
-async function sendDeviceVerifyEmail({ userId, toEmail, deviceIdHash, returnTo }) {
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { id: true, email: true, firstName: true, lastName: true },
-  });
-  if (!user) throw new Error("User not found");
-
-  const rawToken = crypto.randomBytes(32).toString("hex");
-  const tokenHash = hashWithPepper(rawToken);
-
-  const now = await pvDbNow(prisma);
-  const expiresAt = new Date(now.getTime() + DEVICE_VERIFY_TTL_MIN * 60 * 1000);
-
-  await prisma.deviceVerifyToken.create({
-    data: {
-      userId: user.id,
-      deviceIdHash,
-      tokenHash,
-      expiresAt,
-    },
-  });
-
-  const verifyUrl = buildVerifyUrl({ token: rawToken, returnTo });
-  const effectiveTo = toEmail || user.email;
-
-  // Use the shared mail adapter (SMTP/dev/idempotency + MailEvent) instead of a hard-coded Zepto API call.
-  // This keeps behavior consistent across environments and makes delivery deterministic when MAIL_MODE=smtp.
-  const idempotencyKey = `security:device-verify:${user.id}:${deviceIdHash}:${expiresAt.toISOString()}`;
-
-  try {
-    const res = await sendMail({
-      idempotencyKey,
-      category: "system",
-      to: [effectiveTo],
-      subject: "PerkValet device verification",
-      template: "security.device_verify",
-      data: {
-        toEmail: effectiveTo,
-        email: user.email,
-        link: verifyUrl,
-        returnTo: returnTo || "/merchants",
-        userId: user.id,
-        deviceIdHash,
-        expiresAt: expiresAt.toISOString(),
-      },
-      meta: {
-        purpose: "device_verify",
-        actorRole: "system",
-        actorUserId: user.id,
-      },
-    });
-
-    pvSecHook("security.device.email.sent", {
-      tc: "TC-SEC-DEV-EMAIL-01",
-      ok: !!res?.ok,
-      transport: res?.transport,
-      messageId: res?.messageId || null,
-      idempotencyKey,
-      toEmail: effectiveTo,
-    });
-
-    return { ok: !!res?.ok, transport: res?.transport, messageId: res?.messageId || null };
-  } catch (err) {
-    pvSecHook("security.device.email.sent", {
-      tc: "TC-SEC-DEV-EMAIL-01",
-      ok: false,
-      error: err?.message,
-      idempotencyKey,
-      toEmail: effectiveTo,
-    });
-    return { ok: false, error: err?.message || "send failed" };
-  }
-}
-
-
-
-/* -----------------------------
    CORS
 -------------------------------- */
 
@@ -657,7 +447,6 @@ function buildCorsOptions() {
       "Content-Type",
       "Authorization",
       "x-api-key",
-      "x-pv-device-id",
       "x-idempotency-key",
       "x-pv-hook",
       "x-pv-testcase",
@@ -1120,41 +909,12 @@ app.post("/auth/login", async (req, res) => {
     const ok = await bcrypt.compare(passwordRaw, user.passwordHash);
     if (!ok) return sendError(res, 401, "UNAUTHORIZED", "Invalid credentials");
 
-    // Security-V1: device trust check (privileged roles only)
-    const deviceIdHash = getDeviceIdHash(req);
-    let requiresDeviceVerification = false;
-
-    try {
-      const merchantAdmin = await isMerchantAdminUserId(user.id);
-      const privileged = user.systemRole === "pv_admin" || merchantAdmin;
-
-      if (privileged) {
-        const td = await findActiveTrustedDevice(user.id, deviceIdHash);
-        requiresDeviceVerification = !td;
-
-        if (requiresDeviceVerification) {
-          pvSecHook("security.device.required", { tc: "TC-SEC-DEV-LOGIN-01", reason: "login_untrusted" });
-          // Best-effort: send verification email during login to reduce friction.
-          if (deviceIdHash) {
-            await sendDeviceVerifyEmail({ userId: user.id, toEmail: user.email, deviceIdHash, returnTo: req.body?.returnTo });
-          }
-        } else {
-          pvSecHook("security.device.trusted", { tc: "TC-SEC-DEV-LOGIN-01" });
-        }
-      }
-    } catch (err) {
-      pvSecHook("security.device.verify.failed", { tc: "TC-SEC-DEV-LOGIN-01", error: err?.message });
-      // Fail open for login; enforcement happens on privileged routes via middleware.
-    }
-
-
-
     const accessToken = jwt.sign({ userId: user.id, tokenVersion: user.tokenVersion ?? 0 }, JWT_SECRET, {
       expiresIn: JWT_EXPIRES_IN,
     });
 
     const landing = user.systemRole === "pv_admin" ? "/merchants" : "/merchant";
-    return res.json({ accessToken, systemRole: user.systemRole, landing, requiresDeviceVerification });
+    return res.json({ accessToken, systemRole: user.systemRole, landing });
   } catch (err) {
     return handlePrismaError(err, res);
   }
@@ -1757,115 +1517,6 @@ app.post("/auth/change-password", requireJwt, async (req, res) => {
   }
 });
 
-/* -----------------------------
-   Security-V1: Device verification
--------------------------------- */
-app.post("/auth/device/start", requireJwt, async (req, res) => {
-  try {
-    const deviceIdHash = getDeviceIdHash(req);
-    if (!deviceIdHash) {
-      return sendError(res, 400, "DEVICE_ID_REQUIRED", "Missing device identifier header");
-    }
-
-    const privileged = await isPrivilegedRequest(req);
-    if (!privileged) {
-      return sendError(res, 403, "FORBIDDEN", "Device verification not required for this account");
-    }
-
-    const returnTo = req.body?.returnTo || req.query?.returnTo || "";
-    const result = await sendDeviceVerifyEmail({
-      userId: req.userId,
-      toEmail: undefined,
-      deviceIdHash,
-      returnTo,
-    });
-
-    return res.json({ ok: !!result?.ok });
-  } catch (err) {
-    pvSecHook("security.device.verify.failed", { tc: "TC-SEC-DEV-START-01", error: err?.message });
-    return sendError(res, 500, "SERVER_ERROR", "Failed to start device verification");
-  }
-});
-
-app.get("/auth/device/status", requireJwt, async (req, res) => {
-  try {
-    const deviceIdHash = getDeviceIdHash(req);
-    if (!deviceIdHash) {
-      return res.json({ trusted: false });
-    }
-
-    const td = await findActiveTrustedDevice(req.userId, deviceIdHash);
-    if (!td) {
-      return res.json({ trusted: false });
-    }
-
-    return res.json({ trusted: true, expiresAt: td.expiresAt });
-  } catch (err) {
-    try { console.error("[security.device.status.failed]", err); } catch {}
-    pvSecHook("security.device.status.failed", { tc: "TC-SEC-DEV-STATUS-01", error: err?.message, stack: err?.stack });
-    return sendError(res, 500, "SERVER_ERROR", "Failed to check device status");
-  }
-});
-
-app.get("/auth/device/verify", async (req, res) => {
-  try {
-    const rawToken = String(req.query?.token || "").trim();
-    const returnTo = String(req.query?.returnTo || "").trim();
-
-    if (!rawToken) return sendError(res, 400, "BAD_REQUEST", "Missing token");
-
-    const tokenHash = hashWithPepper(rawToken);
-    const now = await pvDbNow(prisma);
-
-    const rec = await prisma.deviceVerifyToken.findUnique({
-      where: { tokenHash },
-    });
-
-    if (!rec) {
-      pvSecHook("security.device.verify.failed", { tc: "TC-SEC-DEV-VERIFY-01", reason: "not_found" });
-      return sendError(res, 400, "INVALID_TOKEN", "Invalid or expired token");
-    }
-
-    if (rec.usedAt) {
-      pvSecHook("security.device.verify.failed", { tc: "TC-SEC-DEV-VERIFY-01", reason: "used" });
-      return sendError(res, 400, "INVALID_TOKEN", "Token already used");
-    }
-
-    if (rec.expiresAt && rec.expiresAt <= now) {
-      pvSecHook("security.device.verify.failed", { tc: "TC-SEC-DEV-VERIFY-01", reason: "expired" });
-      return sendError(res, 400, "INVALID_TOKEN", "Token expired");
-    }
-
-    const expiresAt = new Date(Date.now() + TRUSTED_DEVICE_TTL_DAYS * 24 * 60 * 60 * 1000);
-
-    await prisma.$transaction([
-      prisma.deviceVerifyToken.update({
-        where: { id: rec.id },
-        data: { usedAt: new Date() },
-      }),
-      prisma.trustedDevice.upsert({
-        where: { userId_deviceIdHash: { userId: rec.userId, deviceIdHash: rec.deviceIdHash } },
-        update: { revokedAt: null, expiresAt, lastSeenAt: new Date() },
-        create: {
-          userId: rec.userId,
-          deviceIdHash: rec.deviceIdHash,
-          expiresAt,
-        },
-      }),
-    ]);
-
-    pvSecHook("security.device.verified", { tc: "TC-SEC-DEV-VERIFY-01", userId: rec.userId });
-
-    // Redirect back to UI (honor ?returnTo=)
-    const doneUrl = buildVerifyDoneUrl({ returnTo });
-    return res.redirect(doneUrl);
-  } catch (err) {
-    pvSecHook("security.device.verify.failed", { tc: "TC-SEC-DEV-VERIFY-01", error: err?.message });
-    return sendError(res, 500, "SERVER_ERROR", "Device verification failed");
-  }
-});
-
-
 app.get("/me", requireJwt, async (req, res) => {
   try {
     const user = await prisma.user.findUnique({
@@ -1879,25 +1530,10 @@ app.get("/me", requireJwt, async (req, res) => {
       },
     });
 
-    // Security-V1: device verification flag
-    let requiresDeviceVerification = false;
-    try {
-      const privileged = await isPrivilegedRequest(req);
-      if (privileged) {
-        const deviceIdHash = getDeviceIdHash(req);
-        const td = await findActiveTrustedDevice(req.userId, deviceIdHash);
-        requiresDeviceVerification = !td;
-      }
-    } catch (err) {
-      pvSecHook("security.device.verify.failed", { tc: "TC-SEC-DEV-ME-01", error: err?.message });
-      requiresDeviceVerification = false;
-    }
-
-
     if (!user) return sendError(res, 404, "NOT_FOUND", "User not found");
 
     const landing = user.systemRole === "pv_admin" ? "/merchants" : "/merchant";
-    return res.json({ user, memberships: user.merchantUsers, landing, requiresDeviceVerification });
+    return res.json({ user, memberships: user.merchantUsers, landing });
   } catch (err) {
     return handlePrismaError(err, res);
   }
@@ -1943,7 +1579,6 @@ const { buildMerchantPortalRouter } = require("./src/merchant/merchant.portal.ro
 
 app.use(
   "/merchant",
-  requireTrustedDeviceIfPrivileged,
   buildMerchantPortalRouter({
     prisma,
     requireJwt,
@@ -1981,7 +1616,7 @@ function requireJwtOrAdminKey(req, res, next) {
   return requireJwt(req, res, () => requireAdmin(req, res, next));
 }
 
-app.use(["/merchants", "/stores", "/users", "/admin", "/billing"], requireJwtOrAdminKey, requireTrustedDeviceIfPrivileged);
+app.use(["/merchants", "/stores", "/users", "/admin", "/billing"], requireJwtOrAdminKey);
 
 
 /* -----------------------------

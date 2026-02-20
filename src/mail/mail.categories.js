@@ -5,6 +5,7 @@ const MAIL_CATEGORIES = Object.freeze({
   INVOICE: "invoice",
   SUPPORT: "support",
   MARKETING: "marketing",
+  SECURITY: "security",
   SYSTEM: "system",
 });
 
