@@ -89,7 +89,7 @@ function isPosOnlyMerchantUser(user) {
   if (!mus.length) return false;
   const roles = mus.map((m) => m?.role).filter(Boolean);
   if (!roles.length) return false;
-  return roles.every((r) => r === "store_subadmin");
+  return roles.every((r) => r === "pos_employee");
 }
 
 function registerPosAuthRoutes(app, { prisma, sendError, jwt, jwtSecret, jwtExpiresIn, emitPvHook }) {
@@ -171,7 +171,7 @@ function registerPosAuthRoutes(app, { prisma, sendError, jwt, jwtSecret, jwtExpi
       });
 
       if (!full) return sendError(res, 401, "UNAUTHORIZED", "Invalid code");
-      if (full.systemRole === "pv_admin") return sendError(res, 403, "FORBIDDEN", "Admin cannot use POS");
+      if (["pv_admin","pv_ar_clerk"].includes(full.systemRole)) return sendError(res, 403, "FORBIDDEN", "Admin cannot use POS");
       if (!isPosOnlyMerchantUser(full)) return sendError(res, 403, "FORBIDDEN", "Not a POS associate");
 
       // Store validation

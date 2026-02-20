@@ -515,7 +515,7 @@ function registerPosRoutes(app, { prisma, sendError, requireAuth }) {
       return null;
     }
 
-    if (user.systemRole === "pv_admin") {
+    if (["pv_admin","pv_ar_clerk"].includes(user.systemRole)) {
       hook("pos.auth.context.failed.api", {
         tc: "TC-POS-AUTH-CTX-02",
         sev: "warn",
@@ -530,7 +530,7 @@ function registerPosRoutes(app, { prisma, sendError, requireAuth }) {
     let merchantId = null;
 
     for (const mu of user.merchantUsers || []) {
-      if (mu.role !== "store_subadmin") continue;
+      if (mu.role !== "pos_employee") continue;
       const su = (mu.storeUsers || []).find((s) => s.permissionLevel === "subadmin");
       if (su) {
         storeId = su.storeId;

@@ -565,6 +565,9 @@ enum SystemRole {
   /// PerkValet global admin (routes to /admin)
   pv_admin
 
+  /// PerkValet platform AR clerk (routes to /admin with AR-only nav)
+  pv_ar_clerk
+
   /// Normal user (merchant-scoped roles apply via MerchantUser / StoreUser)
   user
 }
@@ -572,8 +575,9 @@ enum SystemRole {
 enum MerchantRole {
   owner
   merchant_admin
+  merchant_ap_clerk
   store_admin
-  store_subadmin
+  pos_employee
 }
 
 enum StorePermissionLevel {

@@ -1,0 +1,12 @@
+# PerkValet Backend — normalize line endings
+* text=auto
+
+# Force LF for source-controlled text files
+*.js text eol=lf
+*.mjs text eol=lf
+*.cjs text eol=lf
+*.ts text eol=lf
+*.json text eol=lf
+*.prisma text eol=lf
+*.sql text eol=lf
+*.md text eol=lf

@@ -42,14 +42,14 @@ function buildMerchantPortalRouter(deps) {
 
   function isPosOnlyMerchantUser(user) {
     // Treat as POS-only if the user has at least one active merchant membership
-    // and ALL memberships are store_subadmin.
+    // and ALL memberships are pos_employee.
     const mus = Array.isArray(user?.merchantUsers) ? user.merchantUsers : [];
     if (!mus.length) return false;
 
     const roles = mus.map((m) => m?.role).filter(Boolean);
     if (!roles.length) return false;
 
-    return roles.every((r) => r === "store_subadmin");
+    return roles.every((r) => r === "pos_employee");
   }
 
   function getPublicBaseUrl(req) {
@@ -76,7 +76,7 @@ function buildMerchantPortalRouter(deps) {
     const mus = Array.isArray(user?.merchantUsers) ? user.merchantUsers : [];
     const m = mus.find((x) => x.status === "active" && x.merchantId === merchantId);
     if (!m) return false;
-    return m.role === "owner" || m.role === "merchant_admin";
+    return m.role === "owner" || m.role === "merchant_admin" || m.role === "merchant_ap_clerk";
   }
 
   function canManageStoresForMerchant(user, merchantId) {
@@ -89,7 +89,7 @@ function buildMerchantPortalRouter(deps) {
     const mus = Array.isArray(user?.merchantUsers) ? user.merchantUsers : [];
     const m = mus.find((x) => x.status === "active" && x.merchantId === merchantId);
     if (!m) return false;
-    return m.role === "owner" || m.role === "merchant_admin";
+    return m.role === "owner" || m.role === "merchant_admin" || m.role === "merchant_ap_clerk";
   }
 
   async function requireMerchantStoreManager(req, res, merchantId) {
@@ -109,8 +109,8 @@ function buildMerchantPortalRouter(deps) {
       sendError(res, 404, "NOT_FOUND", "User not found");
       return null;
     }
-    if (user.systemRole === "pv_admin") {
-      sendError(res, 403, "FORBIDDEN", "pv_admin does not use merchant portal");
+    if (["pv_admin", "pv_ar_clerk"].includes(user.systemRole)) {
+      sendError(res, 403, "FORBIDDEN", "platform users do not use merchant portal");
       return null;
     }
     if (typeof isPosOnlyMerchantUser === "function" && isPosOnlyMerchantUser(user)) {
@@ -127,7 +127,7 @@ function buildMerchantPortalRouter(deps) {
 
   function normalizeRole(role) {
     const r = String(role || "").trim();
-    const allowed = ["owner", "merchant_admin", "store_admin", "store_subadmin"];
+    const allowed = ["owner", "merchant_admin", "merchant_ap_clerk", "store_admin", "pos_employee"];
     return allowed.includes(r) ? r : null;
   }
 
@@ -154,8 +154,8 @@ function buildMerchantPortalRouter(deps) {
       sendError(res, 404, "NOT_FOUND", "User not found");
       return null;
     }
-    if (user.systemRole === "pv_admin") {
-      sendError(res, 403, "FORBIDDEN", "pv_admin does not use merchant portal");
+    if (["pv_admin", "pv_ar_clerk"].includes(user.systemRole)) {
+      sendError(res, 403, "FORBIDDEN", "platform users do not use merchant portal");
       return null;
     }
     if (isPosOnlyMerchantUser(user)) {
@@ -182,7 +182,7 @@ function buildMerchantPortalRouter(deps) {
       });
 
       if (!user) return sendError(res, 404, "NOT_FOUND", "User not found");
-      if (user.systemRole === "pv_admin") return sendError(res, 403, "FORBIDDEN", "pv_admin does not use merchant portal");
+      if (["pv_admin", "pv_ar_clerk"].includes(user.systemRole)) return sendError(res, 403, "FORBIDDEN", "platform users do not use merchant portal");
 
       const merchantIds = user.merchantUsers.map((m) => m.merchantId);
       if (!merchantIds.length) return res.json({ items: [] });
@@ -454,7 +454,7 @@ function buildMerchantPortalRouter(deps) {
     if (!emailNorm) return sendError(res, 400, "VALIDATION_ERROR", "email is required");
 
     const roleNorm = normalizeRole(role);
-    if (!roleNorm) return sendError(res, 400, "VALIDATION_ERROR", "role must be owner|merchant_admin|store_admin|store_subadmin");
+    if (!roleNorm) return sendError(res, 400, "VALIDATION_ERROR", "role must be owner|merchant_admin|merchant_ap_clerk|store_admin|pos_employee");
 
     const statusNorm = normalizeMemberStatus(status || "active");
     if (!statusNorm) return sendError(res, 400, "VALIDATION_ERROR", "status must be active|suspended");
@@ -584,7 +584,7 @@ function buildMerchantPortalRouter(deps) {
       phone !== undefined;
 
     if (role !== undefined && !roleNorm) {
-      return sendError(res, 400, "VALIDATION_ERROR", "role must be owner|merchant_admin|store_admin|store_subadmin");
+      return sendError(res, 400, "VALIDATION_ERROR", "role must be owner|merchant_admin|merchant_ap_clerk|store_admin|pos_employee");
     }
     if (status !== undefined && !statusNorm) {
       return sendError(res, 400, "VALIDATION_ERROR", "status must be active|suspended");
@@ -677,7 +677,7 @@ function buildMerchantPortalRouter(deps) {
       });
 
       if (!user) return sendError(res, 404, "NOT_FOUND", "User not found");
-      if (user.systemRole === "pv_admin") return sendError(res, 403, "FORBIDDEN", "pv_admin does not use merchant portal");
+      if (["pv_admin", "pv_ar_clerk"].includes(user.systemRole)) return sendError(res, 403, "FORBIDDEN", "platform users do not use merchant portal");
 
       // Thread U: POS-only merchant users cannot access invoices
       if (isPosOnlyMerchantUser(user)) {
@@ -730,7 +730,7 @@ function buildMerchantPortalRouter(deps) {
       });
 
       if (!user) return sendError(res, 404, "NOT_FOUND", "User not found");
-      if (user.systemRole === "pv_admin") return sendError(res, 403, "FORBIDDEN", "pv_admin does not use merchant portal");
+      if (["pv_admin", "pv_ar_clerk"].includes(user.systemRole)) return sendError(res, 403, "FORBIDDEN", "platform users do not use merchant portal");
 
       // Thread U: POS-only merchant users cannot access invoice detail
       if (isPosOnlyMerchantUser(user)) {
