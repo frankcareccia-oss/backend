@@ -26,6 +26,9 @@ model User {
   phoneE164    String? @db.VarChar(20)
   phoneCountry String  @default("US")
 
+  /// PV Organization department (required for staff roles in V1)
+  department PvDepartment?
+
   tokenVersion      Int                  @default(0)
   passwordUpdatedAt DateTime?
   resetTokens       PasswordResetToken[]
@@ -568,8 +571,22 @@ enum SystemRole {
   /// PerkValet platform AR clerk (routes to /admin with AR-only nav)
   pv_ar_clerk
 
+  /// PerkValet platform support (read-only org visibility)
+  pv_support
+
+  /// PerkValet QA role (non-production only)
+  pv_qa
+
   /// Normal user (merchant-scoped roles apply via MerchantUser / StoreUser)
   user
+}
+
+enum PvDepartment {
+  IT
+  FINANCE
+  SUPPORT
+  EXECUTIVE
+  OTHER
 }
 
 enum MerchantRole {

@@ -1,4 +1,5 @@
-﻿require("dotenv").config();
+﻿/** Module: backend/index.js | PerkValet Backend Entry | PV Org Surface V1 */
+require("dotenv").config();
 const { registerPaymentsRoutes } = require("./src/payments/payments.routes");
 const { registerPosRoutes } = require("./src/pos/pos.routes");
 const { registerPosProvisionRoutes } = require("./src/pos/pos.provision.routes");
@@ -19,6 +20,7 @@ const { prisma } = require("./src/db/prisma");
 const { startInvoiceMailRunScheduler } = require("./src/jobs/invoiceMailRun.scheduler");
 const { startInvoiceReminderMailRunScheduler } = require("./src/jobs/invoiceReminderMailRun.scheduler");
 const { normalizePhone } = require("./utils/phone");
+const teamRoutes = require("./src/admin/team.routes");
 
 const app = express();
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3001;
@@ -367,6 +369,29 @@ function requireAdmin(req, res, next) {
    */
   if (req.userId && req.systemRole === "pv_admin") {
     return next();
+  }
+
+  // PV Org Surface V1: allow pv_support read-only access to Team.
+  if (req.userId && req.systemRole === "pv_support") {
+    const p = String(req.baseUrl || "") + String(req.path || "");
+    if (req.method === "GET" && (p === "/admin/team" || p.startsWith("/admin/team/"))) {
+      return next();
+    }
+    return sendError(res, 403, "FORBIDDEN", "Insufficient role for this resource");
+  }
+
+  // Billing V1: allow pv_ar_clerk access only to billing endpoints.
+  if (req.userId && req.systemRole === "pv_ar_clerk") {
+    const p = String(req.baseUrl || "") + String(req.path || "");
+    if (p === "/billing" || p.startsWith("/billing/")) {
+      return next();
+    }
+    return sendError(res, 403, "FORBIDDEN", "Billing-only role");
+  }
+
+  // PV QA: blocked in production (fail closed here as a second line of defense).
+  if (req.userId && req.systemRole === "pv_qa" && NODE_ENV === "production") {
+    return sendError(res, 403, "FORBIDDEN", "pv_qa is disabled in production");
   }
 
   if (NODE_ENV === "production" && !ADMIN_API_KEY) {
@@ -1117,6 +1142,10 @@ app.post("/auth/login", async (req, res) => {
     if (!user) return sendError(res, 401, "UNAUTHORIZED", "Invalid credentials");
     if (user.status && user.status !== "active") return sendError(res, 403, "FORBIDDEN", "User is not active");
 
+    if (NODE_ENV === "production" && user.systemRole === "pv_qa") {
+      return sendError(res, 403, "FORBIDDEN", "pv_qa is disabled in production");
+    }
+
     const ok = await bcrypt.compare(passwordRaw, user.passwordHash);
     if (!ok) return sendError(res, 401, "UNAUTHORIZED", "Invalid credentials");
 
@@ -1153,7 +1182,14 @@ app.post("/auth/login", async (req, res) => {
       expiresIn: JWT_EXPIRES_IN,
     });
 
-    const landing = user.systemRole === "pv_admin" ? "/merchants" : "/merchant";
+    const landing =
+      user.systemRole === "pv_admin"
+        ? "/merchants"
+        : user.systemRole === "pv_ar_clerk"
+        ? "/admin/invoices"
+        : user.systemRole === "pv_support"
+        ? "/admin/team"
+        : "/merchant";
     return res.json({ accessToken, systemRole: user.systemRole, landing, requiresDeviceVerification });
   } catch (err) {
     return handlePrismaError(err, res);
@@ -1982,6 +2018,8 @@ function requireJwtOrAdminKey(req, res, next) {
 }
 
 app.use(["/merchants", "/stores", "/users", "/admin", "/billing"], requireJwtOrAdminKey, requireTrustedDeviceIfPrivileged);
+
+app.use("/admin/team", teamRoutes);
 
 
 /* -----------------------------
