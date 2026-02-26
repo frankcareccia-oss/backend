@@ -8,14 +8,25 @@ const ROLE_CAPABILITIES = {
 
   // Merchant roles
   owner: [
+    "merchant.user.view",
     "merchant.user.invite",
     "merchant.user.edit",
     "merchant.user.remove",
     "invoice.view",
     "invoice.pay",
   ],
-  merchant_admin: ["merchant.user.invite", "merchant.user.edit", "merchant.user.remove"],
-  merchant_ap_clerk: ["invoice.view", "invoice.pay"],
+
+  merchant_admin: [
+    "merchant.user.view",
+    "merchant.user.invite",
+    "merchant.user.edit",
+    "merchant.user.remove",
+    "invoice.view",
+  ],
+
+  // AP clerk: can VIEW users + invoices, can PAY invoices, cannot manage users
+  merchant_ap_clerk: ["merchant.user.view", "invoice.view", "invoice.pay"],
+
   store_admin: ["store.settings.edit", "store.staff.manage"],
   pos_employee: [],
 };
