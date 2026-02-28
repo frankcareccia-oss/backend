@@ -72,11 +72,20 @@ function buildMerchantPortalRouter(deps) {
   /**
    * Thread U — Merchant user management helpers
    */
+  function canViewUsersForMerchant(user, merchantId) {
+    const mus = Array.isArray(user?.merchantUsers) ? user.merchantUsers : [];
+    const m = mus.find((x) => x.status === "active" && x.merchantId === merchantId);
+    if (!m) return false;
+    // AP clerk can view users, but cannot manage them.
+    return m.role === "owner" || m.role === "merchant_admin" || m.role === "merchant_ap_clerk";
+  }
+
   function canManageUsersForMerchant(user, merchantId) {
     const mus = Array.isArray(user?.merchantUsers) ? user.merchantUsers : [];
     const m = mus.find((x) => x.status === "active" && x.merchantId === merchantId);
     if (!m) return false;
-    return m.role === "owner" || m.role === "merchant_admin" || m.role === "merchant_ap_clerk";
+    // Manage users: owner/admin only.
+    return m.role === "owner" || m.role === "merchant_admin";
   }
 
   function canManageStoresForMerchant(user, merchantId) {
@@ -135,6 +144,44 @@ function buildMerchantPortalRouter(deps) {
     const s = String(status || "").trim();
     const allowed = ["active", "suspended"];
     return allowed.includes(s) ? s : null;
+  }
+
+  
+
+  async function requireMerchantUserViewer(req, res, merchantId) {
+    const user = await prisma.user.findUnique({
+      where: { id: req.userId },
+      select: {
+        id: true,
+        systemRole: true,
+        merchantUsers: {
+          where: { status: "active" },
+          select: { merchantId: true, role: true, status: true },
+        },
+      },
+    });
+
+    if (!user) {
+      sendError(res, 404, "NOT_FOUND", "User not found");
+      return null;
+    }
+
+    if (["pv_admin", "pv_ar_clerk"].includes(user.systemRole)) {
+      sendError(res, 403, "FORBIDDEN", "platform users do not use merchant portal");
+      return null;
+    }
+
+    if (isPosOnlyMerchantUser(user)) {
+      sendError(res, 403, "FORBIDDEN", "POS associates cannot view users");
+      return null;
+    }
+
+    if (!canViewUsersForMerchant(user, merchantId)) {
+      sendError(res, 403, "FORBIDDEN", "Not authorized to view users for this merchant");
+      return null;
+    }
+
+    return user;
   }
 
   async function requireMerchantUserManager(req, res, merchantId) {
@@ -301,12 +348,31 @@ function buildMerchantPortalRouter(deps) {
 
   // T5: Merchant store profile editing (merchant_admin only)
   // PATCH /merchant/stores/:storeId/profile
-  // Body supports: name, address1, city, state, postal
+  // Body supports:
+  // - name, address1, city, state, postal
+  // - phoneRaw, phoneE164, phoneCountry
+  // - contactName, contactEmail, contactPhoneRaw, contactPhoneE164, contactPhoneCountry
   router.patch("/stores/:storeId/profile", requireJwt, async (req, res) => {
     const storeId = parseIntParam(req.params.storeId);
     if (!storeId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid storeId");
 
-    const { name, address1, city, state, postal } = req.body || {};
+    const {
+      name,
+      address1,
+      city,
+      state,
+      postal,
+
+      phoneRaw,
+      phoneE164,
+      phoneCountry,
+
+      contactName,
+      contactEmail,
+      contactPhoneRaw,
+      contactPhoneE164,
+      contactPhoneCountry,
+    } = req.body || {};
 
     function normOptString(v, { maxLen, upper } = {}) {
       if (v === undefined) return undefined; // not provided
@@ -318,22 +384,90 @@ function buildMerchantPortalRouter(deps) {
       return s;
     }
 
-    const nameNorm = normOptString(name, { maxLen: 200 });
+    function normOptEmail(v, { maxLen } = {}) {
+      const s = normOptString(v, { maxLen });
+      if (s === undefined || s === null) return s;
+      // very light email sanity check (backend is not the email police)
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s)) return "__INVALID__";
+      return s;
+    }
 
+    function normOptPhoneRaw(v, { maxLen = 20 } = {}) {
+      if (v === undefined) return undefined;
+      if (v === null) return null;
+      const digits = String(v).replace(/\D+/g, "");
+      if (!digits) return null;
+      return digits.slice(0, maxLen);
+    }
+
+    function normOptPhoneCountry(v) {
+      const s = normOptString(v, { maxLen: 2, upper: true });
+      if (s === undefined) return undefined;
+      // defaulting happens later if phone fields are being set
+      return s || null;
+    }
+
+    function normOptE164(v) {
+      const s = normOptString(v, { maxLen: 20 });
+      if (s === undefined || s === null) return s;
+      if (!/^\+\d{10,15}$/.test(s)) return "__INVALID__";
+      return s;
+    }
+
+    function deriveE164FromRaw(rawDigits, country) {
+      if (!rawDigits) return null;
+      const c = String(country || "US").toUpperCase();
+      if (c === "US") {
+        if (rawDigits.length === 10) return `+1${rawDigits}`;
+        if (rawDigits.length === 11 && rawDigits.startsWith("1")) return `+${rawDigits}`;
+      }
+      return null;
+    }
+
+    const nameNorm = normOptString(name, { maxLen: 200 });
     if (name !== undefined && !nameNorm) {
       return sendError(res, 400, "VALIDATION_ERROR", "name cannot be empty");
     }
+
     const address1Norm = normOptString(address1, { maxLen: 200 });
     const cityNorm = normOptString(city, { maxLen: 120 });
     const stateNorm = normOptString(state, { maxLen: 8, upper: true });
     const postalNorm = normOptString(postal, { maxLen: 20 });
+
+    const phoneRawNorm = normOptPhoneRaw(phoneRaw, { maxLen: 20 });
+    const phoneCountryNorm = normOptPhoneCountry(phoneCountry);
+    const phoneE164Norm = normOptE164(phoneE164);
+
+    const contactNameNorm = normOptString(contactName, { maxLen: 120 });
+    const contactEmailNorm = normOptEmail(contactEmail, { maxLen: 320 });
+    const contactPhoneRawNorm = normOptPhoneRaw(contactPhoneRaw, { maxLen: 20 });
+    const contactPhoneCountryNorm = normOptPhoneCountry(contactPhoneCountry);
+    const contactPhoneE164Norm = normOptE164(contactPhoneE164);
+
+    if (contactEmailNorm === "__INVALID__") {
+      return sendError(res, 400, "VALIDATION_ERROR", "contactEmail must be a valid email address");
+    }
+    if (phoneE164Norm === "__INVALID__") {
+      return sendError(res, 400, "VALIDATION_ERROR", "phoneE164 must be a valid E.164 string (e.g., +14155551212)");
+    }
+    if (contactPhoneE164Norm === "__INVALID__") {
+      return sendError(res, 400, "VALIDATION_ERROR", "contactPhoneE164 must be a valid E.164 string (e.g., +14155551212)");
+    }
 
     const hasAny =
       name !== undefined ||
       address1 !== undefined ||
       city !== undefined ||
       state !== undefined ||
-      postal !== undefined;
+      postal !== undefined ||
+      phoneRaw !== undefined ||
+      phoneE164 !== undefined ||
+      phoneCountry !== undefined ||
+      contactName !== undefined ||
+      contactEmail !== undefined ||
+      contactPhoneRaw !== undefined ||
+      contactPhoneE164 !== undefined ||
+      contactPhoneCountry !== undefined;
 
     if (!hasAny) {
       return sendError(res, 400, "VALIDATION_ERROR", "Provide at least one profile field to update");
@@ -342,12 +476,37 @@ function buildMerchantPortalRouter(deps) {
     try {
       const store = await prisma.store.findUnique({
         where: { id: storeId },
-        select: { id: true, merchantId: true },
+        select: { id: true, merchantId: true, phoneCountry: true, contactPhoneCountry: true },
       });
       if (!store) return sendError(res, 404, "STORE_NOT_FOUND", "Store not found");
 
       const acting = await requireMerchantStoreManager(req, res, store.merchantId);
       if (!acting) return;
+
+      // country defaults only when phone/contact phone is being set and caller didn't provide a country
+      const nextPhoneCountry =
+        phoneCountry !== undefined ? phoneCountryNorm : phoneRaw !== undefined || phoneE164 !== undefined ? (store.phoneCountry || "US") : undefined;
+
+      const nextContactPhoneCountry =
+        contactPhoneCountry !== undefined
+          ? contactPhoneCountryNorm
+          : contactPhoneRaw !== undefined || contactPhoneE164 !== undefined
+            ? (store.contactPhoneCountry || "US")
+            : undefined;
+
+      const derivedPhoneE164 =
+        phoneE164 !== undefined
+          ? phoneE164Norm
+          : phoneRaw !== undefined
+            ? deriveE164FromRaw(phoneRawNorm, nextPhoneCountry || "US")
+            : undefined;
+
+      const derivedContactPhoneE164 =
+        contactPhoneE164 !== undefined
+          ? contactPhoneE164Norm
+          : contactPhoneRaw !== undefined
+            ? deriveE164FromRaw(contactPhoneRawNorm, nextContactPhoneCountry || "US")
+            : undefined;
 
       const updated = await prisma.store.update({
         where: { id: storeId },
@@ -357,6 +516,16 @@ function buildMerchantPortalRouter(deps) {
           ...(city !== undefined ? { city: cityNorm } : null),
           ...(state !== undefined ? { state: stateNorm } : null),
           ...(postal !== undefined ? { postal: postalNorm } : null),
+
+          ...(phoneRaw !== undefined ? { phoneRaw: phoneRawNorm } : null),
+          ...(phoneE164 !== undefined || phoneRaw !== undefined ? { phoneE164: derivedPhoneE164 } : null),
+          ...(nextPhoneCountry !== undefined ? { phoneCountry: nextPhoneCountry || "US" } : null),
+
+          ...(contactName !== undefined ? { contactName: contactNameNorm } : null),
+          ...(contactEmail !== undefined ? { contactEmail: contactEmailNorm } : null),
+          ...(contactPhoneRaw !== undefined ? { contactPhoneRaw: contactPhoneRawNorm } : null),
+          ...(contactPhoneE164 !== undefined || contactPhoneRaw !== undefined ? { contactPhoneE164: derivedContactPhoneE164 } : null),
+          ...(nextContactPhoneCountry !== undefined ? { contactPhoneCountry: nextContactPhoneCountry || "US" } : null),
         },
       });
 
@@ -371,6 +540,16 @@ function buildMerchantPortalRouter(deps) {
             ...(city !== undefined ? { city: Boolean(cityNorm) } : null),
             ...(state !== undefined ? { state: Boolean(stateNorm) } : null),
             ...(postal !== undefined ? { postal: Boolean(postalNorm) } : null),
+
+            ...(phoneRaw !== undefined ? { phoneRaw: Boolean(phoneRawNorm) } : null),
+            ...(phoneE164 !== undefined || phoneRaw !== undefined ? { phoneE164: Boolean(derivedPhoneE164) } : null),
+            ...(nextPhoneCountry !== undefined ? { phoneCountry: Boolean(nextPhoneCountry) } : null),
+
+            ...(contactName !== undefined ? { contactName: Boolean(contactNameNorm) } : null),
+            ...(contactEmail !== undefined ? { contactEmail: Boolean(contactEmailNorm) } : null),
+            ...(contactPhoneRaw !== undefined ? { contactPhoneRaw: Boolean(contactPhoneRawNorm) } : null),
+            ...(contactPhoneE164 !== undefined || contactPhoneRaw !== undefined ? { contactPhoneE164: Boolean(derivedContactPhoneE164) } : null),
+            ...(nextContactPhoneCountry !== undefined ? { contactPhoneCountry: Boolean(nextContactPhoneCountry) } : null),
           },
         });
       }
@@ -390,7 +569,7 @@ function buildMerchantPortalRouter(deps) {
     if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "merchantId is required");
 
     try {
-      const acting = await requireMerchantUserManager(req, res, merchantId);
+      const acting = await requireMerchantUserViewer(req, res, merchantId);
       if (!acting) return;
 
       const rows = await prisma.merchantUser.findMany({
@@ -408,32 +587,54 @@ function buildMerchantPortalRouter(deps) {
               phoneCountry: true,
             },
           },
+
+          // Store assignments (0..n). Kept light/select-only.
+          storeUsers: {
+            where: { archivedAt: null },
+            include: {
+              store: { select: { id: true, name: true } },
+            },
+          },
         },
         orderBy: [{ userId: "asc" }],
         take: 500,
       });
 
-      const items = rows.map((mu) => ({
-        userId: mu.userId,
-        email: mu.user?.email || null,
-        role: mu.role,
-        status: mu.status,
-        statusReason: mu.statusReason ?? null,
+      const items = rows.map((mu) => {
+        const stores = Array.isArray(mu.storeUsers)
+          ? mu.storeUsers
+              .map((su) => su?.store)
+              .filter(Boolean)
+              .map((st) => ({ storeId: st.id, name: st.name }))
+          : [];
 
-        // Identity (person-level; may be null)
-        firstName: mu.user?.firstName ?? null,
-        lastName: mu.user?.lastName ?? null,
-        phoneRaw: mu.user?.phoneRaw ?? null,
-        phoneE164: mu.user?.phoneE164 ?? null,
-        phoneCountry: mu.user?.phoneCountry ?? null,
+        return {
+          id: mu.id,
+          userId: mu.userId,
+          email: mu.user?.email || null,
+          role: mu.role,
+          status: mu.status,
+          statusReason: mu.statusReason ?? null,
 
-        // Legacy fields (do not edit; kept for backward compatibility)
-        contactEmail: mu.contactEmail ?? null,
-        // Legacy phone surface area: prefer person-level phone if present
-        contactPhone: (mu.user?.phoneRaw ?? mu.user?.phoneE164 ?? mu.contactPhone) ?? null,
+          // Identity (person-level; may be null)
+          firstName: mu.user?.firstName ?? null,
+          lastName: mu.user?.lastName ?? null,
+          phoneRaw: mu.user?.phoneRaw ?? null,
+          phoneE164: mu.user?.phoneE164 ?? null,
+          phoneCountry: mu.user?.phoneCountry ?? null,
 
-        userStatus: mu.user?.status || null,
-      }));
+          // Store assignments (0..n)
+          stores,
+          storeNames: stores.map((s) => s.name).join(", "),
+
+          // Legacy fields (do not edit; kept for backward compatibility)
+          contactEmail: mu.contactEmail ?? null,
+          // Legacy phone surface area: prefer person-level phone if present
+          contactPhone: (mu.user?.phoneRaw ?? mu.user?.phoneE164 ?? mu.contactPhone) ?? null,
+
+          userStatus: mu.user?.status || null,
+        };
+      });
 
       if (typeof emitPvHook === "function") {
         emitPvHook("merchant.users.list", { merchantId, actorUserId: acting.id, count: items.length });
