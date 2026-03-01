@@ -37,3 +37,7 @@ _local_scratch/
 # Local safety backups (never commit)
 *.bak
 
+
+# local backups
+prisma/schema.prisma.bkp
+

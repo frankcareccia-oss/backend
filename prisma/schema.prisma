@@ -119,13 +119,6 @@ model DeviceVerifyToken {
   @@index([expiresAt])
 }
 
-/**
- * ===============================
- * POS PIN Auth (v1)
- * Append-only models. No behavior change unless POS_AUTH_MODE=db.
- * ===============================
- */
-
 model PosCredential {
   id Int @id @default(autoincrement())
 
@@ -182,27 +175,45 @@ model Merchant {
 }
 
 model Store {
-  id              Int             @id @default(autoincrement())
-  name            String
-  address1        String?
-  city            String?
-  state           String?
-  postal          String?
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
-  archivedAt      DateTime?
-  merchantId      Int
-  status          EntityStatus    @default(active)
-  statusReason    String?
-  statusUpdatedAt DateTime        @default(now())
-  suspendedAt     DateTime?
-  merchant        Merchant        @relation(fields: [merchantId], references: [id])
-  storeConsumers  StoreConsumer[]
-  qrs             StoreQr[]
-  storeUsers      StoreUser[]
-  visits          Visit[]
+  id       Int     @id @default(autoincrement())
+  name     String
+  address1 String?
+  city     String?
+  state    String?
+  postal   String?
+
+  /// ===============================
+  /// Store phone (location-level)
+  /// ===============================
+  phoneRaw     String?
+  phoneE164    String? @db.VarChar(20)
+  phoneCountry String  @default("US")
+
+  /// ===============================
+  /// Store contact (person to reach)
+  /// ===============================
+  contactName         String?         @db.VarChar(120)
+  contactEmail        String?         @db.VarChar(320)
+  contactPhoneRaw     String?
+  contactPhoneE164    String?         @db.VarChar(20)
+  contactPhoneCountry String          @default("US")
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+  archivedAt          DateTime?
+  merchantId          Int
+  status              EntityStatus    @default(active)
+  statusReason        String?
+  statusUpdatedAt     DateTime        @default(now())
+  suspendedAt         DateTime?
+  merchant            Merchant        @relation(fields: [merchantId], references: [id])
+  storeConsumers      StoreConsumer[]
+  qrs                 StoreQr[]
+  storeUsers          StoreUser[]
+  visits              Visit[]
 
   @@index([merchantId])
+  @@index([phoneE164])
+  @@index([contactPhoneE164])
   @@index([status])
 }
 
