@@ -600,6 +600,19 @@ function buildMerchantPortalRouter(deps) {
         take: 500,
       });
 
+      // POS PIN presence (best-effort; only exists once POS PIN auth DB is enabled)
+      const userIds = rows.map((r) => r.userId).filter(Boolean);
+      let posPinSet = new Set();
+      try {
+        const pins = await prisma.posCredential.findMany({
+          where: { userId: { in: userIds } },
+          select: { userId: true },
+        });
+        posPinSet = new Set((pins || []).map((p) => p.userId));
+      } catch {
+        // ignore if model not present in this environment
+      }
+
       const items = rows.map((mu) => {
         const stores = Array.isArray(mu.storeUsers)
           ? mu.storeUsers
@@ -631,6 +644,8 @@ function buildMerchantPortalRouter(deps) {
           contactEmail: mu.contactEmail ?? null,
           // Legacy phone surface area: prefer person-level phone if present
           contactPhone: (mu.user?.phoneRaw ?? mu.user?.phoneE164 ?? mu.contactPhone) ?? null,
+
+          posHasPin: posPinSet.has(mu.userId),
 
           userStatus: mu.user?.status || null,
         };
@@ -864,6 +879,362 @@ function buildMerchantPortalRouter(deps) {
       return handlePrismaError(err, res);
     }
   });
+// ===============================
+  // Store Team: Store assignments + POS PIN management
+  // ===============================
+
+  router.put("/users/:userId/stores", requireJwt, async (req, res) => {
+    const merchantId = parseIntParam(req.body?.merchantId);
+    const userId = parseIntParam(req.params.userId);
+    if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "merchantId is required");
+    if (!userId) return sendError(res, 400, "VALIDATION_ERROR", "userId is required");
+
+    try {
+      const acting = await requireMerchantUserManager(req, res, merchantId);
+      if (!acting) return;
+
+      const assignmentsRaw = Array.isArray(req.body?.assignments) ? req.body.assignments : [];
+      const assignments = assignmentsRaw
+        .map((a) => ({
+          storeId: parseIntParam(a?.storeId),
+          permissionLevel: String(a?.permissionLevel || "admin"),
+        }))
+        .filter((a) => a.storeId);
+
+      // Empty list is allowed: means "remove all store access"
+      const storeIds = assignments.map((a) => a.storeId);
+
+      const targetMu = await prisma.merchantUser.findUnique({
+        where: { merchantId_userId: { merchantId, userId } },
+        select: { id: true, role: true, status: true },
+      });
+      if (!targetMu) return sendError(res, 404, "NOT_FOUND", "Merchant user not found");
+      if (targetMu.status !== "active") return sendError(res, 403, "FORBIDDEN", "Merchant user is not active");
+
+      // Validate storeIds belong to merchant and are active (when provided)
+      if (storeIds.length) {
+        const stores = await prisma.store.findMany({
+          where: { id: { in: storeIds }, merchantId, status: "active" },
+          select: { id: true },
+          take: 500,
+        });
+        const okSet = new Set((stores || []).map((s) => s.id));
+        const bad = storeIds.filter((id) => !okSet.has(id));
+        if (bad.length) return sendError(res, 400, "VALIDATION_ERROR", `Invalid storeIds: ${bad.join(",")}`);
+      }
+
+      // Normalize permission levels
+      const permOk = new Set(["admin", "subadmin"]);
+      const desired = assignments.map((a) => ({
+        storeId: a.storeId,
+        permissionLevel: permOk.has(a.permissionLevel) ? a.permissionLevel : "admin",
+      }));
+
+      const now = new Date();
+
+      await prisma.$transaction(async (tx) => {
+        // Archive any existing active assignments not in desired list
+        await tx.storeUser.updateMany({
+          where: {
+            merchantUserId: targetMu.id,
+            archivedAt: null,
+            ...(storeIds.length ? { storeId: { notIn: storeIds } } : {}),
+          },
+          data: {
+            status: "archived",
+            archivedAt: now,
+            statusUpdatedAt: now,
+            statusReason: String(req.body?.reason || "removed"),
+          },
+        });
+
+        // Upsert desired assignments
+        for (const a of desired) {
+          await tx.storeUser.upsert({
+            where: { storeId_merchantUserId: { storeId: a.storeId, merchantUserId: targetMu.id } },
+            update: {
+              permissionLevel: a.permissionLevel,
+              status: "active",
+              archivedAt: null,
+              statusUpdatedAt: now,
+              statusReason: String(req.body?.reason || "assigned"),
+            },
+            create: {
+              storeId: a.storeId,
+              merchantUserId: targetMu.id,
+              permissionLevel: a.permissionLevel,
+              status: "active",
+              statusReason: String(req.body?.reason || "assigned"),
+              statusUpdatedAt: now,
+            },
+          });
+        }
+      });
+
+      if (typeof emitPvHook === "function") {
+        emitPvHook("merchant.user.stores.updated", {
+          merchantId,
+          actorUserId: acting.id,
+          targetUserId: userId,
+          count: desired.length,
+        });
+      }
+
+      return res.json({ ok: true, count: desired.length });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
+  router.post("/users/:userId/pin", requireJwt, async (req, res) => {
+    const merchantId = parseIntParam(req.body?.merchantId);
+    const userId = parseIntParam(req.params.userId);
+    if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "merchantId is required");
+    if (!userId) return sendError(res, 400, "VALIDATION_ERROR", "userId is required");
+
+    try {
+      const acting = await requireMerchantUserManager(req, res, merchantId);
+      if (!acting) return;
+
+      const pin = String(req.body?.pin || "").trim();
+      if (!/^\d{6}$/.test(pin)) return sendError(res, 400, "VALIDATION_ERROR", "pin must be 6 digits");
+
+      const targetMu = await prisma.merchantUser.findUnique({
+        where: { merchantId_userId: { merchantId, userId } },
+        select: { id: true, role: true, status: true },
+      });
+      if (!targetMu) return sendError(res, 404, "NOT_FOUND", "Merchant user not found");
+      if (targetMu.status !== "active") return sendError(res, 403, "FORBIDDEN", "Merchant user is not active");
+      if (targetMu.role !== "pos_employee") return sendError(res, 400, "VALIDATION_ERROR", "PIN is only for POS associates (pos_employee)");
+
+      const now = new Date();
+      const pinHash = await bcrypt.hash(pin, 10);
+
+      await prisma.posCredential.upsert({
+        where: { userId },
+        update: { pinHash, failedAttempts: 0, lockedUntil: null, updatedAt: now },
+        create: { userId, pinHash, failedAttempts: 0 },
+      });
+
+      if (typeof emitPvHook === "function") {
+        emitPvHook("merchant.user.pin.set", {
+          merchantId,
+          actorUserId: acting.id,
+          targetUserId: userId,
+        });
+      }
+
+      return res.json({ ok: true });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
+  router.post("/users/:userId/pin/clear", requireJwt, async (req, res) => {
+    const merchantId = parseIntParam(req.body?.merchantId);
+    const userId = parseIntParam(req.params.userId);
+    if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "merchantId is required");
+    if (!userId) return sendError(res, 400, "VALIDATION_ERROR", "userId is required");
+
+    try {
+      const acting = await requireMerchantUserManager(req, res, merchantId);
+      if (!acting) return;
+
+      const targetMu = await prisma.merchantUser.findUnique({
+        where: { merchantId_userId: { merchantId, userId } },
+        select: { id: true, role: true, status: true },
+      });
+      if (!targetMu) return sendError(res, 404, "NOT_FOUND", "Merchant user not found");
+
+      await prisma.posCredential.deleteMany({ where: { userId } });
+
+      if (typeof emitPvHook === "function") {
+        emitPvHook("merchant.user.pin.cleared", {
+          merchantId,
+          actorUserId: acting.id,
+          targetUserId: userId,
+        });
+      }
+
+      return res.json({ ok: true });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
+
+
+
+  
+
+  // ===============================
+  // Store Team Endpoints (StoreUser management)
+  // ===============================
+
+  router.get("/stores/:storeId/team", requireJwt, async (req, res) => {
+    const storeId = parseIntParam(req.params.storeId);
+    if (!storeId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid storeId");
+
+    try {
+      const store = await prisma.store.findUnique({
+        where: { id: storeId },
+        select: { id: true, merchantId: true },
+      });
+      if (!store) return sendError(res, 404, "STORE_NOT_FOUND", "Store not found");
+
+      const acting = await requireMerchantStoreManager(req, res, store.merchantId);
+      if (!acting) return;
+
+      const rows = await prisma.storeUser.findMany({
+        where: { storeId, archivedAt: null },
+        include: {
+          merchantUser: {
+            include: {
+              user: {
+                select: {
+                  id: true,
+                  email: true,
+                  firstName: true,
+                  lastName: true,
+                },
+              },
+            },
+          },
+        },
+        orderBy: { createdAt: "asc" },
+      });
+
+      const items = rows.map((su) => ({
+        id: su.id,
+        storeId: su.storeId,
+        merchantUserId: su.merchantUserId,
+        permissionLevel: su.permissionLevel,
+        status: su.status,
+        user: {
+          id: su.merchantUser?.user?.id,
+          email: su.merchantUser?.user?.email,
+          firstName: su.merchantUser?.user?.firstName,
+          lastName: su.merchantUser?.user?.lastName,
+        },
+      }));
+
+      if (typeof emitPvHook === "function") {
+        emitPvHook("merchant.store.team.list", {
+          merchantId: store.merchantId,
+          storeId,
+          actorUserId: acting.id,
+          count: items.length,
+        });
+      }
+
+      return res.json({ items });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
+  router.post("/stores/:storeId/team", requireJwt, async (req, res) => {
+    const storeId = parseIntParam(req.params.storeId);
+    const merchantUserId = parseIntParam(req.body?.merchantUserId);
+
+    if (!storeId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid storeId");
+    if (!merchantUserId) return sendError(res, 400, "VALIDATION_ERROR", "merchantUserId is required");
+
+    try {
+      const store = await prisma.store.findUnique({
+        where: { id: storeId },
+        select: { id: true, merchantId: true },
+      });
+      if (!store) return sendError(res, 404, "STORE_NOT_FOUND", "Store not found");
+
+      const acting = await requireMerchantStoreManager(req, res, store.merchantId);
+      if (!acting) return;
+
+      const mu = await prisma.merchantUser.findUnique({
+        where: { id: merchantUserId },
+        select: { id: true, merchantId: true, status: true },
+      });
+
+      if (!mu || mu.merchantId !== store.merchantId)
+        return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantUserId");
+
+      if (mu.status !== "active")
+        return sendError(res, 403, "FORBIDDEN", "Merchant user is not active");
+
+      const now = new Date();
+
+      const su = await prisma.storeUser.upsert({
+        where: { storeId_merchantUserId: { storeId, merchantUserId } },
+        update: {
+          status: "active",
+          archivedAt: null,
+          statusUpdatedAt: now,
+          statusReason: "assigned",
+        },
+        create: {
+          storeId,
+          merchantUserId,
+          status: "active",
+          statusUpdatedAt: now,
+          statusReason: "assigned",
+        },
+      });
+
+      if (typeof emitPvHook === "function") {
+        emitPvHook("merchant.store.team.assign", {
+          merchantId: store.merchantId,
+          storeId,
+          actorUserId: acting.id,
+          merchantUserId,
+        });
+      }
+
+      return res.status(201).json(su);
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
+  router.delete("/stores/team/:storeUserId", requireJwt, async (req, res) => {
+    const storeUserId = parseIntParam(req.params.storeUserId);
+    if (!storeUserId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid storeUserId");
+
+    try {
+      const su = await prisma.storeUser.findUnique({
+        where: { id: storeUserId },
+        include: { store: { select: { merchantId: true } } },
+      });
+      if (!su) return sendError(res, 404, "NOT_FOUND", "StoreUser not found");
+
+      const acting = await requireMerchantStoreManager(req, res, su.store.merchantId);
+      if (!acting) return;
+
+      const now = new Date();
+
+      await prisma.storeUser.update({
+        where: { id: storeUserId },
+        data: {
+          status: "archived",
+          archivedAt: now,
+          statusUpdatedAt: now,
+          statusReason: "removed",
+        },
+      });
+
+      if (typeof emitPvHook === "function") {
+        emitPvHook("merchant.store.team.remove", {
+          merchantId: su.store.merchantId,
+          storeUserId,
+          actorUserId: acting.id,
+        });
+      }
+
+      return res.json({ ok: true });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
 
   router.get("/invoices", requireJwt, async (req, res) => {
     try {
