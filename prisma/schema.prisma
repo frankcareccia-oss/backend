@@ -46,7 +46,9 @@ model User {
   merchantUsers MerchantUser[]
 
   // Mail events (Mail-Flow-1)
-  mailEvents MailEvent[] @relation("MailEventActor")
+  mailEvents     MailEvent[]     @relation("MailEventActor")
+  posCredential  PosCredential?
+  posSetupTokens PosSetupToken[]
 
   @@index([phoneE164])
 }
@@ -105,6 +107,45 @@ model DeviceVerifyToken {
   user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   deviceIdHash String @db.VarChar(255)
+
+  tokenHash String @unique @db.VarChar(255)
+
+  expiresAt DateTime
+  usedAt    DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+/**
+ * ===============================
+ * POS PIN Auth (v1)
+ * Append-only models. No behavior change unless POS_AUTH_MODE=db.
+ * ===============================
+ */
+
+model PosCredential {
+  id Int @id @default(autoincrement())
+
+  userId Int  @unique
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  pinHash String @db.VarChar(255)
+
+  failedAttempts Int       @default(0)
+  lockedUntil    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model PosSetupToken {
+  id Int @id @default(autoincrement())
+
+  userId Int
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   tokenHash String @unique @db.VarChar(255)
 
