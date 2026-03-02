@@ -1136,9 +1136,15 @@ function buildMerchantPortalRouter(deps) {
   router.post("/stores/:storeId/team", requireJwt, async (req, res) => {
     const storeId = parseIntParam(req.params.storeId);
     const merchantUserId = parseIntParam(req.body?.merchantUserId);
+    const permissionLevelRaw = req.body?.permissionLevel;
 
     if (!storeId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid storeId");
     if (!merchantUserId) return sendError(res, 400, "VALIDATION_ERROR", "merchantUserId is required");
+
+    // Store team permission levels (StorePermissionLevel enum)
+    const perm = String(permissionLevelRaw || "").trim();
+    const permOk = new Set(["admin", "subadmin"]);
+    const permissionLevel = permOk.has(perm) ? perm : "admin";
 
     try {
       const store = await prisma.store.findUnique({
@@ -1154,7 +1160,6 @@ function buildMerchantPortalRouter(deps) {
         where: { id: merchantUserId },
         select: { id: true, merchantId: true, status: true },
       });
-
       if (!mu || mu.merchantId !== store.merchantId)
         return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantUserId");
 
@@ -1166,6 +1171,7 @@ function buildMerchantPortalRouter(deps) {
       const su = await prisma.storeUser.upsert({
         where: { storeId_merchantUserId: { storeId, merchantUserId } },
         update: {
+          permissionLevel,
           status: "active",
           archivedAt: null,
           statusUpdatedAt: now,
@@ -1174,6 +1180,7 @@ function buildMerchantPortalRouter(deps) {
         create: {
           storeId,
           merchantUserId,
+          permissionLevel,
           status: "active",
           statusUpdatedAt: now,
           statusReason: "assigned",
@@ -1186,6 +1193,7 @@ function buildMerchantPortalRouter(deps) {
           storeId,
           actorUserId: acting.id,
           merchantUserId,
+          permissionLevel,
         });
       }
 
@@ -1194,6 +1202,7 @@ function buildMerchantPortalRouter(deps) {
       return handlePrismaError(err, res);
     }
   });
+
 
   router.delete("/stores/team/:storeUserId", requireJwt, async (req, res) => {
     const storeUserId = parseIntParam(req.params.storeUserId);
