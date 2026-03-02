@@ -197,6 +197,13 @@ model Store {
   contactPhoneRaw     String?
   contactPhoneE164    String?         @db.VarChar(20)
   contactPhoneCountry String          @default("US")
+
+  /// ===============================
+  /// Store primary contact (assigned employee)
+  /// ===============================
+  primaryContactStoreUserId Int?
+  primaryContactStoreUser   StoreUser? @relation("StorePrimaryContact", fields: [primaryContactStoreUserId], references: [id])
+
   createdAt           DateTime        @default(now())
   updatedAt           DateTime        @updatedAt
   archivedAt          DateTime?
@@ -214,6 +221,7 @@ model Store {
   @@index([merchantId])
   @@index([phoneE164])
   @@index([contactPhoneE164])
+  @@index([primaryContactStoreUserId])
   @@index([status])
 }
 
@@ -254,6 +262,10 @@ model StoreUser {
   updatedAt       DateTime             @updatedAt
   merchantUser    MerchantUser         @relation(fields: [merchantUserId], references: [id])
   store           Store                @relation(fields: [storeId], references: [id])
+
+  /// Stores where this StoreUser is set as the primary contact
+  primaryContactForStores Store[] @relation("StorePrimaryContact")
+
 
   @@unique([storeId, merchantUserId])
   @@index([storeId])
