@@ -17,7 +17,7 @@ model User {
   /// Global role used to route after login (Option 1).
   systemRole SystemRole @default(user)
 
-  tokenVersion      Int       @default(0)
+  tokenVersion      Int                  @default(0)
   passwordUpdatedAt DateTime?
   resetTokens       PasswordResetToken[]
 
@@ -27,13 +27,14 @@ model User {
 
   merchantUsers MerchantUser[]
 }
+
 model PasswordResetToken {
-  id        Int      @id @default(autoincrement())
+  id        Int       @id @default(autoincrement())
   userId    Int
-  tokenHash String   @unique @db.VarChar(255)
+  tokenHash String    @unique @db.VarChar(255)
   expiresAt DateTime
   usedAt    DateTime?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -65,27 +66,51 @@ model Merchant {
 }
 
 model Store {
-  id              Int             @id @default(autoincrement())
-  name            String
-  address1        String?
-  city            String?
-  state           String?
-  postal          String?
-  createdAt       DateTime        @default(now())
-  updatedAt       DateTime        @updatedAt
+  id       Int     @id @default(autoincrement())
+  name     String
+  address1 String?
+  city     String?
+  state    String?
+  postal   String?
+
+  /// ===============================
+  /// Store phones (location-level)
+  /// ===============================
+  /// Public store phone (required in V1 UI)
+  phoneRaw     String
+  phoneE164    String? @db.VarChar(20)
+  phoneCountry String  @default("US")
+
+  /// Back-office phone (optional)
+  backOfficePhoneRaw     String?
+  backOfficePhoneE164    String? @db.VarChar(20)
+  backOfficePhoneCountry String  @default("US")
+
+  /// ===============================
+  /// Store primary contact (assigned employee)
+  /// ===============================
+  primaryContactStoreUserId Int?
+  primaryContactStoreUser   StoreUser? @relation("StorePrimaryContact", fields: [primaryContactStoreUserId], references: [id])
+
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
   archivedAt      DateTime?
   merchantId      Int
-  status          EntityStatus    @default(active)
+  status          EntityStatus @default(active)
   statusReason    String?
-  statusUpdatedAt DateTime        @default(now())
+  statusUpdatedAt DateTime     @default(now())
   suspendedAt     DateTime?
-  merchant        Merchant        @relation(fields: [merchantId], references: [id])
-  storeConsumers  StoreConsumer[]
-  qrs             StoreQr[]
-  storeUsers      StoreUser[]
-  visits          Visit[]
+  merchant        Merchant     @relation(fields: [merchantId], references: [id])
+
+  storeConsumers StoreConsumer[]
+  qrs            StoreQr[]
+  storeUsers     StoreUser[]
+  visits         Visit[]
 
   @@index([merchantId])
+  @@index([phoneE164])
+  @@index([backOfficePhoneE164])
+  @@index([primaryContactStoreUserId])
   @@index([status])
 }
 
@@ -124,6 +149,9 @@ model StoreUser {
   updatedAt       DateTime             @updatedAt
   merchantUser    MerchantUser         @relation(fields: [merchantUserId], references: [id])
   store           Store                @relation(fields: [storeId], references: [id])
+
+  /// Stores where this StoreUser is set as the primary contact
+  primaryContactForStores Store[] @relation("StorePrimaryContact")
 
   @@unique([storeId, merchantUserId])
   @@index([storeId])
@@ -244,10 +272,10 @@ model Visit {
   store      Store       @relation(fields: [storeId], references: [id])
 
   // POS-5A extensions (additive, safe)
-  posVisitId         String? @unique @db.VarChar(64)
-  posEventId         String? @db.VarChar(64)
-  posIdempotencyKey  String? @unique @db.VarChar(128)
-  posIdentifier      String? @db.VarChar(320)
+  posVisitId        String? @unique @db.VarChar(64)
+  posEventId        String? @db.VarChar(64)
+  posIdempotencyKey String? @unique @db.VarChar(128)
+  posIdentifier     String? @db.VarChar(320)
 
   @@index([storeId, createdAt])
   @@index([consumerId, createdAt])
@@ -270,7 +298,7 @@ model PosReward {
   storeId    Int
   userId     Int
 
-  identifier  String @db.VarChar(320)
+  identifier  String   @db.VarChar(320)
   payloadJson Json?
   createdAt   DateTime @default(now())
 
@@ -296,10 +324,10 @@ model BillingAccount {
   providerCustomerId String?         @db.VarChar(255)
 
   // Billing Contact (may be external)
-  billingEmail       String  @db.VarChar(320)
-  billingName        String? @db.VarChar(200)
-  billingPhone       String? @db.VarChar(32)
-  billingAddressJson Json?
+  billingEmail        String  @db.VarChar(320)
+  billingName         String? @db.VarChar(200)
+  billingPhone        String? @db.VarChar(32)
+  billingAddressJson  Json?
   policyOverridesJson Json?
 
   status BillingAccountStatus @default(active)
@@ -458,6 +486,7 @@ model GuestPayToken {
  */
 
 enum EntityStatus {
+  staging
   active
   suspended
   archived
@@ -494,7 +523,7 @@ enum VisitSource {
  * Billing enums (v2.02.1)
  * ===============================
  */
- 
+
 enum BillingProvider {
   stripe
   manual
