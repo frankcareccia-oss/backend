@@ -422,6 +422,7 @@ function buildCorsOptions() {
       "x-pos-idempotency-key",
       "x-pos-nonce",
       "x-pos-signature",
+      "x-pv-device-id",
     ],
     credentials: false,
   };
@@ -1326,6 +1327,44 @@ app.post("/pos/auth/login", async (req, res) => {
     return handlePrismaError(err, res);
   }
 });
+
+
+/* -----------------------------
+   Device Trust (V1 minimal status)
+   - Admin UI calls GET /auth/device/status after login
+   - In this branch we treat local dev as always trusted.
+   - Safe informational endpoint (no state changes)
+-------------------------------- */
+app.get("/auth/device/status", requireJwt, async (req, res) => {
+  try {
+    const deviceId = String(req.get("x-pv-device-id") || "").trim();
+    const deviceIdShort = deviceId ? `${deviceId.slice(0, 8)}…` : null;
+
+    emitPvHook("auth.device.status", {
+      stable: "auth:device_status",
+      ok: true,
+      trusted: true,
+      deviceIdShort,
+      userId: req.user?.id ?? null,
+      systemRole: req.user?.systemRole ?? null,
+    });
+
+    return res.json({
+      ok: true,
+      trusted: true,
+      requiresDeviceVerification: false,
+      deviceIdShort,
+    });
+  } catch (err) {
+    emitPvHook("auth.device.status_error", {
+      stable: "auth:device_status",
+      ok: false,
+      message: String(err?.message || err),
+    });
+    return sendError(res, 500, "INTERNAL_ERROR", "Device status failed");
+  }
+});
+
 
 
 app.post("/auth/forgot-password", async (req, res) => {
