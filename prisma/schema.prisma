@@ -17,6 +17,15 @@ model User {
   /// Global role used to route after login (Option 1).
   systemRole SystemRole @default(user)
 
+  /// ===============================
+  /// Identity (person-level)
+  /// ===============================
+  firstName    String?
+  lastName     String?
+  phoneRaw     String?
+  phoneE164    String? @db.VarChar(20)
+  phoneCountry String  @default("US")
+
   tokenVersion      Int                  @default(0)
   passwordUpdatedAt DateTime?
   resetTokens       PasswordResetToken[]

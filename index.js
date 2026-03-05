@@ -1,10 +1,14 @@
-﻿require("dotenv").config();
+﻿// PERKVALET BACKEND VERSION MARKER: pv-merchant-users-fix-v5
+console.log("PerkValet backend loaded: pv-merchant-users-fix-v5");
+require("dotenv").config();
 
 const { registerPaymentsRoutes } = require("./src/payments/payments.routes");
 const { registerPosRoutes } = require("./src/pos/pos.routes");
 const { registerPosProvisionRoutes } = require("./src/pos/pos.provision.routes");
 const { registerPosAuthRoutes } = require("./src/pos/pos.auth.routes");
+const { buildMerchantStoreProfileRouter } = require("./src/merchant/merchant.storeProfile.routes");
 const fs = require("fs");
+const { buildMerchantStoreTeamRouter } = require("./src/merchant/merchant.storeTeam.routes");
 const path = require("path");
 
 const QRCode = require("qrcode");
@@ -302,7 +306,7 @@ function buildResetUrl(req, token) {
    Prisma error mapping
 -------------------------------- */
 
-function handlePrismaError(err, res) {
+function handlePrismaError(res, req, err) {
   const code = err?.code;
 
   if (code === "P2002") {
@@ -1651,6 +1655,32 @@ app.get("/merchant/stores", requireJwt, async (req, res) => {
   }
 });
 
+
+/* -----------------------------
+   Merchant Store Profile Routes (Option 2 extraction)
+   - GET   /merchant/stores/:storeId
+   - PATCH /merchant/stores/:storeId/profile
+   Mounted from: src/merchant/merchant.storeProfile.routes.js
+-------------------------------- */
+
+app.use(
+  buildMerchantStoreProfileRouter({
+    prisma,
+    requireJwt,
+    sendError,
+    handlePrismaError,
+  })
+);
+
+app.use(
+  buildMerchantStoreTeamRouter({
+    prisma,
+    requireJwt,
+    sendError,
+    handlePrismaError,
+  })
+);
+
 /* -----------------------------
    Thread U — Merchant user management endpoints
 -------------------------------- */
@@ -1665,7 +1695,7 @@ app.get("/merchant/users", requireJwt, async (req, res) => {
 
     const rows = await prisma.merchantUser.findMany({
       where: { merchantId },
-      include: { user: { select: { id: true, email: true, status: true } } },
+      include: { user: { select: { id: true, email: true, status: true, firstName: true, lastName: true, phoneRaw: true, phoneCountry: true, phoneE164: true } } },
       orderBy: [{ userId: "asc" }],
       take: 500,
     });
@@ -1676,6 +1706,11 @@ app.get("/merchant/users", requireJwt, async (req, res) => {
       role: mu.role,
       status: mu.status,
       userStatus: mu.user?.status || null,
+      firstName: mu.user?.firstName ?? null,
+      lastName: mu.user?.lastName ?? null,
+      phoneRaw: mu.user?.phoneRaw ?? null,
+      phoneCountry: mu.user?.phoneCountry ?? null,
+      phoneE164: mu.user?.phoneE164 ?? null,
     }));
 
     emitPvHook("merchant.users.list", { merchantId, actorUserId: acting.id, count: items.length });
@@ -1688,10 +1723,10 @@ app.get("/merchant/users", requireJwt, async (req, res) => {
 
 app.post("/merchant/users", requireJwt, async (req, res) => {
   const { merchantId: midRaw, email, role, status } = req.body || {};
-  const merchantId = parseIntParam(midRaw);
-  if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "merchantId is required");
-
-  const emailNorm = String(email || "").trim().toLowerCase();
+  const merchantIdRaw = (req.query && req.query.merchantId != null) ? req.query.merchantId : midRaw;
+  const merchantId = Number(merchantIdRaw);
+  if (!Number.isInteger(merchantId) || merchantId <= 0) return sendError(res, 400, "VALIDATION_ERROR", "merchantId is required");
+const emailNorm = String(email || "").trim().toLowerCase();
   if (!emailNorm) return sendError(res, 400, "VALIDATION_ERROR", "email is required");
 
   const roleNorm = normalizeRole(role);
@@ -1762,53 +1797,115 @@ app.patch("/merchant/users/:userId", requireJwt, async (req, res) => {
   const userId = parseIntParam(req.params.userId);
   if (!userId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid userId");
 
-  const { merchantId: midRaw, role, status } = req.body || {};
-  const merchantId = parseIntParam(midRaw);
-  if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "merchantId is required");
+  const {
+    merchantId: midRaw,
+    role,
+    status,
+    firstName,
+    lastName,
+    phoneRaw,
+    phoneCountry,
+  } = req.body || {};
 
-  const roleNorm = role !== undefined ? normalizeRole(role) : null;
-  const statusNorm = status !== undefined ? normalizeMemberStatus(status) : null;
+  const merchantIdRaw = req.query.merchantId ?? req.body?.merchantId;
+  const merchantId = Number(merchantIdRaw);
 
-  if (role !== undefined && !roleNorm) {
-    return sendError(res, 400, "VALIDATION_ERROR", "role must be owner|merchant_admin|store_admin|store_subadmin");
+  if (!Number.isInteger(merchantId) || merchantId <= 0) {
+    return sendError(res, 400, "VALIDATION_ERROR", "merchantId is required");
   }
-  if (status !== undefined && !statusNorm) {
-    return sendError(res, 400, "VALIDATION_ERROR", "status must be active|suspended");
-  }
-  if (role === undefined && status === undefined) {
-    return sendError(res, 400, "VALIDATION_ERROR", "Provide role and/or status");
-  }
+// Must be merchant_admin / merchant_manager (not store_admin)
+  const acting = await requireMerchantUserManager(req, res, merchantId);
+  if (!acting) return;
+
+  // Normalize optional profile fields
+  const fn = firstName == null ? undefined : String(firstName).trim();
+  const ln = lastName == null ? undefined : String(lastName).trim();
+  const pr = phoneRaw == null ? undefined : String(phoneRaw).replace(/\D/g, "");
+  const pc = phoneCountry == null ? undefined : String(phoneCountry).trim().toUpperCase();
 
   try {
-    const acting = await requireMerchantUserManager(req, res, merchantId);
-    if (!acting) return;
+    const result = await prisma.$transaction(async (tx) => {
+      // 1) Update membership (role/status) if provided
+      const membershipUpdate = {};
+      if (role != null && String(role).trim()) membershipUpdate.role = String(role).trim();
+      if (status != null && String(status).trim()) membershipUpdate.status = String(status).trim();
 
-    const mu = await prisma.merchantUser.findFirst({
-      where: { merchantId, userId },
+      let mu;
+      if (Object.keys(membershipUpdate).length) {
+        mu = await tx.merchantUser.update({
+          where: { merchantId_userId: { merchantId, userId } },
+          data: membershipUpdate,
+        });
+      } else {
+        mu = await tx.merchantUser.findUnique({
+          where: { merchantId_userId: { merchantId, userId } },
+        });
+      }
+
+      if (!mu) throw new Error("MEMBERSHIP_NOT_FOUND");
+
+      // 2) Update user profile if any provided
+      const userUpdate = {};
+      if (fn !== undefined) userUpdate.firstName = fn || null;
+      if (ln !== undefined) userUpdate.lastName = ln || null;
+      if (pr !== undefined) userUpdate.phoneRaw = pr || null;
+      if (pc !== undefined) userUpdate.phoneCountry = pc || "US";
+
+      let u;
+      if (Object.keys(userUpdate).length) {
+        u = await tx.user.update({
+          where: { id: userId },
+          data: userUpdate,
+          select: {
+            id: true,
+            email: true,
+            status: true,
+            firstName: true,
+            lastName: true,
+            phoneRaw: true,
+            phoneE164: true,
+            phoneCountry: true,
+          },
+        });
+      } else {
+        u = await tx.user.findUnique({
+          where: { id: userId },
+          select: {
+            id: true,
+            email: true,
+            status: true,
+            firstName: true,
+            lastName: true,
+            phoneRaw: true,
+            phoneE164: true,
+            phoneCountry: true,
+          },
+        });
+      }
+
+      return { mu, user: u };
     });
 
-    if (!mu) return sendError(res, 404, "NOT_FOUND", "Membership not found");
-
-    const updated = await prisma.merchantUser.update({
-      where: { id: mu.id },
-      data: {
-        ...(roleNorm ? { role: roleNorm } : null),
-        ...(statusNorm ? { status: statusNorm } : null),
-      },
-    });
-
-    emitPvHook("merchant.users.update_membership", {
+    return res.json({
+      ok: true,
+      userId,
       merchantId,
-      actorUserId: acting.id,
-      targetUserId: userId,
-      role: roleNorm || null,
-      status: statusNorm || null,
+      role: result.mu.role,
+      status: result.mu.status,
+      userStatus: result.user?.status || null,
+      email: result.user?.email || null,
+      firstName: result.user?.firstName || null,
+      lastName: result.user?.lastName || null,
+      phoneRaw: result.user?.phoneRaw || null,
+      phoneE164: result.user?.phoneE164 || null,
+      phoneCountry: result.user?.phoneCountry || null,
     });
-
-    return res.json({ ok: true, membership: updated });
   } catch (err) {
+    if (err && err.message === "MEMBERSHIP_NOT_FOUND") {
+      return sendError(res, 404, "NOT_FOUND", "User is not a member of this merchant");
+    }
     return handlePrismaError(err, res);
-  }
+}
 });
 
 app.get("/merchant/invoices", requireJwt, async (req, res) => {
@@ -2388,6 +2485,51 @@ app.put("/admin/merchants/:merchantId/billing-policy", requireAdmin, async (req,
     });
   } catch (err) {
     return handlePrismaError(err, res);
+  }
+});
+
+// -------------------------------------------------------
+// Admin: List Merchant Users (read-only)
+// GET /admin/merchants/:merchantId/users
+// -------------------------------------------------------
+app.get("/admin/merchants/:merchantId/users", requireAdmin, async (req, res) => {
+  try {
+    const merchantId = parseIntParam(req.params.merchantId);
+    if (!merchantId) {
+      return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantId");
+    }
+
+    const users = await prisma.merchantUser.findMany({
+      where: { merchantId },
+      include: {
+        user: {
+          select: {
+            id: true,
+            email: true,
+            firstName: true,
+            lastName: true,
+            phoneE164: true
+          }
+        }
+      },
+      orderBy: { id: "asc" }
+    });
+
+    const result = users.map(mu => ({
+      merchantUserId: mu.id,
+      role: mu.role,
+      status: mu.status,
+      userId: mu.user.id,
+      email: mu.user.email,
+      firstName: mu.user.firstName,
+      lastName: mu.user.lastName,
+      phone: mu.user.phoneE164
+    }));
+
+    res.json({ ok: true, users: result });
+
+  } catch (err) {
+    return handlePrismaError(res, req, err);
   }
 });
 
