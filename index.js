@@ -747,6 +747,33 @@ app.use(paymentsReg.router);
 
 app.use(express.json());
 
+/* -----------------------------
+   PV API Request Logger
+-------------------------------- */
+function pvApiLog(req) {
+  try {
+    const ctx = {
+      method: req.method,
+      path: req.originalUrl,
+      userId: req.user?.id || null,
+      role: req.user?.systemRole || null,
+      merchantId: req.user?.merchantId || null,
+      storeId: req.user?.storeId || null,
+      ts: new Date().toISOString()
+    };
+    console.log("\x1b[36m[PV API]\x1b[0m", JSON.stringify(ctx));
+  } catch (err) {
+    // never break request processing
+  }
+}
+
+function pvApiLoggerMiddleware(req, res, next) {
+  pvApiLog(req);
+  next();
+}
+
+app.use(pvApiLoggerMiddleware);
+
 app.post("/debug/json", (req, res) => {
   res.json({ body: req.body });
 });

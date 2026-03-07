@@ -592,7 +592,7 @@ function buildMerchantPortalRouter(deps) {
           storeUsers: {
             where: { archivedAt: null },
             include: {
-              store: { select: { id: true, name: true } },
+              store: { select: { id: true, name: true, primaryContactStoreUserId: true } },
             },
           },
         },
@@ -616,10 +616,20 @@ function buildMerchantPortalRouter(deps) {
       const items = rows.map((mu) => {
         const stores = Array.isArray(mu.storeUsers)
           ? mu.storeUsers
-              .map((su) => su?.store)
+              .map((su) => {
+                const st = su?.store;
+                if (!st) return null;
+                return {
+                  storeId: st.id,
+                  name: st.name,
+                  storeUserId: su.id,
+                  isPrimaryContact: st.primaryContactStoreUserId === su.id,
+                };
+              })
               .filter(Boolean)
-              .map((st) => ({ storeId: st.id, name: st.name }))
           : [];
+
+        const primaryContactStores = stores.filter((s) => s.isPrimaryContact);
 
         return {
           id: mu.id,
@@ -639,6 +649,9 @@ function buildMerchantPortalRouter(deps) {
           // Store assignments (0..n)
           stores,
           storeNames: stores.map((s) => s.name).join(", "),
+          isPrimaryContact: primaryContactStores.length > 0,
+          primaryContactStores,
+          primaryContactStoreNames: primaryContactStores.map((s) => s.name).join(", "),
 
           // Legacy fields (do not edit; kept for backward compatibility)
           contactEmail: mu.contactEmail ?? null,
@@ -662,7 +675,7 @@ function buildMerchantPortalRouter(deps) {
   });
 
   router.post("/users", requireJwt, async (req, res) => {
-    const { merchantId: midRaw, email, role, status } = req.body || {};
+    const { merchantId: midRaw, email, role, status, firstName, lastName, phoneRaw, phoneCountry } = req.body || {};
     const merchantId = parseIntParam(midRaw);
     if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "merchantId is required");
 
@@ -674,6 +687,11 @@ function buildMerchantPortalRouter(deps) {
 
     const statusNorm = normalizeMemberStatus(status || "active");
     if (!statusNorm) return sendError(res, 400, "VALIDATION_ERROR", "status must be active|suspended");
+
+    const firstNameNorm = firstName === undefined ? undefined : (String(firstName || "").trim() || null);
+    const lastNameNorm = lastName === undefined ? undefined : (String(lastName || "").trim() || null);
+    const phoneRawNorm = phoneRaw === undefined ? undefined : (String(phoneRaw || "").replace(/\D+/g, "").slice(0, 32) || null);
+    const phoneCountryNorm = phoneCountry === undefined ? undefined : (String(phoneCountry || "").trim().toUpperCase() || "US");
 
     try {
       const acting = await requireMerchantUserManager(req, res, merchantId);
@@ -697,9 +715,26 @@ function buildMerchantPortalRouter(deps) {
             systemRole: "user",
             status: "active",
             tokenVersion: 0,
+            ...(firstName !== undefined ? { firstName: firstNameNorm } : null),
+            ...(lastName !== undefined ? { lastName: lastNameNorm } : null),
+            ...(phoneRaw !== undefined ? { phoneRaw: phoneRawNorm } : null),
+            ...(phoneCountry !== undefined ? { phoneCountry: phoneCountryNorm || "US" } : null),
           },
         });
         createdUser = true;
+      }
+
+
+      if (user && !createdUser && (firstName !== undefined || lastName !== undefined || phoneRaw !== undefined || phoneCountry !== undefined)) {
+        user = await prisma.user.update({
+          where: { id: user.id },
+          data: {
+            ...(firstName !== undefined ? { firstName: firstNameNorm } : null),
+            ...(lastName !== undefined ? { lastName: lastNameNorm } : null),
+            ...(phoneRaw !== undefined ? { phoneRaw: phoneRawNorm } : null),
+            ...(phoneCountry !== undefined ? { phoneCountry: phoneCountryNorm || "US" } : null),
+          },
+        });
       }
 
       // Upsert merchant membership (safe fallback: findFirst + update/create)
@@ -750,6 +785,7 @@ function buildMerchantPortalRouter(deps) {
       reason,
 
       // Identity (User)
+      email,
       firstName,
       lastName,
       phoneRaw,
@@ -780,6 +816,7 @@ function buildMerchantPortalRouter(deps) {
     const statusReasonNorm = normOptString(statusReason !== undefined ? statusReason : reason, { maxLen: 200 });
 
     // User identity fields
+    const emailNorm = email === undefined ? undefined : normOptString(String(email || "").toLowerCase(), { maxLen: 320 });
     const firstNameNorm = normOptString(firstName, { maxLen: 80 });
     const lastNameNorm = normOptString(lastName, { maxLen: 80 });
     const phoneRawNorm = normOptString(phoneRaw !== undefined ? phoneRaw : (contactPhone !== undefined ? contactPhone : phone), { maxLen: 32 });
@@ -791,6 +828,7 @@ function buildMerchantPortalRouter(deps) {
 
     const hasMembershipPatch = role !== undefined || status !== undefined || statusReason !== undefined || reason !== undefined;
     const hasUserPatch =
+      email !== undefined ||
       firstName !== undefined ||
       lastName !== undefined ||
       phoneRaw !== undefined ||
@@ -804,6 +842,13 @@ function buildMerchantPortalRouter(deps) {
     }
     if (status !== undefined && !statusNorm) {
       return sendError(res, 400, "VALIDATION_ERROR", "status must be active|suspended");
+    }
+    if (email !== undefined) {
+      const emailCheck = String(email || "").trim().toLowerCase();
+      if (!emailCheck) return sendError(res, 400, "VALIDATION_ERROR", "email is required");
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailCheck)) {
+        return sendError(res, 400, "VALIDATION_ERROR", "email must be a valid email address");
+      }
     }
     if (!hasMembershipPatch && !hasUserPatch) {
       return sendError(res, 400, "VALIDATION_ERROR", "Provide membership and/or identity fields");
@@ -827,6 +872,7 @@ function buildMerchantPortalRouter(deps) {
       await prisma.$transaction(async (tx) => {
         if (hasUserPatch) {
           const userData = {
+            ...(email !== undefined ? { email: emailNorm } : null),
             ...(firstName !== undefined ? { firstName: firstNameNorm } : null),
             ...(lastName !== undefined ? { lastName: lastNameNorm } : null),
             ...(phoneRawProvided ? { phoneRaw: phoneRawNorm } : null),

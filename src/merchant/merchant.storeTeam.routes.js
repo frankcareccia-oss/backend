@@ -1,5 +1,5 @@
 /**
- * Merchant Store Team Routes (Option 2 extraction)
+ * merchant.storeTeam.routes.js
  *
  * Purpose:
  * - Back the Merchant UI "Team & Access" tab for a store
@@ -162,16 +162,29 @@ function buildMerchantStoreTeamRouter(deps) {
       });
       if (!store) return sendError(res, 404, "NOT_FOUND", "Store not found");
 
-      const mu = await prisma.merchantUser.findFirst({
+      // Compatibility lookup:
+      // UI currently falls back to userId when GET /merchant/users omits merchantUserId.
+      // First try MerchantUser.id, then fall back to MerchantUser.userId within the same merchant.
+      let mu = await prisma.merchantUser.findFirst({
         where: { id: merchantUserId, merchantId: store.merchantId },
-        select: { id: true },
+        select: { id: true, userId: true },
       });
+
+      if (!mu) {
+        mu = await prisma.merchantUser.findFirst({
+          where: { userId: merchantUserId, merchantId: store.merchantId },
+          select: { id: true, userId: true },
+        });
+      }
+
       if (!mu) return sendError(res, 404, "NOT_FOUND", "Employee not found");
 
+      const resolvedMerchantUserId = mu.id;
+
       const upserted = await prisma.storeUser.upsert({
-        where: { storeId_merchantUserId: { storeId: storeId, merchantUserId: merchantUserId } },
+        where: { storeId_merchantUserId: { storeId: storeId, merchantUserId: resolvedMerchantUserId } },
         update: { permissionLevel: nextPerm, status: "active" },
-        create: { storeId: storeId, merchantUserId: merchantUserId, permissionLevel: nextPerm, status: "active" },
+        create: { storeId: storeId, merchantUserId: resolvedMerchantUserId, permissionLevel: nextPerm, status: "active" },
         select: { id: true, storeId: true, merchantUserId: true, permissionLevel: true, status: true },
       });
 
