@@ -512,6 +512,8 @@ enum SystemRole {
 enum MerchantRole {
   owner
   merchant_admin
+  ap_clerk
+  merchant_employee
   store_admin
   store_subadmin
 }
