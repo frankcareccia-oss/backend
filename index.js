@@ -11,6 +11,8 @@ const fs = require("fs");
 const { buildMerchantStoreTeamRouter } = require("./src/merchant/merchant.storeTeam.routes");
 const path = require("path");
 
+const buildMerchantRouter = require("./src/merchant/merchant.routes");
+
 const QRCode = require("qrcode");
 const crypto = require("crypto");
 const express = require("express");
@@ -120,7 +122,7 @@ function enforceStoreAndMerchantActive(storeWithMerchant) {
 }
 
 /* -----------------------------
-   Thread P — ShortPay (canonical /p/:code)
+   Thread P � ShortPay (canonical /p/:code)
 
    Goals:
    - One human-friendly public entry point: /p/:code
@@ -306,7 +308,19 @@ function buildResetUrl(req, token) {
    Prisma error mapping
 -------------------------------- */
 
-function handlePrismaError(res, req, err) {
+function handlePrismaError(a, b, c) {
+  let err;
+  let res;
+
+  if (a && typeof a.status === "function") {
+    // old style: handlePrismaError(res, req, err)
+    res = a;
+    err = c;
+  } else {
+    // new style: handlePrismaError(err, res)
+    err = a;
+    res = b;
+  }
   const code = err?.code;
 
   if (code === "P2002") {
@@ -433,7 +447,7 @@ function buildCorsOptions() {
 }
 
 /* -----------------------------
-   Rate limiting (in-memory) ✅ (fixes your crash)
+   Rate limiting (in-memory) ? (fixes your crash)
 -------------------------------- */
 
 function createRateLimiter({ keyPrefix, windowMs, max }) {
@@ -495,7 +509,7 @@ function loadBillingPolicyFromDisk() {
     const parsed = JSON.parse(raw);
     return parsed && typeof parsed === "object" ? parsed : null;
   } catch (e) {
-    console.warn("⚠️ Failed to load billing policy from disk:", e?.message || e);
+    console.warn("?? Failed to load billing policy from disk:", e?.message || e);
     return null;
   }
 }
@@ -505,7 +519,7 @@ function saveBillingPolicyToDisk(policyObj) {
     fs.writeFileSync(BILLING_POLICY_FILE, JSON.stringify(policyObj, null, 2), "utf-8");
     return true;
   } catch (e) {
-    console.warn("⚠️ Failed to save billing policy to disk:", e?.message || e);
+    console.warn("?? Failed to save billing policy to disk:", e?.message || e);
     return false;
   }
 }
@@ -584,7 +598,7 @@ function normalizeLoadedBillingPolicy(raw) {
 
   const v = validateBillingPolicy(merged);
   if (!v.ok) {
-    console.warn("⚠️ Invalid billing policy on disk; using defaults:", v.msg);
+    console.warn("?? Invalid billing policy on disk; using defaults:", v.msg);
     return DEFAULT_BILLING_POLICY;
   }
 
@@ -711,7 +725,7 @@ app.options(/.*/, cors(corsOptions));
 
 /*
  * ===============================
- * Thread J — Payments & Guest Pay
+ * Thread J � Payments & Guest Pay
  * ===============================
  * Stripe webhook MUST be mounted with express.raw BEFORE express.json,
  * otherwise signature verification will fail.
@@ -779,7 +793,7 @@ app.post("/debug/json", (req, res) => {
 });
 
 /* -----------------------------
-   Thread P — Canonical ShortPay public endpoints
+   Thread P � Canonical ShortPay public endpoints
 -------------------------------- */
 
 app.get("/p/:code", async (req, res) => {
@@ -884,7 +898,7 @@ app.post("/p/:code/intent", async (req, res) => {
    Public routes
 -------------------------------- */
 
-app.get("/", (_req, res) => res.json({ status: "PerkValet backend running ✅" }));
+app.get("/", (_req, res) => res.json({ status: "PerkValet backend running ?" }));
 
 app.post("/auth/login", async (req, res) => {
   try {
@@ -921,7 +935,7 @@ app.post("/auth/login", async (req, res) => {
 });
 
 /* -----------------------------
-   POS-8C — POS Provisioning + Quick Login (shift code → JWT)
+   POS-8C � POS Provisioning + Quick Login (shift code ? JWT)
 
    Goals:
    - Support "sidecar" POS associates logging in fast with a short shift code
@@ -954,7 +968,7 @@ function safeReadJsonFile(filePath, fallback) {
     const parsed = JSON.parse(raw);
     return parsed && typeof parsed === "object" ? parsed : fallback;
   } catch (e) {
-    console.warn("⚠️ safeReadJsonFile failed:", filePath, e?.message || e);
+    console.warn("?? safeReadJsonFile failed:", filePath, e?.message || e);
     return fallback;
   }
 }
@@ -964,7 +978,7 @@ function safeWriteJsonFile(filePath, obj) {
     fs.writeFileSync(filePath, JSON.stringify(obj, null, 2), "utf-8");
     return true;
   } catch (e) {
-    console.warn("⚠️ safeWriteJsonFile failed:", filePath, e?.message || e);
+    console.warn("?? safeWriteJsonFile failed:", filePath, e?.message || e);
     return false;
   }
 }
@@ -1016,7 +1030,7 @@ function loadPosAssociatesLegacy() {
       }))
       .filter((x) => x.code && x.userEmail && Number.isInteger(x.storeId) && x.storeId > 0);
   } catch (e) {
-    console.warn("⚠️ POS legacy loadPosAssociates failed:", e?.message || e);
+    console.warn("?? POS legacy loadPosAssociates failed:", e?.message || e);
     return [];
   }
 }
@@ -1369,7 +1383,7 @@ app.post("/pos/auth/login", async (req, res) => {
 app.get("/auth/device/status", requireJwt, async (req, res) => {
   try {
     const deviceId = String(req.get("x-pv-device-id") || "").trim();
-    const deviceIdShort = deviceId ? `${deviceId.slice(0, 8)}…` : null;
+    const deviceIdShort = deviceId ? `${deviceId.slice(0, 8)}�` : null;
 
     emitPvHook("auth.device.status", {
       stable: "auth:device_status",
@@ -1600,7 +1614,7 @@ function isPosOnlyMerchantUser(user) {
 }
 
 /**
- * Thread U — Merchant user management helpers
+ * Thread U � Merchant user management helpers
  */
 function canManageUsersForMerchant(user, merchantId) {
   const mus = Array.isArray(user?.merchantUsers) ? user.merchantUsers : [];
@@ -1609,9 +1623,16 @@ function canManageUsersForMerchant(user, merchantId) {
   return m.role === "owner" || m.role === "merchant_admin";
 }
 
+function canAccessInvoicesForMerchant(user, merchantId) {
+  const mus = Array.isArray(user?.merchantUsers) ? user.merchantUsers : [];
+  const m = mus.find((x) => x.status === "active" && x.merchantId === merchantId);
+  if (!m) return false;
+  return m.role === "owner" || m.role === "merchant_admin" || m.role === "ap_clerk";
+}
+
 function normalizeRole(role) {
   const r = String(role || "").trim();
-  const allowed = ["owner", "merchant_admin", "store_admin", "store_subadmin"];
+  const allowed = ["owner", "merchant_admin", "ap_clerk", "merchant_employee", "store_admin", "store_subadmin"];
   return allowed.includes(r) ? r : null;
 }
 
@@ -1654,560 +1675,24 @@ async function requireMerchantUserManager(req, res, merchantId) {
   return user;
 }
 
-app.get("/merchant/stores", requireJwt, async (req, res) => {
-  try {
-    const user = await prisma.user.findUnique({
-      where: { id: req.userId },
-      select: {
-        id: true,
-        systemRole: true,
-        merchantUsers: { where: { status: "active" }, select: { merchantId: true } },
-      },
-    });
-
-    if (!user) return sendError(res, 404, "NOT_FOUND", "User not found");
-    if (user.systemRole === "pv_admin") return sendError(res, 403, "FORBIDDEN", "pv_admin does not use merchant portal");
-
-    const merchantIds = user.merchantUsers.map((m) => m.merchantId);
-    if (!merchantIds.length) return res.json({ items: [] });
-
-    const stores = await prisma.store.findMany({
-      where: { merchantId: { in: merchantIds }, status: "active" },
-      orderBy: { createdAt: "desc" },
-    });
-
-    return res.json({ items: stores });
-  } catch (err) {
-    return handlePrismaError(err, res);
-  }
-});
-
-
-/* -----------------------------
-   Merchant Store Profile Routes (Option 2 extraction)
-   - GET   /merchant/stores/:storeId
-   - PATCH /merchant/stores/:storeId/profile
-   Mounted from: src/merchant/merchant.storeProfile.routes.js
--------------------------------- */
-
 app.use(
-  buildMerchantStoreProfileRouter({
+  buildMerchantRouter({
     prisma,
     requireJwt,
+    requireAdmin,
     sendError,
     handlePrismaError,
+    parseIntParam,
+    emitPvHook,
+    requireMerchantUserManager,
+    normalizeRole,
+    normalizeMemberStatus,
+    crypto,
+    bcrypt,
+    isPosOnlyMerchantUser,
+    canAccessInvoicesForMerchant,
   })
 );
-
-app.use(
-  buildMerchantStoreTeamRouter({
-    prisma,
-    requireJwt,
-    sendError,
-    handlePrismaError,
-  })
-);
-
-/* -----------------------------
-   Thread U — Merchant user management endpoints
--------------------------------- */
-
-app.get("/merchant/users", requireJwt, async (req, res) => {
-  const merchantId = parseIntParam(req.query.merchantId);
-  if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "merchantId is required");
-
-  try {
-    const acting = await requireMerchantUserManager(req, res, merchantId);
-    if (!acting) return;
-
-    const rows = await prisma.merchantUser.findMany({
-      where: { merchantId },
-      include: { user: { select: { id: true, email: true, status: true, firstName: true, lastName: true, phoneRaw: true, phoneCountry: true, phoneE164: true } } },
-      orderBy: [{ userId: "asc" }],
-      take: 500,
-    });
-
-    const items = rows.map((mu) => ({
-      userId: mu.userId,
-      email: mu.user?.email || null,
-      role: mu.role,
-      status: mu.status,
-      userStatus: mu.user?.status || null,
-      firstName: mu.user?.firstName ?? null,
-      lastName: mu.user?.lastName ?? null,
-      phoneRaw: mu.user?.phoneRaw ?? null,
-      phoneCountry: mu.user?.phoneCountry ?? null,
-      phoneE164: mu.user?.phoneE164 ?? null,
-    }));
-
-    emitPvHook("merchant.users.list", { merchantId, actorUserId: acting.id, count: items.length });
-
-    return res.json({ items });
-  } catch (err) {
-    return handlePrismaError(err, res);
-  }
-});
-
-app.post("/merchant/users", requireJwt, async (req, res) => {
-  const { merchantId: midRaw, email, role, status } = req.body || {};
-  const merchantIdRaw = (req.query && req.query.merchantId != null) ? req.query.merchantId : midRaw;
-  const merchantId = Number(merchantIdRaw);
-  if (!Number.isInteger(merchantId) || merchantId <= 0) return sendError(res, 400, "VALIDATION_ERROR", "merchantId is required");
-const emailNorm = String(email || "").trim().toLowerCase();
-  if (!emailNorm) return sendError(res, 400, "VALIDATION_ERROR", "email is required");
-
-  const roleNorm = normalizeRole(role);
-  if (!roleNorm) return sendError(res, 400, "VALIDATION_ERROR", "role must be owner|merchant_admin|store_admin|store_subadmin");
-
-  const statusNorm = normalizeMemberStatus(status || "active");
-  if (!statusNorm) return sendError(res, 400, "VALIDATION_ERROR", "status must be active|suspended");
-
-  try {
-    const acting = await requireMerchantUserManager(req, res, merchantId);
-    if (!acting) return;
-
-    // Find existing user by email (schema has email unique, but keep findMany style consistent with your auth/login)
-    const users = await prisma.user.findMany({ where: { email: emailNorm }, take: 1 });
-    let user = Array.isArray(users) && users.length ? users[0] : null;
-
-    let tempPassword = null;
-    let createdUser = false;
-
-    if (!user) {
-      tempPassword = crypto.randomBytes(6).toString("base64url");
-      const passwordHash = await bcrypt.hash(tempPassword, 12);
-
-      user = await prisma.user.create({
-        data: {
-          email: emailNorm,
-          passwordHash,
-          systemRole: "user",
-          status: "active",
-          tokenVersion: 0,
-        },
-      });
-      createdUser = true;
-    }
-
-    // Upsert merchant membership (safe fallback: findFirst + update/create)
-    const existingMu = await prisma.merchantUser.findFirst({
-      where: { merchantId, userId: user.id },
-    });
-
-    if (existingMu) {
-      await prisma.merchantUser.update({
-        where: { id: existingMu.id },
-        data: { role: roleNorm, status: statusNorm },
-      });
-    } else {
-      await prisma.merchantUser.create({
-        data: { merchantId, userId: user.id, role: roleNorm, status: statusNorm },
-      });
-    }
-
-    emitPvHook("merchant.users.create_or_grant", {
-      merchantId,
-      actorUserId: acting.id,
-      targetUserId: user.id,
-      role: roleNorm,
-      status: statusNorm,
-      createdUser,
-    });
-
-    return res.json({ ok: true, userId: user.id, createdUser, tempPassword });
-  } catch (err) {
-    return handlePrismaError(err, res);
-  }
-});
-
-app.patch("/merchant/users/:userId", requireJwt, async (req, res) => {
-  const userId = parseIntParam(req.params.userId);
-  if (!userId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid userId");
-
-  const {
-    merchantId: midRaw,
-    role,
-    status,
-    firstName,
-    lastName,
-    phoneRaw,
-    phoneCountry,
-  } = req.body || {};
-
-  const merchantIdRaw = req.query.merchantId ?? req.body?.merchantId;
-  const merchantId = Number(merchantIdRaw);
-
-  if (!Number.isInteger(merchantId) || merchantId <= 0) {
-    return sendError(res, 400, "VALIDATION_ERROR", "merchantId is required");
-  }
-// Must be merchant_admin / merchant_manager (not store_admin)
-  const acting = await requireMerchantUserManager(req, res, merchantId);
-  if (!acting) return;
-
-  // Normalize optional profile fields
-  const fn = firstName == null ? undefined : String(firstName).trim();
-  const ln = lastName == null ? undefined : String(lastName).trim();
-  const pr = phoneRaw == null ? undefined : String(phoneRaw).replace(/\D/g, "");
-  const pc = phoneCountry == null ? undefined : String(phoneCountry).trim().toUpperCase();
-
-  try {
-    const result = await prisma.$transaction(async (tx) => {
-      // 1) Update membership (role/status) if provided
-      const membershipUpdate = {};
-      if (role != null && String(role).trim()) membershipUpdate.role = String(role).trim();
-      if (status != null && String(status).trim()) membershipUpdate.status = String(status).trim();
-
-      let mu;
-      if (Object.keys(membershipUpdate).length) {
-        mu = await tx.merchantUser.update({
-          where: { merchantId_userId: { merchantId, userId } },
-          data: membershipUpdate,
-        });
-      } else {
-        mu = await tx.merchantUser.findUnique({
-          where: { merchantId_userId: { merchantId, userId } },
-        });
-      }
-
-      if (!mu) throw new Error("MEMBERSHIP_NOT_FOUND");
-
-      // 2) Update user profile if any provided
-      const userUpdate = {};
-      if (fn !== undefined) userUpdate.firstName = fn || null;
-      if (ln !== undefined) userUpdate.lastName = ln || null;
-      if (pr !== undefined) userUpdate.phoneRaw = pr || null;
-      if (pc !== undefined) userUpdate.phoneCountry = pc || "US";
-
-      let u;
-      if (Object.keys(userUpdate).length) {
-        u = await tx.user.update({
-          where: { id: userId },
-          data: userUpdate,
-          select: {
-            id: true,
-            email: true,
-            status: true,
-            firstName: true,
-            lastName: true,
-            phoneRaw: true,
-            phoneE164: true,
-            phoneCountry: true,
-          },
-        });
-      } else {
-        u = await tx.user.findUnique({
-          where: { id: userId },
-          select: {
-            id: true,
-            email: true,
-            status: true,
-            firstName: true,
-            lastName: true,
-            phoneRaw: true,
-            phoneE164: true,
-            phoneCountry: true,
-          },
-        });
-      }
-
-      return { mu, user: u };
-    });
-
-    return res.json({
-      ok: true,
-      userId,
-      merchantId,
-      role: result.mu.role,
-      status: result.mu.status,
-      userStatus: result.user?.status || null,
-      email: result.user?.email || null,
-      firstName: result.user?.firstName || null,
-      lastName: result.user?.lastName || null,
-      phoneRaw: result.user?.phoneRaw || null,
-      phoneE164: result.user?.phoneE164 || null,
-      phoneCountry: result.user?.phoneCountry || null,
-    });
-  } catch (err) {
-    if (err && err.message === "MEMBERSHIP_NOT_FOUND") {
-      return sendError(res, 404, "NOT_FOUND", "User is not a member of this merchant");
-    }
-    return handlePrismaError(err, res);
-}
-});
-
-app.get("/merchant/invoices", requireJwt, async (req, res) => {
-  try {
-    // NOTE: role included so we can enforce Thread U POS restriction
-    const user = await prisma.user.findUnique({
-      where: { id: req.userId },
-      select: {
-        id: true,
-        systemRole: true,
-        merchantUsers: { where: { status: "active" }, select: { merchantId: true, role: true } },
-      },
-    });
-
-    if (!user) return sendError(res, 404, "NOT_FOUND", "User not found");
-    if (user.systemRole === "pv_admin") return sendError(res, 403, "FORBIDDEN", "pv_admin does not use merchant portal");
-
-    // Thread U: POS-only merchant users cannot access invoices
-    if (isPosOnlyMerchantUser(user)) {
-      return sendError(res, 403, "FORBIDDEN", "POS associates cannot access billing or invoices");
-    }
-
-    const merchantIds = user.merchantUsers.map((m) => m.merchantId);
-    if (!merchantIds.length) return res.json({ items: [], nextCursor: null });
-
-    const items = await prisma.invoice.findMany({
-      where: { merchantId: { in: merchantIds } },
-      orderBy: [{ createdAt: "desc" }],
-      take: 200,
-    });
-
-    const mapped = items.map((inv) => ({
-      id: inv.id,
-      merchantId: inv.merchantId,
-      billingAccountId: inv.billingAccountId,
-      status: inv.status,
-      issuedAt: inv.issuedAt ? inv.issuedAt.toISOString() : null,
-      netTermsDays: inv.netTermsDays ?? null,
-      dueAt: inv.dueAt ? inv.dueAt.toISOString() : null,
-      subtotalCents: inv.subtotalCents,
-      taxCents: inv.taxCents,
-      totalCents: inv.totalCents,
-      amountPaidCents: inv.amountPaidCents,
-      relatedToInvoiceId: inv.relatedToInvoiceId ?? null,
-    }));
-
-    return res.json({ items: mapped, nextCursor: null });
-  } catch (err) {
-    return handlePrismaError(err, res);
-  }
-});
-
-app.get("/merchant/invoices/:invoiceId", requireJwt, async (req, res) => {
-  const invoiceId = parseIntParam(req.params.invoiceId);
-  if (!invoiceId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid invoiceId");
-
-  try {
-    // NOTE: role included so we can enforce Thread U POS restriction
-    const user = await prisma.user.findUnique({
-      where: { id: req.userId },
-      select: {
-        id: true,
-        systemRole: true,
-        merchantUsers: { where: { status: "active" }, select: { merchantId: true, role: true } },
-      },
-    });
-
-    if (!user) return sendError(res, 404, "NOT_FOUND", "User not found");
-    if (user.systemRole === "pv_admin") return sendError(res, 403, "FORBIDDEN", "pv_admin does not use merchant portal");
-
-    // Thread U: POS-only merchant users cannot access invoice detail
-    if (isPosOnlyMerchantUser(user)) {
-      return sendError(res, 403, "FORBIDDEN", "POS associates cannot access billing or invoices");
-    }
-
-    const merchantIds = user.merchantUsers.map((m) => m.merchantId);
-    if (!merchantIds.length) return sendError(res, 403, "FORBIDDEN", "No merchant memberships");
-
-    const inv = await prisma.invoice.findUnique({
-      where: { id: invoiceId },
-      include: { lineItems: true, payments: true, relatedInvoices: true },
-    });
-
-    if (!inv) return sendError(res, 404, "INVOICE_NOT_FOUND", "Invoice not found");
-    if (!merchantIds.includes(inv.merchantId)) return sendError(res, 403, "FORBIDDEN", "Invoice not accessible");
-
-    return res.json({
-      invoice: {
-        id: inv.id,
-        merchantId: inv.merchantId,
-        billingAccountId: inv.billingAccountId,
-        status: inv.status,
-        issuedAt: inv.issuedAt ? inv.issuedAt.toISOString() : null,
-        netTermsDays: inv.netTermsDays ?? null,
-        dueAt: inv.dueAt ? inv.dueAt.toISOString() : null,
-        subtotalCents: inv.subtotalCents,
-        taxCents: inv.taxCents,
-        totalCents: inv.totalCents,
-        amountPaidCents: inv.amountPaidCents,
-        relatedToInvoiceId: inv.relatedToInvoiceId ?? null,
-        externalInvoiceId: inv.externalInvoiceId ?? null,
-        generationVersion: inv.generationVersion,
-      },
-      lineItems: inv.lineItems,
-      payments: inv.payments,
-      relatedInvoices: (inv.relatedInvoices || []).map((x) => ({
-        id: x.id,
-        status: x.status,
-        totalCents: x.totalCents,
-        relatedToInvoiceId: x.relatedToInvoiceId ?? null,
-      })),
-    });
-  } catch (err) {
-    return handlePrismaError(err, res);
-  }
-});
-
-/* -----------------------------
-   Admin gate (JWT + admin key)
--------------------------------- */
-
-app.use(["/merchants", "/stores", "/users", "/admin", "/billing"], requireJwt, requireAdmin);
-
-/* -----------------------------
-   Admin: Merchants (JWT + admin key)
--------------------------------- */
-
-app.post("/merchants", async (req, res) => {
-  const { name, billingEmail } = req.body || {};
-
-  try {
-    const merchantName = String(name || "").trim();
-    if (!merchantName) {
-      return sendError(res, 400, "VALIDATION_ERROR", "name is required");
-    }
-
-    const providedEmail = billingEmail ? String(billingEmail).trim().toLowerCase() : "";
-
-    const merchant = await prisma.$transaction(async (tx) => {
-      // 1) Create Merchant
-      const m = await tx.merchant.create({
-        data: { name: merchantName },
-      });
-
-      // 2) Create BillingAccount immediately (required invariant)
-      // billingEmail is REQUIRED by schema.
-      const emailToUse = providedEmail || `billing+merchant${m.id}@example.com`;
-
-      await tx.billingAccount.create({
-        data: {
-          merchantId: m.id,
-          billingEmail: emailToUse,
-          provider: "manual", // keep Stripe out for now
-          status: "active",
-        },
-      });
-
-      return m;
-    });
-
-    // Preserve existing API contract (merchant only)
-    return res.json(merchant);
-  } catch (err) {
-    return handlePrismaError(err, res);
-  }
-});
-
-
-app.get("/merchants", async (req, res) => {
-  try {
-    const status = req.query.status;
-    const where =
-      !status || status === "active"
-        ? { status: "active" }
-        : status === "all"
-        ? {}
-        : { status: String(status) };
-
-    const merchants = await prisma.merchant.findMany({
-      where,
-      orderBy: { createdAt: "desc" },
-      include: { stores: true },
-    });
-
-    return res.json(merchants);
-  } catch (err) {
-    return sendError(res, 500, "INTERNAL_ERROR", err?.message || "Request failed");
-  }
-});
-
-app.get("/merchants/:merchantId", async (req, res) => {
-  const merchantId = parseIntParam(req.params.merchantId);
-  if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantId");
-
-  try {
-    const merchant = await prisma.merchant.findUnique({
-      where: { id: merchantId },
-      include: { stores: true },
-    });
-    if (!merchant) return sendError(res, 404, "MERCHANT_NOT_FOUND", "Merchant not found");
-    return res.json(merchant);
-  } catch (err) {
-    return handlePrismaError(err, res);
-  }
-});
-
-/* -----------------------------
-   Admin: Create Store under Merchant (Thread V2)
-   POST /admin/merchants/:merchantId/stores
-   - Requires JWT + admin gate (see app.use above)
-   - Validates merchantId + name
-   - Persists Store with merchantId
-   - No schema changes / no migrations
--------------------------------- */
-
-app.post("/admin/merchants/:merchantId/stores", requireAdmin, async (req, res) => {
-  const merchantId = parseIntParam(req.params.merchantId);
-  const { name } = req.body || {};
-
-  if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantId");
-
-  const storeName = String(name || "").trim();
-  if (!storeName) return sendError(res, 400, "VALIDATION_ERROR", "name is required");
-
-  try {
-    const result = await prisma.$transaction(async (tx) => {
-      const merchant = await tx.merchant.findUnique({ where: { id: merchantId } });
-      const gateErr = assertActiveMerchant(merchant);
-      if (gateErr) return { error: gateErr };
-
-      const store = await tx.store.create({
-        data: {
-          merchantId,
-          name: storeName,
-          status: "active",
-        },
-      });
-
-      return { store };
-    });
-
-    if (result?.error) return sendError(res, result.error.http, result.error.code, result.error.message);
-    return res.status(201).json(result.store);
-  } catch (err) {
-    return handlePrismaError(err, res);
-  }
-});
-
-
-app.patch("/merchants/:merchantId", async (req, res) => {
-  const merchantId = parseIntParam(req.params.merchantId);
-  const { status, statusReason } = req.body || {};
-
-  if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantId");
-  if (!status || !["active", "suspended", "archived"].includes(status)) {
-    return sendError(res, 400, "VALIDATION_ERROR", "status must be active|suspended|archived");
-  }
-
-  try {
-    const now = new Date();
-    const merchant = await prisma.merchant.update({
-      where: { id: merchantId },
-      data: {
-        status,
-        statusReason: statusReason ?? null,
-        statusUpdatedAt: now,
-        suspendedAt: status === "suspended" ? now : null,
-        archivedAt: status === "archived" ? now : null,
-      },
-    });
-    return res.json(merchant);
-  } catch (err) {
-    return handlePrismaError(err, res);
-  }
-});
 
 app.get("/whoami", requireAdmin, async (req, res) => {
   try {
