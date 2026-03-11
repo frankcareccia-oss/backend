@@ -142,7 +142,7 @@ function buildMerchantRouter(deps) {
         res,
         400,
         "VALIDATION_ERROR",
-        "role must be owner|merchant_admin|ap_clerk|merchant_employee|store_admin|store_subadmin|pos_employee"
+        "role must be owner|merchant_admin|ap_clerk|merchant_employee|store_admin|store_subadmin"
       );
     }
 
@@ -471,29 +471,47 @@ function buildMerchantRouter(deps) {
      Admin Merchant List / Detail
   -------------------------------- */
 
-  router.get("/merchants", requireAdmin, async (req, res) => {
-    try {
-      const { status } = req.query || {};
-      const where = {};
+  function normalizeAdminMerchantStatus(status) {
+    const s = String(status ?? "").trim().toLowerCase();
+    if (!s || s === "live" || s === "enabled") return "active";
+    if (s === "active" || s === "suspended" || s === "archived") return s;
+    return s || "active";
+  }
 
-      if (status && ["active", "suspended", "archived"].includes(String(status))) {
-        where.status = String(status);
-      }
+  function applyNormalizedMerchantStatus(merchant) {
+    if (!merchant || typeof merchant !== "object") return merchant;
+    return {
+      ...merchant,
+      status: normalizeAdminMerchantStatus(merchant.status),
+    };
+  }
 
-      const merchants = await prisma.merchant.findMany({
-        where,
-        include: { stores: true },
-        orderBy: { id: "asc" },
-        take: 200,
-      });
+router.get("/merchants", requireJwt, requireAdmin, async (req, res) => {
+  try {
+    const merchants = await prisma.merchant.findMany({
+      include: { stores: true },
+      orderBy: { id: "asc" },
+      take: 200,
+    });
 
-      return res.json({ items: merchants });
-    } catch (err) {
-      return handlePrismaError(err, res);
-    }
-  });
+    console.log("[admin /merchants] count =", merchants.length);
+    console.log(
+      "[admin /merchants] rows =",
+      merchants.map((m) => ({
+        id: m.id,
+        name: m.name,
+        status: m.status,
+        storeCount: Array.isArray(m.stores) ? m.stores.length : 0,
+      }))
+    );
 
-  router.get("/merchants/:merchantId", async (req, res) => {
+    return res.json({ items: merchants });
+  } catch (err) {
+    return handlePrismaError(err, res);
+  }
+});
+
+   router.get("/merchants/:merchantId", requireJwt, requireAdmin, async (req, res) => {
     const merchantId = parseIntParam(req.params.merchantId);
     if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantId");
 
@@ -504,13 +522,13 @@ function buildMerchantRouter(deps) {
       });
 
       if (!merchant) return sendError(res, 404, "MERCHANT_NOT_FOUND", "Merchant not found");
-      return res.json(merchant);
+      return res.json(applyNormalizedMerchantStatus(merchant));
     } catch (err) {
       return handlePrismaError(err, res);
     }
   });
 
-  router.patch("/merchants/:merchantId", async (req, res) => {
+  router.patch("/merchants/:merchantId", requireJwt, requireAdmin, async (req, res) => {
     const merchantId = parseIntParam(req.params.merchantId);
     const { status, statusReason } = req.body || {};
 
@@ -533,7 +551,7 @@ function buildMerchantRouter(deps) {
         },
       });
 
-      return res.json(merchant);
+      return res.json(applyNormalizedMerchantStatus(merchant));
     } catch (err) {
       return handlePrismaError(err, res);
     }

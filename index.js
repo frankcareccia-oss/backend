@@ -122,7 +122,7 @@ function enforceStoreAndMerchantActive(storeWithMerchant) {
 }
 
 /* -----------------------------
-   Thread P � ShortPay (canonical /p/:code)
+   Thread P ? ShortPay (canonical /p/:code)
 
    Goals:
    - One human-friendly public entry point: /p/:code
@@ -725,7 +725,7 @@ app.options(/.*/, cors(corsOptions));
 
 /*
  * ===============================
- * Thread J � Payments & Guest Pay
+ * Thread J ? Payments & Guest Pay
  * ===============================
  * Stripe webhook MUST be mounted with express.raw BEFORE express.json,
  * otherwise signature verification will fail.
@@ -793,7 +793,7 @@ app.post("/debug/json", (req, res) => {
 });
 
 /* -----------------------------
-   Thread P � Canonical ShortPay public endpoints
+   Thread P ? Canonical ShortPay public endpoints
 -------------------------------- */
 
 app.get("/p/:code", async (req, res) => {
@@ -935,7 +935,7 @@ app.post("/auth/login", async (req, res) => {
 });
 
 /* -----------------------------
-   POS-8C � POS Provisioning + Quick Login (shift code ? JWT)
+   POS-8C ? POS Provisioning + Quick Login (shift code ? JWT)
 
    Goals:
    - Support "sidecar" POS associates logging in fast with a short shift code
@@ -1383,7 +1383,7 @@ app.post("/pos/auth/login", async (req, res) => {
 app.get("/auth/device/status", requireJwt, async (req, res) => {
   try {
     const deviceId = String(req.get("x-pv-device-id") || "").trim();
-    const deviceIdShort = deviceId ? `${deviceId.slice(0, 8)}�` : null;
+    const deviceIdShort = deviceId ? `${deviceId.slice(0, 8)}?` : null;
 
     emitPvHook("auth.device.status", {
       stable: "auth:device_status",
@@ -1614,7 +1614,7 @@ function isPosOnlyMerchantUser(user) {
 }
 
 /**
- * Thread U � Merchant user management helpers
+ * Thread U ? Merchant user management helpers
  */
 function canManageUsersForMerchant(user, merchantId) {
   const mus = Array.isArray(user?.merchantUsers) ? user.merchantUsers : [];
@@ -1694,6 +1694,27 @@ app.use(
   })
 );
 
+const buildAdminRouter = require("./src/admin/admin.routes");
+
+app.use(
+  requireJwt,
+  buildAdminRouter({
+    prisma,
+    requireAdmin,
+    sendError,
+    handlePrismaError,
+    parseIntParam,
+    validateBillingPolicy,
+    saveBillingPolicyToDisk,
+    BILLING_POLICY,
+    ensureBillingAccountForMerchant,
+    lateFeeEligibility,
+    findExistingLateFeeInvoice,
+    getMerchantPolicyBundle,
+    validateOverrides,
+  })
+);
+
 app.get("/whoami", requireAdmin, async (req, res) => {
   try {
     await prisma.$queryRaw`SELECT 1`;
@@ -1709,341 +1730,6 @@ app.get("/whoami", requireAdmin, async (req, res) => {
   }
 });
 
-app.get("/admin/billing-policy", requireAdmin, (_req, res) => res.json(BILLING_POLICY));
-
-app.put("/admin/billing-policy", requireAdmin, (req, res) => {
-  const v = validateBillingPolicy(req.body || {});
-  if (!v.ok) return sendError(res, 400, "VALIDATION_ERROR", v.msg);
-
-  BILLING_POLICY = v.policy;
-  const ok = saveBillingPolicyToDisk(BILLING_POLICY);
-  if (!ok) return sendError(res, 500, "PERSIST_FAILED", "Policy saved in memory but failed to persist to disk");
-  return res.json(BILLING_POLICY);
-});
-
-/* =========================================================
-   ADMIN INVOICES
-   ========================================================= */
-
-app.get("/admin/invoices", requireAdmin, async (req, res) => {
-  try {
-    const { status, merchantId } = req.query;
-
-    const where = {};
-    if (status) where.status = status;
-    if (merchantId) where.merchantId = Number(merchantId);
-
-    const items = await prisma.invoice.findMany({
-      where,
-      orderBy: { id: "desc" },
-      take: 100,
-    });
-
-    res.json({ items });
-  } catch (err) {
-    console.error(err);
-    sendError(res, 500, "INTERNAL_ERROR", "Failed to list invoices");
-  }
-});
-
-async function handleAdminGenerateInvoice(req, res) {
-  const { merchantId, totalCents, netTermsDays } = req.body || {};
-
-  if (!Number.isInteger(merchantId) || merchantId <= 0) {
-    return sendError(res, 400, "VALIDATION_ERROR", "merchantId required");
-  }
-
-  if (!Number.isInteger(totalCents) || totalCents < 0) {
-    return sendError(res, 400, "VALIDATION_ERROR", "totalCents must be >= 0");
-  }
-
-  if (!Number.isInteger(netTermsDays) || netTermsDays < 1) {
-    return sendError(res, 400, "VALIDATION_ERROR", "netTermsDays must be >= 1");
-  }
-  try {
-
-let acct = await prisma.billingAccount.findUnique({
-  where: { merchantId },
-  select: { id: true },
-});
-
-if (!acct) {
-  const billingAccount = await ensureBillingAccountForMerchant(merchantId);
-  acct = billingAccount ? { id: billingAccount.id } : null;
-}
-
-if (!acct) {
-  return sendError(res, 409, "BILLING_NOT_READY", "Billing setup is not complete for this merchant yet.");
-}
-    const invoice = await prisma.invoice.create({
-      data: {
-        billingAccountId: acct.id,
-        merchantId,
-        status: "draft",
-        netTermsDays,
-        subtotalCents: totalCents,
-        taxCents: 0,
-        totalCents: totalCents,
-        amountPaidCents: 0,
-        generationVersion: 1,
-        lineItems: {
-          create: [
-            {
-              description: "Platform fee",
-              quantity: 1,
-              unitPriceCents: totalCents,
-              amountCents: totalCents,
-              sourceType: "platform_fee",
-              sourceRefId: null,
-            },
-          ],
-        },
-      },
-      select: { id: true },
-    });
-
-    return res.json({ invoiceId: invoice.id });
-  } catch (err) {
-    console.error(err);
-    return sendError(res, 500, "INTERNAL_ERROR", err?.message || "Failed to generate invoice");
-  }
-}
-
-app.post("/admin/invoices/generate", handleAdminGenerateInvoice);
-app.post("/admin/billing/generate-invoice", handleAdminGenerateInvoice);
-
-app.get("/admin/invoices/:invoiceId", requireAdmin, async (req, res) => {
-  const invoiceId = Number(req.params.invoiceId);
-  if (!Number.isInteger(invoiceId)) return sendError(res, 400, "VALIDATION_ERROR", "Invalid invoiceId");
-
-  try {
-    const invoice = await prisma.invoice.findUnique({
-      where: { id: invoiceId },
-      include: {
-        lineItems: true,
-        payments: true,
-      },
-    });
-
-    if (!invoice) return sendError(res, 404, "NOT_FOUND", "Invoice not found");
-
-    res.json({
-      invoice,
-      lineItems: invoice.lineItems,
-      payments: invoice.payments,
-    });
-  } catch (err) {
-    console.error(err);
-    sendError(res, 500, "INTERNAL_ERROR", "Failed to load invoice");
-  }
-});
-
-app.post("/admin/invoices/:invoiceId/issue", requireAdmin, async (req, res) => {
-  const invoiceId = Number(req.params.invoiceId);
-  const { netTermsDays } = req.body || {};
-
-  if (!Number.isInteger(invoiceId)) return sendError(res, 400, "VALIDATION_ERROR", "Invalid invoiceId");
-
-  try {
-    const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
-    if (!invoice) return sendError(res, 404, "NOT_FOUND", "Invoice not found");
-
-    if (invoice.status !== "draft")
-      return sendError(res, 400, "INVALID_STATE", "Only draft invoices can be issued");
-
-    const terms = Number.isInteger(netTermsDays) ? netTermsDays : invoice.netTermsDays;
-    const dueAt = new Date(Date.now() + terms * 24 * 60 * 60 * 1000);
-
-    const updated = await prisma.invoice.update({
-      where: { id: invoiceId },
-      data: {
-        status: "issued",
-        issuedAt: new Date(),
-        dueAt,
-        netTermsDays: terms,
-      },
-    });
-
-    res.json({ invoice: updated });
-  } catch (err) {
-    console.error(err);
-    sendError(res, 500, "INTERNAL_ERROR", "Failed to issue invoice");
-  }
-});
-
-app.get("/admin/invoices/:invoiceId/late-fee-preview", requireAdmin, async (req, res) => {
-  try {
-    const invoiceId = Number(req.params.invoiceId);
-    if (!Number.isInteger(invoiceId)) {
-      return sendError(res, 400, "VALIDATION_ERROR", "Invalid invoiceId");
-    }
-
-    const original = await prisma.invoice.findUnique({
-      where: { id: invoiceId },
-      include: { lineItems: true },
-    });
-
-    if (!original) return sendError(res, 404, "NOT_FOUND", "Invoice not found");
-
-    const effectivePolicy = BILLING_POLICY;
-
-    const now = new Date();
-    const elig = lateFeeEligibility(original, now, effectivePolicy);
-
-    const existing = await findExistingLateFeeInvoice(invoiceId);
-
-    let wouldCreate = null;
-    if (elig.eligible && !existing?.id) {
-      const dueAt = new Date(now);
-      const netDays = Number(effectivePolicy?.lateFeeNetDays || 7);
-      dueAt.setDate(dueAt.getDate() + netDays);
-
-      wouldCreate = {
-        dueAt: dueAt.toISOString(),
-        lineItem: {
-          description: "Late fee",
-          quantity: 1,
-          amountCents: Number(effectivePolicy?.lateFeeCents || 0),
-        },
-      };
-    }
-
-    return res.json({
-      eligible: Boolean(elig.eligible),
-      reason: elig.reason || null,
-      policy: effectivePolicy
-        ? {
-            graceDays: effectivePolicy.graceDays,
-            lateFeeCents: effectivePolicy.lateFeeCents,
-            lateFeeNetDays: effectivePolicy.lateFeeNetDays,
-          }
-        : null,
-      existingLateFeeInvoiceId: existing?.id || null,
-      wouldCreate,
-    });
-  } catch (e) {
-    return sendError(res, 500, "SERVER_ERROR", e?.message || "Late fee preview failed");
-  }
-});
-
-app.post("/admin/invoices/:invoiceId/void", requireAdmin, async (req, res) => {
-  const invoiceId = Number(req.params.invoiceId);
-  if (!Number.isInteger(invoiceId)) return sendError(res, 400, "VALIDATION_ERROR", "Invalid invoiceId");
-
-  try {
-    const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
-    if (!invoice) return sendError(res, 404, "NOT_FOUND", "Invoice not found");
-
-    if (invoice.status === "paid")
-      return sendError(res, 400, "INVALID_STATE", "Paid invoices cannot be voided");
-
-    const updated = await prisma.invoice.update({
-      where: { id: invoiceId },
-      data: { status: "void" },
-    });
-
-    res.json(updated);
-  } catch (err) {
-    console.error(err);
-    sendError(res, 500, "INTERNAL_ERROR", "Failed to void invoice");
-  }
-});
-
-app.get("/admin/merchants/:merchantId/billing-policy", requireAdmin, async (req, res) => {
-  const merchantId = parseIntParam(req.params.merchantId);
-  if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantId");
-
-  try {
-    const bundle = await getMerchantPolicyBundle(merchantId);
-    if (bundle.error) return sendError(res, bundle.error.http, bundle.error.code, bundle.error.message);
-
-    return res.json({
-      merchantId,
-      billingAccountId: bundle.accountId,
-      global: bundle.global,
-      overrides: bundle.overrides,
-      effective: bundle.effective,
-    });
-  } catch (err) {
-    return handlePrismaError(err, res);
-  }
-});
-
-app.put("/admin/merchants/:merchantId/billing-policy", requireAdmin, async (req, res) => {
-  const merchantId = parseIntParam(req.params.merchantId);
-  if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantId");
-
-  try {
-    const acct = await prisma.billingAccount.findUnique({
-      where: { merchantId },
-      select: { id: true, merchantId: true, policyOverridesJson: true },
-    });
-    if (!acct) return sendError(res, 404, "BILLING_ACCOUNT_NOT_FOUND", "BillingAccount not found");
-
-    const v = validateOverrides(req.body || {}, BILLING_POLICY);
-    if (!v.ok) return sendError(res, 400, "VALIDATION_ERROR", v.msg);
-
-    await prisma.billingAccount.update({
-      where: { id: acct.id },
-      data: { policyOverridesJson: v.clear ? null : v.overrides },
-    });
-
-    const bundle = await getMerchantPolicyBundle(merchantId);
-    return res.json({
-      merchantId,
-      billingAccountId: acct.id,
-      overrides: bundle.overrides,
-      effective: bundle.effective,
-    });
-  } catch (err) {
-    return handlePrismaError(err, res);
-  }
-});
-
-// -------------------------------------------------------
-// Admin: List Merchant Users (read-only)
-// GET /admin/merchants/:merchantId/users
-// -------------------------------------------------------
-app.get("/admin/merchants/:merchantId/users", requireAdmin, async (req, res) => {
-  try {
-    const merchantId = parseIntParam(req.params.merchantId);
-    if (!merchantId) {
-      return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantId");
-    }
-
-    const users = await prisma.merchantUser.findMany({
-      where: { merchantId },
-      include: {
-        user: {
-          select: {
-            id: true,
-            email: true,
-            firstName: true,
-            lastName: true,
-            phoneE164: true
-          }
-        }
-      },
-      orderBy: { id: "asc" }
-    });
-
-    const result = users.map(mu => ({
-      merchantUserId: mu.id,
-      role: mu.role,
-      status: mu.status,
-      userId: mu.user.id,
-      email: mu.user.email,
-      firstName: mu.user.firstName,
-      lastName: mu.user.lastName,
-      phone: mu.user.phoneE164
-    }));
-
-    res.json({ ok: true, users: result });
-
-  } catch (err) {
-    return handlePrismaError(res, req, err);
-  }
-});
 
 app.get("/stores/:storeId", async (req, res) => {
   const storeId = parseIntParam(req.params.storeId);
