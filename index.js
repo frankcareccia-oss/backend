@@ -13,6 +13,7 @@ const { buildMerchantStoreTeamRouter } = require("./src/merchant/merchant.storeT
 const path = require("path");
 const { loadActiveQrWithStore } = require("./src/visits/visits.service");
 const buildMerchantRouter = require("./src/merchant/merchant.routes");
+const { buildVisitsRateLimiters } = require("./src/visits/visits.rateLimit");
 
 const buildStoreRouter = require("./src/store/store.routes");
 const buildVisitsRouter = require("./src/visits/visits.routes");
