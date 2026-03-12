@@ -11,7 +11,7 @@ const { buildMerchantStoreProfileRouter } = require("./src/merchant/merchant.sto
 const fs = require("fs");
 const { buildMerchantStoreTeamRouter } = require("./src/merchant/merchant.storeTeam.routes");
 const path = require("path");
-
+const { loadActiveQrWithStore } = require("./src/visits/visits.service");
 const buildMerchantRouter = require("./src/merchant/merchant.routes");
 
 const buildStoreRouter = require("./src/store/store.routes");
@@ -106,13 +106,6 @@ function assertActiveStore(store) {
     return { code: "STORE_NOT_ACTIVE", message: `Store is ${store.status}`, http: 409 };
   }
   return null;
-}
-
-async function loadActiveQrWithStore(token) {
-  return prisma.storeQr.findFirst({
-    where: { token, status: "active" },
-    include: { store: { include: { merchant: true } } },
-  });
 }
 
 function enforceStoreAndMerchantActive(storeWithMerchant) {
@@ -1725,7 +1718,7 @@ app.use(
     prisma,
     sendError,
     handlePrismaError,
-    loadActiveQrWithStore,
+    loadActiveQrWithStore: (token) => loadActiveQrWithStore(prisma, token),loadActiveQrWithStore,
     enforceStoreAndMerchantActive,
     normalizePhone,
     visitsWriteLimiter,
