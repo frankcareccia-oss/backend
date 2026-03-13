@@ -112,7 +112,7 @@ function findByTerminalId(terminals, terminalId) {
   return (terminals || []).find((t) => t.terminalId === id);
 }
 
-function registerPosProvisionRoutes(app, { prisma, sendError, emitPvHook }) {
+function registerPosProvisionRoutes(app, { prisma, sendError, requireAdmin, emitPvHook }) {
   if (!app) throw new Error("registerPosProvisionRoutes: app required");
   if (!prisma) throw new Error("registerPosProvisionRoutes: prisma required");
   if (typeof sendError !== "function") throw new Error("registerPosProvisionRoutes: sendError required");
@@ -122,7 +122,7 @@ function registerPosProvisionRoutes(app, { prisma, sendError, emitPvHook }) {
 
   // Public provisioning endpoint
   // Body: { storeId, terminalLabel, terminalId? }
-  app.post("/pos/provision", async (req, res) => {
+  app.post("/pos/provision", requireAdmin, async (req, res) => {
     hook("pos.provision.requested.api", {
       tc: "TC-POS-PROV-01",
       sev: "info",
@@ -143,7 +143,7 @@ function registerPosProvisionRoutes(app, { prisma, sendError, emitPvHook }) {
       });
       if (!store) return sendError(res, 404, "NOT_FOUND", "Store not found");
       if (store.status && store.status !== "active") {
-        return sendError(res, 409, "STORE_NOT_ACTIVE", `Store is ${store.status}`);
+        return sendError(res, 403, "FORBIDDEN", "Store is not active");
       }
 
       const db = loadTerminals(filePath);
@@ -164,6 +164,7 @@ function registerPosProvisionRoutes(app, { prisma, sendError, emitPvHook }) {
           terminals.push({
             terminalId,
             storeId,
+            merchantId: store.merchantId,
             terminalLabel,
             createdAt: nowIso(),
             lastProvisionedAt: nowIso(),
@@ -182,6 +183,7 @@ function registerPosProvisionRoutes(app, { prisma, sendError, emitPvHook }) {
           terminals.push({
             terminalId,
             storeId,
+            merchantId: store.merchantId,
             terminalLabel,
             createdAt: nowIso(),
             lastProvisionedAt: nowIso(),

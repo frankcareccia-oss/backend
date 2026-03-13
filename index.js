@@ -1,4 +1,4 @@
-﻿// index.js - perkvalet - backend entry point
+﻿// index.js 
 
 console.log("PerkValet backend loaded: pv-merchant-users-fix-v5");
 require("dotenv").config();
@@ -1549,14 +1549,31 @@ app.get("/me", requireJwt, async (req, res) => {
         email: true,
         systemRole: true,
         status: true,
-        merchantUsers: { select: { merchantId: true, role: true, status: true } },
+        merchantUsers: {
+          select: {
+            merchantId: true,
+            role: true,
+            status: true,
+            merchant: {
+              select: {
+                id: true,
+                name: true,
+              },
+            },
+          },
+        },
       },
     });
 
     if (!user) return sendError(res, 404, "NOT_FOUND", "User not found");
 
     const landing = user.systemRole === "pv_admin" ? "/merchants" : "/merchant";
-    return res.json({ user, memberships: user.merchantUsers, landing });
+    const merchantName =
+      Array.isArray(user.merchantUsers) && user.merchantUsers.length
+        ? user.merchantUsers[0]?.merchant?.name || null
+        : null;
+
+    return res.json({ user, memberships: user.merchantUsers, merchantName, landing });
   } catch (err) {
     return handlePrismaError(err, res);
   }
@@ -1660,6 +1677,15 @@ app.use(
     bcrypt,
     isPosOnlyMerchantUser,
     canAccessInvoicesForMerchant,
+  })
+);
+
+app.use(
+  buildMerchantStoreTeamRouter({
+    prisma,
+    requireJwt,
+    sendError,
+    handlePrismaError,
   })
 );
 

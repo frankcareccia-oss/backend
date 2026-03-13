@@ -16,6 +16,21 @@
 
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
+
+
+
+function sha256Hex(input) {
+  return crypto.createHash("sha256").update(input).digest("hex");
+}
+
+function posPepper() {
+  return process.env.POS_PIN_PEPPER || process.env.JWT_SECRET || "dev-secret-change-me";
+}
+
+function posPinHash(pin) {
+  return sha256Hex(`${posPepper()}:${String(pin || "").trim()}`);
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -69,6 +84,46 @@ function loadAssociates(filePath) {
   }
 }
 
+function resolveShiftCodesFile() {
+  return process.env.POS_SHIFT_CODES_FILE || path.join(process.cwd(), ".pos-shift-codes.json");
+}
+
+function loadShiftCodes(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return [];
+    const raw = fs.readFileSync(filePath, "utf8");
+    const parsed = safeJsonParse(raw);
+    const rows = Array.isArray(parsed?.codes) ? parsed.codes : [];
+
+    return rows
+      .map((x) => ({
+        code: String(x?.code || "").trim(),
+        storeId: Number.isInteger(x?.storeId)
+          ? x.storeId
+          : Number.parseInt(String(x?.storeId || ""), 10),
+        merchantId: Number.isInteger(x?.merchantId)
+          ? x.merchantId
+          : Number.parseInt(String(x?.merchantId || ""), 10),
+        userEmail: String(x?.userEmail || "").trim().toLowerCase(),
+        pinHash: String(x?.pinHash || "").trim(),
+        terminalId: x?.terminalId ? String(x.terminalId).trim() : null,
+        status: String(x?.status || "active"),
+      }))
+      .filter(
+        (x) =>
+          x.code &&
+          Number.isInteger(x.storeId) &&
+          x.storeId > 0 &&
+          x.userEmail &&
+          x.pinHash &&
+          x.status === "active"
+      );
+  } catch {
+    return [];
+  }
+}
+
+
 function parseStorePin(codeRaw) {
   const s = String(codeRaw || "").trim();
   if (!s.includes("#")) return { ok: false, reason: "no_hash" };
@@ -113,25 +168,53 @@ function registerPosAuthRoutes(app, { prisma, sendError, jwt, jwtSecret, jwtExpi
       const codeRaw = String(req.body?.code || "").trim();
       if (!codeRaw) return sendError(res, 400, "VALIDATION_ERROR", "code is required");
 
+      
+      const shiftCodesFile = resolveShiftCodesFile();
+      const shiftCodes = loadShiftCodes(shiftCodesFile);
+
       const associates = loadAssociates(assocFile);
 
-      // 1) Exact legacy match on code
-      let assoc = associates.find((a) => a.code && a.code === codeRaw);
-
-      // 2) If not found, treat as storeId#PIN and match on storeId + pin
+      // Prefer shift-code records first (POS-8C)
+      let assoc = null;
       let storeId = null;
       let pin = null;
 
       const parsed = parseStorePin(codeRaw);
-      if (!assoc && parsed.ok) {
+
+      if (parsed.ok) {
         storeId = parsed.storeId;
         pin = parsed.pin;
-        assoc = associates.find((a) => a.storeId === storeId && a.pin && String(a.pin) === String(pin));
-        // Also allow code field to be "storeId#PIN"
-        if (!assoc) assoc = associates.find((a) => a.storeId === storeId && a.code && a.code === parsed.normalized);
-      } else if (parsed.ok) {
-        storeId = parsed.storeId;
-        pin = parsed.pin;
+
+        const hashed = posPinHash(pin);
+
+        const rec = shiftCodes.find(
+          (c) =>
+            (c.code === parsed.normalized ||
+              (c.storeId === storeId && c.pinHash === hashed))
+        );
+
+        if (rec) {
+          assoc = {
+            code: rec.code,
+            storeId: rec.storeId,
+            userEmail: rec.userEmail,
+          };
+        }
+      }
+
+      // Legacy fallback (.pos-associates.json)
+      if (!assoc) {
+        assoc = associates.find((a) => a.code && a.code === codeRaw);
+
+        if (!assoc && parsed.ok) {
+          assoc = associates.find(
+            (a) => a.storeId === storeId && a.pin && String(a.pin) === String(pin)
+          );
+          if (!assoc)
+            assoc = associates.find(
+              (a) => a.storeId === storeId && a.code && a.code === parsed.normalized
+            );
+        }
       }
 
       if (!assoc) {

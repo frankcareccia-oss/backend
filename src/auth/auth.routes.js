@@ -300,6 +300,12 @@ function buildAuthRouter(deps) {
               merchantId: true,
               role: true,
               status: true,
+              merchant: {
+                select: {
+                  id: true,
+                  name: true,
+                },
+              },
             },
           },
         },
@@ -309,9 +315,15 @@ function buildAuthRouter(deps) {
 
       const landing = user.systemRole === "pv_admin" ? "/merchants" : "/merchant";
 
+      const merchantName =
+        Array.isArray(user.merchantUsers) && user.merchantUsers.length
+          ? user.merchantUsers[0]?.merchant?.name || null
+          : null;
+
       return res.json({
         user,
         memberships: user.merchantUsers,
+        merchantName,
         landing,
       });
 
