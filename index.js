@@ -7,8 +7,9 @@ const { createBillingPolicyStore } = require("./src/billing/billing.service");
 
 const { registerPaymentsRoutes } = require("./src/payments/payments.routes");
 const { registerPosRoutes } = require("./src/pos/pos.routes");
-const { registerPosProvisionRoutes } = require("./src/pos/pos.provision.routes");
-const { registerPosAuthRoutes } = require("./src/pos/pos.auth.routes");
+
+const { registerPosProvisioningRoutes } = require("./src/pos/pos.provisioning.routes");
+
 const { buildMerchantStoreProfileRouter } = require("./src/merchant/merchant.storeProfile.routes");
 const fs = require("fs");
 const { buildMerchantStoreTeamRouter } = require("./src/merchant/merchant.storeTeam.routes");
