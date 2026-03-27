@@ -262,6 +262,31 @@ function registerPosProvisioningRoutes(app, {
         });
       }
 
+      // Ensure store-scoped membership exists for POS authorization.
+      const existingSu = await prisma.storeUser.findFirst({
+        where: { storeId, userId: user.id },
+        select: { id: true, permissionLevel: true, status: true },
+      });
+
+      if (existingSu) {
+        await prisma.storeUser.update({
+          where: { id: existingSu.id },
+          data: {
+            permissionLevel: "subadmin",
+            status: "active",
+          },
+        });
+      } else {
+        await prisma.storeUser.create({
+          data: {
+            storeId,
+            userId: user.id,
+            permissionLevel: "subadmin",
+            status: "active",
+          },
+        });
+      }
+
       const code = `${storeId}#${pinNorm}`;
       const nowIso = new Date().toISOString();
 

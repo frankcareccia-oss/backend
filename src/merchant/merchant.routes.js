@@ -1,4 +1,17 @@
-// src/merchant/merchant.routes.js — PerkValet Merchant Surface (merchant profile, invoices, store access)
+/**
+ * Module: backend/src/merchant/merchant.routes.js
+ *
+ * PerkValet Merchant Surface
+ *
+ * Responsibilities:
+ *  - Merchant portal: stores, merchant users, invoices
+ *  - Admin merchant list/detail/status
+ *  - Admin merchant creation
+ *
+ * Fixes in this version:
+ *  - Adds missing POST /merchants route
+ *  - Applies status filter in GET /merchants
+ */
 
 const express = require("express");
 
@@ -89,6 +102,7 @@ function buildMerchantRouter(deps) {
       });
 
       const items = rows.map((mu) => ({
+        merchantUserId: mu.id,
         userId: mu.userId,
         email: mu.user?.email || null,
         role: mu.role,
@@ -239,7 +253,7 @@ function buildMerchantRouter(deps) {
     if (!userId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid userId");
 
     const {
-      merchantId: midRaw,
+      email,
       role,
       status,
       firstName,
@@ -260,9 +274,10 @@ function buildMerchantRouter(deps) {
 
     const fn = firstName == null ? undefined : String(firstName).trim();
     const ln = lastName == null ? undefined : String(lastName).trim();
+    const em = email == null ? undefined : String(email).trim().toLowerCase();
     const pr = phoneRaw == null ? undefined : String(phoneRaw).replace(/\D/g, "");
     const pc =
-      phoneCountry == null ? undefined : String(phoneCountry).trim().toUpperCase();
+      phoneCountry == null ? "US" : String(phoneCountry).trim().toUpperCase();
 
     try {
       const result = await prisma.$transaction(async (tx) => {
@@ -285,6 +300,7 @@ function buildMerchantRouter(deps) {
         }
 
         const userUpdate = {};
+        if (em !== undefined) userUpdate.email = em || null;
         if (fn !== undefined) userUpdate.firstName = fn || null;
         if (ln !== undefined) userUpdate.lastName = ln || null;
         if (pr !== undefined) userUpdate.phoneRaw = pr || null;
@@ -486,32 +502,68 @@ function buildMerchantRouter(deps) {
     };
   }
 
-router.get("/merchants", requireJwt, requireAdmin, async (req, res) => {
-  try {
-    const merchants = await prisma.merchant.findMany({
-      include: { stores: true },
-      orderBy: { id: "asc" },
-      take: 200,
-    });
+  router.get("/merchants", requireJwt, requireAdmin, async (req, res) => {
+    try {
+      const statusFilterRaw = req.query?.status;
+      const statusFilter = normalizeAdminMerchantStatus(statusFilterRaw);
 
-    console.log("[admin /merchants] count =", merchants.length);
-    console.log(
-      "[admin /merchants] rows =",
-      merchants.map((m) => ({
-        id: m.id,
-        name: m.name,
-        status: m.status,
-        storeCount: Array.isArray(m.stores) ? m.stores.length : 0,
-      }))
-    );
+      const where = {};
+      if (statusFilterRaw != null && String(statusFilterRaw).trim() !== "") {
+        where.status = statusFilter;
+      }
 
-    return res.json({ items: merchants });
-  } catch (err) {
-    return handlePrismaError(err, res);
-  }
-});
+      const merchants = await prisma.merchant.findMany({
+        where,
+        include: { stores: true },
+        orderBy: { id: "asc" },
+        take: 200,
+      });
 
-   router.get("/merchants/:merchantId", requireJwt, requireAdmin, async (req, res) => {
+      console.log("[admin /merchants] statusFilter =", statusFilterRaw ?? null);
+      console.log("[admin /merchants] count =", merchants.length);
+      console.log(
+        "[admin /merchants] rows =",
+        merchants.map((m) => ({
+          id: m.id,
+          name: m.name,
+          status: m.status,
+          storeCount: Array.isArray(m.stores) ? m.stores.length : 0,
+        }))
+      );
+
+      return res.json({ items: merchants.map(applyNormalizedMerchantStatus) });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
+  router.post("/merchants", requireJwt, requireAdmin, async (req, res) => {
+    try {
+      const name = String(req.body?.name || "").trim();
+      if (!name) {
+        return sendError(res, 400, "VALIDATION_ERROR", "name is required");
+      }
+
+      const merchant = await prisma.merchant.create({
+        data: {
+          name,
+          status: "active",
+        },
+      });
+
+      emitPvHook("admin.merchant.created", {
+        actorUserId: req.userId,
+        merchantId: merchant.id,
+        name: merchant.name,
+      });
+
+      return res.status(201).json(applyNormalizedMerchantStatus(merchant));
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
+  router.get("/merchants/:merchantId", requireJwt, requireAdmin, async (req, res) => {
     const merchantId = parseIntParam(req.params.merchantId);
     if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantId");
 

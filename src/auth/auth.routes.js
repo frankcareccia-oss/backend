@@ -1,5 +1,7 @@
 // src/auth/auth.routes.js — PerkValet Auth Surface (login, password, device trust, /me)
 
+const { sendMail } = require("../utils/mail");
+
 const express = require("express");
 
 function buildAuthRouter(deps) {
@@ -147,10 +149,18 @@ function buildAuthRouter(deps) {
 
       const resetUrl = buildResetUrl(req, token);
 
-      console.log("[AUTH][EMAIL_STUB] password reset", {
+      await sendMail({
         to: emailNorm,
-        resetUrl,
-        expiresAt: expiresAt.toISOString(),
+        subject: "Reset your PerkValet password",
+        text: `You requested a password reset.
+
+Click the link below to set a new password:
+
+${resetUrl}
+
+This link expires at ${expiresAt.toISOString()}.
+
+If you did not request this, you can ignore this email.`,
       });
 
       return res.json(genericOk);

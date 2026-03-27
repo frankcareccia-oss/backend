@@ -1,8 +1,32 @@
-// backend/src/merchant/merchant.users.routes.js
+/**
+ * Module: backend/src/merchant/merchant.users.routes.js
+ *
+ * Merchant Users Router (v1.1 - Zero Admin Guard)
+ *
+ * Responsibilities:
+ *  - GET /merchant/users
+ *  - POST /merchant/users
+ *  - PATCH /merchant/users/:userId
+ *
+ * Enhancements:
+ *  - 🔒 Enforces Ownership & Billing Authority Contract v1.0
+ *  - Prevents orphaned merchant state
+ *  - Blocks removal/demotion of last owner/merchant_admin
+ *
+ * Key Rule Enforced:
+ *   A merchant MUST always have ≥1 active user with role ∈ [owner, merchant_admin]
+ *
+ * Notes:
+ *  - Guard applies only when role or status changes
+ *  - ap_clerk is NOT considered recovery-capable
+ *  - Store-level roles are not considered
+ */
 
 const express = require("express");
 
 function buildMerchantUsersRouter(deps) {
+  console.log("Merchant Users Route loaded");
+
   const {
     prisma,
     requireJwt,
@@ -20,6 +44,7 @@ function buildMerchantUsersRouter(deps) {
    * GET /merchant/users
    */
   router.get("/", requireJwt, async (req, res) => {
+    console.log("GET /merchant/users hit");
     try {
       const merchantId = parseIntParam(req.query.merchantId);
       if (!merchantId) {
@@ -50,6 +75,7 @@ function buildMerchantUsersRouter(deps) {
    * POST /merchant/users
    */
   router.post("/", requireJwt, async (req, res) => {
+    console.log("POST /merchant/users hit");
     try {
       const merchantId = parseIntParam(req.body.merchantId);
       if (!merchantId) {
@@ -65,17 +91,23 @@ function buildMerchantUsersRouter(deps) {
         lastName,
         phoneRaw,
         phoneE164,
-        role
+        phoneCountry,
+        role,
+        status
       } = req.body;
+
+      const normalizedEmail =
+        typeof email === "string" ? email.trim().toLowerCase() : email;
 
       const user = await prisma.$transaction(async (tx) => {
         const created = await tx.user.create({
           data: {
-            email,
+            email: normalizedEmail,
             firstName,
             lastName,
             phoneRaw,
-            phoneE164
+            phoneE164,
+            phoneCountry
           }
         });
 
@@ -83,7 +115,8 @@ function buildMerchantUsersRouter(deps) {
           data: {
             userId: created.id,
             merchantId,
-            role
+            role,
+            ...(status ? { status } : {})
           }
         });
 
@@ -105,6 +138,9 @@ function buildMerchantUsersRouter(deps) {
    * PATCH /merchant/users/:userId
    */
   router.patch("/:userId", requireJwt, async (req, res) => {
+    console.log("PATCH route entered for userId:", req.params.userId);
+    console.log("PATCH Request Payload:", req.body);
+
     try {
       const userId = parseIntParam(req.params.userId);
       const merchantId = parseIntParam(req.body.merchantId);
@@ -121,32 +157,106 @@ function buildMerchantUsersRouter(deps) {
       if (!acting) return;
 
       const {
+        email,
         firstName,
         lastName,
         phoneRaw,
         phoneE164,
-        role
+        phoneCountry,
+        role,
+        status
       } = req.body;
 
-      const result = await prisma.$transaction(async (tx) => {
-        await tx.user.update({
-          where: { id: userId },
-          data: {
-            firstName,
-            lastName,
-            phoneRaw,
-            phoneE164
-          }
-        });
+      const userData = {};
+      if (email !== undefined) {
+        userData.email =
+          typeof email === "string" ? email.trim().toLowerCase() : email;
+      }
+      if (firstName !== undefined) userData.firstName = firstName;
+      if (lastName !== undefined) userData.lastName = lastName;
+      if (phoneRaw !== undefined) userData.phoneRaw = phoneRaw;
+      if (phoneE164 !== undefined) userData.phoneE164 = phoneE164;
+      if (phoneCountry !== undefined) userData.phoneCountry = phoneCountry;
 
-        if (role) {
-          await tx.merchantUser.updateMany({
-            where: {
-              userId,
-              merchantId
-            },
-            data: { role }
+      const membershipData = {};
+      if (role !== undefined) membershipData.role = role;
+      if (status !== undefined) membershipData.status = status;
+
+      await prisma.$transaction(async (tx) => {
+
+        // 🔒 ZERO-ADMIN GUARD
+        if (role !== undefined || status !== undefined) {
+          const currentMembership = await tx.merchantUser.findFirst({
+            where: { userId, merchantId }
           });
+
+          if (currentMembership) {
+            const currentRole = currentMembership.role;
+            const nextRole = role !== undefined ? role : currentRole;
+
+            const currentStatus = currentMembership.status || "active";
+            const nextStatus = status !== undefined ? status : currentStatus;
+
+            const isCurrentlyAdmin =
+              currentRole === "owner" || currentRole === "merchant_admin";
+
+            const willRemainAdmin =
+              (nextRole === "owner" || nextRole === "merchant_admin") &&
+              nextStatus === "active";
+
+            if (isCurrentlyAdmin && !willRemainAdmin) {
+              const otherAdmins = await tx.merchantUser.count({
+                where: {
+                  merchantId,
+                  userId: { not: userId },
+                  role: { in: ["owner", "merchant_admin"] },
+                  status: "active"
+                }
+              });
+
+              if (otherAdmins === 0) {
+                return sendError(
+                  res,
+                  400,
+                  "INVALID_OPERATION",
+                  "Cannot remove or demote the last merchant owner/admin."
+                );
+              }
+            }
+          }
+        }
+
+        // Apply updates
+        if (Object.keys(userData).length > 0) {
+          await tx.user.update({
+            where: { id: userId },
+            data: userData
+          });
+        }
+
+        if (Object.keys(membershipData).length > 0) {
+          await tx.merchantUser.updateMany({
+            where: { userId, merchantId },
+            data: membershipData
+          });
+        }
+      });
+
+      const membership = await prisma.merchantUser.findFirst({
+        where: { userId, merchantId }
+      });
+
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: {
+          id: true,
+          email: true,
+          status: true,
+          firstName: true,
+          lastName: true,
+          phoneRaw: true,
+          phoneCountry: true,
+          phoneE164: true
         }
       });
 
@@ -155,7 +265,14 @@ function buildMerchantUsersRouter(deps) {
         userId
       });
 
-      res.json({ success: true });
+      res.json({
+        ok: true,
+        userId,
+        merchantId,
+        membership,
+        user
+      });
+
     } catch (err) {
       handlePrismaError(res, err);
     }

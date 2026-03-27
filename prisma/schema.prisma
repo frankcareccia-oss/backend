@@ -1,3 +1,14 @@
+/// ============================================================================
+/// MODULE: perkvalet-schema-v2.00-role-permission-alignment
+/// PURPOSE: Align MerchantRole and StorePermissionLevel with v2.00 contract
+/// AUTHOR: ChatGPT + Frank Careccia
+/// DATE: 2026-03-21
+/// NOTES:
+/// - Introduces POS access as a Store-level permission
+/// - Removes store roles from MerchantRole
+/// - Prepares system for clean POS authorization model
+/// ============================================================================
+
 generator client {
   provider = "prisma-client-js"
   output   = "../node_modules/.prisma/client"
@@ -148,7 +159,7 @@ model StoreUser {
   id              Int                  @id @default(autoincrement())
   storeId         Int
   merchantUserId  Int
-  permissionLevel StorePermissionLevel @default(admin)
+  permissionLevel StorePermissionLevel @default(store_admin)
   status          EntityStatus         @default(active)
   suspendedAt     DateTime?
   archivedAt      DateTime?
@@ -514,13 +525,12 @@ enum MerchantRole {
   merchant_admin
   ap_clerk
   merchant_employee
-  store_admin
-  store_subadmin
 }
 
 enum StorePermissionLevel {
-  admin
-  subadmin
+  store_admin
+  store_subadmin
+  pos_access
 }
 
 enum VisitSource {

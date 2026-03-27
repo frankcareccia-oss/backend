@@ -1,5 +1,7 @@
 ﻿// index.js 
 
+const { sendMail } = require("./src/utils/mail");
+
 console.log("PerkValet backend loaded: pv-merchant-users-fix-v5");
 require("dotenv").config();
 
@@ -949,10 +951,18 @@ app.post("/auth/forgot-password", async (req, res) => {
 
     const resetUrl = buildResetUrl(req, token);
 
-    console.log("[AUTH][EMAIL_STUB] password reset", {
+    await sendMail({
       to: emailNorm,
-      resetUrl,
-      expiresAt: expiresAt.toISOString(),
+      subject: "Reset your PerkValet password",
+      text: `You requested a password reset.
+
+Click the link below to set a new password:
+
+${resetUrl}
+
+This link expires at ${expiresAt.toISOString()}.
+
+If you did not request this, you can ignore this email.`,
     });
 
     return res.json(genericOk);

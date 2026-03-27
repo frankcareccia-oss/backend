@@ -270,7 +270,6 @@ function findNdjsonByContent(kind) {
     } catch {
       continue;
     }
-
     const hit = markers.some((m) => rawTail.includes(m));
     if (!hit) continue;
 
@@ -486,15 +485,14 @@ function registerPosRoutes(app, { prisma, sendError, requireAuth }) {
         id: true,
         systemRole: true,
         merchantUsers: {
-          where: { status: "active" },
+          where: {
+            status: "active",
+            suspendedAt: null,
+            archivedAt: null,
+          },
           select: {
             id: true,
-            role: true,
             merchantId: true,
-            storeUsers: {
-              where: { status: "active" },
-              select: { storeId: true, permissionLevel: true },
-            },
           },
         },
       },
@@ -522,31 +520,98 @@ function registerPosRoutes(app, { prisma, sendError, requireAuth }) {
       return null;
     }
 
-    let storeId = null;
-    let merchantId = null;
+    const activeMerchantUsers = user.merchantUsers || [];
 
-    for (const mu of user.merchantUsers || []) {
-      if (mu.role !== "store_subadmin") continue;
-      const su = (mu.storeUsers || []).find((s) => s.permissionLevel === "subadmin");
-      if (su) {
-        storeId = su.storeId;
-        merchantId = mu.merchantId;
-        break;
-      }
-    }
-
-    if (!storeId || !merchantId) {
+    if (!activeMerchantUsers.length) {
       hook("pos.auth.context.failed.api", {
         tc: "TC-POS-AUTH-CTX-03",
         sev: "warn",
         stable: "pos:auth:context",
-        reason: "pos_associate_required",
+        reason: "no_active_merchant_membership",
+      });
+      sendError(res, 403, "FORBIDDEN", "POS associate required");
+      return null;
+    }
+    const storeMembership = await prisma.storeUser.findFirst({
+      where: {
+        merchantUserId: { in: activeMerchantUsers.map((mu) => mu.id) },
+        status: "active",
+        suspendedAt: null,
+        archivedAt: null,
+        permissionLevel: { in: ["admin", "subadmin"] },
+      },
+      select: {
+        storeId: true,
+        merchantUserId: true,
+        permissionLevel: true,
+        store: {
+          select: {
+            merchantId: true,
+            status: true,
+          },
+        },
+      },
+    });
+
+    if (!storeMembership || !storeMembership.store) {
+      hook("pos.auth.context.failed.api", {
+        tc: "TC-POS-AUTH-CTX-04",
+        sev: "warn",
+        stable: "pos:auth:context",
+        reason: "pos_associate_required_no_store_user",
       });
       sendError(res, 403, "FORBIDDEN", "POS associate required");
       return null;
     }
 
-    return { userId: user.id, merchantId, storeId };
+    if (storeMembership.store.status && storeMembership.store.status !== "active") {
+      hook("pos.auth.context.failed.api", {
+        tc: "TC-POS-AUTH-CTX-05",
+        sev: "warn",
+        stable: "pos:auth:context",
+        reason: "store_inactive",
+        storeId: storeMembership.storeId,
+      });
+      sendError(res, 403, "FORBIDDEN", "Store is not active");
+      return null;
+    }
+
+    const merchantMatch = activeMerchantUsers.find(
+      (mu) =>
+        Number(mu.id) === Number(storeMembership.merchantUserId) &&
+        Number(mu.merchantId) === Number(storeMembership.store.merchantId)
+    );
+
+    if (!merchantMatch) {
+      hook("pos.auth.context.failed.api", {
+        tc: "TC-POS-AUTH-CTX-06",
+        sev: "warn",
+        stable: "pos:auth:context",
+        reason: "merchant_store_membership_mismatch",
+        storeId: storeMembership.storeId,
+        merchantId: storeMembership.store.merchantId,
+        merchantUserId: storeMembership.merchantUserId,
+      });
+      sendError(res, 403, "FORBIDDEN", "POS associate required");
+      return null;
+    }
+
+    hook("pos.auth.context.resolved.api", {
+      tc: "TC-POS-AUTH-CTX-07",
+      sev: "info",
+      stable: `store:${storeMembership.storeId}`,
+      userId: user.id,
+      merchantId: storeMembership.store.merchantId,
+      storeId: storeMembership.storeId,
+      merchantUserId: storeMembership.merchantUserId,
+      permissionLevel: storeMembership.permissionLevel,
+    });
+
+    return {
+      userId: user.id,
+      merchantId: storeMembership.store.merchantId,
+      storeId: storeMembership.storeId,
+    };
   }
 
   // -----------------------------
@@ -692,7 +757,6 @@ function registerPosRoutes(app, { prisma, sendError, requireAuth }) {
     try {
       res.setHeader("Cache-Control", "no-store");
     } catch {}
-
     hook("pos.stats.today.requested.api", {
       tc: "TC-POS-STATS-01",
       sev: "info",
