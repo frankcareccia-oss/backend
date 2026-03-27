@@ -196,7 +196,7 @@ function shortpayDecode(codeRaw) {
 function emitPvHook(event, extras = {}) {
   try {
     if (typeof globalThis.pvHook === "function") return globalThis.pvHook(event, extras);
-  } catch {}
+  } catch { }
   if (process.env.PV_HOOKS_LOG === "1") {
     console.log(`[pvHook] ${event}`, extras);
   }
@@ -265,11 +265,11 @@ function buildShortPaySummary(token) {
       dueAt: inv.dueAt || null,
       lineItems: Array.isArray(inv?.lineItems)
         ? inv.lineItems.map((li) => ({
-            id: li.id,
-            description: li.description || li.name || null,
-            amountCents: li.amountCents ?? null,
-            quantity: li.quantity ?? null,
-          }))
+          id: li.id,
+          description: li.description || li.name || null,
+          amountCents: li.amountCents ?? null,
+          quantity: li.quantity ?? null,
+        }))
         : [],
     },
   };
@@ -654,16 +654,16 @@ app.post(
 app.use(paymentsReg.router);
 
 
-  // POS-2: POS API (JWT-only, POS-only)
-  const posReg = registerPosRoutes(app, {
-    prisma,
-    sendError,
-    requireAuth: requireJwt,
-  });
-  app.use(posReg.router);
+// POS-2: POS API (JWT-only, POS-only)
+const posReg = registerPosRoutes(app, {
+  prisma,
+  sendError,
+  requireAuth: requireJwt,
+});
+app.use(posReg.router);
 
-  // PV-HOOK pos.routes.mounted tc=TC-POS-BOOT-01 sev=info stable=pos:router
-  emitPvHook("pos.routes.mounted", { tc: "TC-POS-BOOT-01", sev: "info", stable: "pos:router" });
+// PV-HOOK pos.routes.mounted tc=TC-POS-BOOT-01 sev=info stable=pos:router
+emitPvHook("pos.routes.mounted", { tc: "TC-POS-BOOT-01", sev: "info", stable: "pos:router" });
 
 app.use(express.json());
 
@@ -1195,9 +1195,19 @@ app.use(
     requireJwt,
     sendError,
     handlePrismaError,
+    requireMerchantUserManager,
+    parseIntParam,
   })
 );
 
+app.use(
+  buildMerchantStoreProfileRouter({
+    prisma,
+    requireJwt,
+    sendError,
+    handlePrismaError,
+  })
+);
 
 app.use(
   buildMerchantStoreQrRouter({
@@ -1270,7 +1280,7 @@ app.use(
     prisma,
     sendError,
     handlePrismaError,
-   loadActiveQrWithStore: (token) => loadActiveQrWithStore(prisma, token),
+    loadActiveQrWithStore: (token) => loadActiveQrWithStore(prisma, token),
     enforceStoreAndMerchantActive,
     normalizePhone,
     visitsWriteLimiter,
