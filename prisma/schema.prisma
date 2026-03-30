@@ -343,11 +343,20 @@ model BillingAccount {
   provider           BillingProvider @default(stripe)
   providerCustomerId String?         @db.VarChar(255)
 
+  // PV-assigned account number (admin only)
+  pvAccountNumber String? @unique @db.VarChar(50)
+
   // Billing Contact (may be external)
-  billingEmail        String  @db.VarChar(320)
-  billingName         String? @db.VarChar(200)
-  billingPhone        String? @db.VarChar(32)
-  billingAddressJson  Json?
+  billingEmail    String  @db.VarChar(320)
+  billingName     String? @db.VarChar(200)
+  billingPhone    String? @db.VarChar(32)
+
+  // Billing Address (flat fields — replaces billingAddressJson)
+  billingAddress1 String? @db.VarChar(200)
+  billingCity     String? @db.VarChar(100)
+  billingState    String? @db.VarChar(50)
+  billingPostal   String? @db.VarChar(20)
+
   policyOverridesJson Json?
 
   status BillingAccountStatus @default(active)

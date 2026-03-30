@@ -1,4 +1,5 @@
-﻿// index.js 
+﻿// index.js
+require("dotenv").config();
 
 const { buildShortPayRouter } = require("./src/payments/shortpay.routes");
 const buildAuthRouter = require("./src/auth/auth.routes");
@@ -13,7 +14,6 @@ const {
 const { sendMail } = require("./src/utils/mail");
 
 console.log("PerkValet backend loaded: pv-merchant-users-fix-v5");
-require("dotenv").config();
 
 const { createBillingPolicyStore } = require("./src/billing/billing.service");
 const { buildBillingHelpers } = require("./src/billing/billing.helpers");
@@ -196,6 +196,14 @@ function requireAdmin(req, res, next) {
   if (okHeader || okDevQuery) return next();
 
   return sendError(res, 401, "UNAUTHORIZED", "Admin authorization required");
+}
+
+// Allows pv_admin and pv_ar_clerk (billing staff) via JWT
+function requireBillingStaff(req, res, next) {
+  if (req.userId && ["pv_admin", "pv_ar_clerk"].includes(req.systemRole)) {
+    return next();
+  }
+  return sendError(res, 403, "FORBIDDEN", "Billing staff access required");
 }
 
 /* -----------------------------
@@ -550,6 +558,7 @@ app.use(
     lateFeeEligibility: billingHelpers.lateFeeEligibility,
     findExistingLateFeeInvoice: billingHelpers.findExistingLateFeeInvoice,
     getMerchantPolicyBundle: billingHelpers.getMerchantPolicyBundle,
+    requireBillingStaff,
     validateOverrides: billingHelpers.validateOverrides,
   })
 );

@@ -13,6 +13,7 @@ function buildAdminRouter(deps) {
     prisma,
     requireAdmin,
     requireJwt,
+    requireBillingStaff,
     sendError,
     handlePrismaError,
     parseIntParam,
@@ -698,6 +699,75 @@ function buildAdminRouter(deps) {
       });
 
       return res.json({ invoice: updated });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
+  // GET billing account — pv_admin + pv_ar_clerk
+  router.get("/admin/merchants/:merchantId/billing-account", requireJwt, requireBillingStaff, async (req, res) => {
+    const merchantId = parseIntParam(req.params.merchantId);
+    if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantId");
+
+    try {
+      const account = await prisma.billingAccount.findUnique({
+        where: { merchantId },
+      });
+      if (!account) return sendError(res, 404, "NOT_FOUND", "Billing account not found");
+
+      return res.json({ billingAccount: account });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
+  // PATCH billing account — pv_admin + pv_ar_clerk (pvAccountNumber is admin-only)
+  router.patch("/admin/merchants/:merchantId/billing-account", requireJwt, requireBillingStaff, async (req, res) => {
+    const merchantId = parseIntParam(req.params.merchantId);
+    if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantId");
+
+    const {
+      billingName,
+      billingEmail,
+      billingPhone,
+      billingAddress1,
+      billingCity,
+      billingState,
+      billingPostal,
+      policyOverridesJson,
+      pvAccountNumber,
+    } = req.body || {};
+
+    // pvAccountNumber is admin-only
+    if (pvAccountNumber !== undefined && req.systemRole !== "pv_admin") {
+      return sendError(res, 403, "FORBIDDEN", "Only pv_admin may set pvAccountNumber");
+    }
+
+    try {
+      const existing = await prisma.billingAccount.findUnique({ where: { merchantId } });
+      if (!existing) return sendError(res, 404, "NOT_FOUND", "Billing account not found");
+
+      const data = {};
+      if (billingName !== undefined)     data.billingName     = String(billingName).trim() || null;
+      if (billingEmail !== undefined)    data.billingEmail    = String(billingEmail).trim().toLowerCase();
+      if (billingPhone !== undefined)    data.billingPhone    = String(billingPhone).trim() || null;
+      if (billingAddress1 !== undefined) data.billingAddress1 = String(billingAddress1).trim() || null;
+      if (billingCity !== undefined)     data.billingCity     = String(billingCity).trim() || null;
+      if (billingState !== undefined)    data.billingState    = String(billingState).trim().toUpperCase() || null;
+      if (billingPostal !== undefined)   data.billingPostal   = String(billingPostal).trim() || null;
+      if (policyOverridesJson !== undefined) data.policyOverridesJson = policyOverridesJson;
+      if (pvAccountNumber !== undefined) data.pvAccountNumber = String(pvAccountNumber).trim() || null;
+
+      if (data.billingEmail !== undefined && !data.billingEmail) {
+        return sendError(res, 400, "VALIDATION_ERROR", "billingEmail cannot be empty");
+      }
+
+      const updated = await prisma.billingAccount.update({
+        where: { merchantId },
+        data,
+      });
+
+      return res.json({ billingAccount: updated });
     } catch (err) {
       return handlePrismaError(err, res);
     }

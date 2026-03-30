@@ -574,7 +574,10 @@ function buildMerchantRouter(deps) {
 
       const merchants = await prisma.merchant.findMany({
         where,
-        include: { stores: true },
+        include: {
+          stores: { select: { id: true } },
+          billingAccount: { select: { pvAccountNumber: true } },
+        },
         orderBy: { id: "asc" },
         take: 200,
       });
@@ -591,7 +594,13 @@ function buildMerchantRouter(deps) {
         }))
       );
 
-      return res.json({ items: merchants.map(applyNormalizedMerchantStatus) });
+      return res.json({
+        items: merchants.map((m) => ({
+          ...applyNormalizedMerchantStatus(m),
+          pvAccountNumber: m.billingAccount?.pvAccountNumber ?? null,
+          storeCount: m.stores?.length ?? 0,
+        })),
+      });
     } catch (err) {
       return handlePrismaError(err, res);
     }
@@ -633,7 +642,10 @@ function buildMerchantRouter(deps) {
     try {
       const merchant = await prisma.merchant.findUnique({
         where: { id: merchantId },
-        include: { stores: true },
+        include: {
+          stores: true,
+          billingAccount: { select: { pvAccountNumber: true, status: true } },
+        },
       });
 
       if (!merchant) return sendError(res, 404, "MERCHANT_NOT_FOUND", "Merchant not found");
