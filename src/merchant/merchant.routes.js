@@ -69,6 +69,65 @@ function buildMerchantRouter(deps) {
     }
   });
 
+  router.post("/merchant/stores", requireJwt, async (req, res) => {
+    const { merchantId, name, address1, city, state, postal, status, phone } = req.body || {};
+
+    const mid = parseIntParam(merchantId);
+    if (!mid) return sendError(res, 400, "VALIDATION_ERROR", "merchantId is required");
+    if (!name || !String(name).trim()) return sendError(res, 400, "VALIDATION_ERROR", "name is required");
+
+    try {
+      const user = await prisma.user.findUnique({
+        where: { id: req.userId },
+        select: {
+          id: true,
+          systemRole: true,
+          merchantUsers: { where: { merchantId: mid, status: "active" }, select: { merchantId: true, role: true } },
+        },
+      });
+
+      if (!user) return sendError(res, 404, "NOT_FOUND", "User not found");
+      if (user.systemRole === "pv_admin") {
+        return sendError(res, 403, "FORBIDDEN", "pv_admin does not use merchant portal");
+      }
+      if (!user.merchantUsers.length) {
+        return sendError(res, 403, "FORBIDDEN", "Not a member of this merchant");
+      }
+
+      const merchant = await prisma.merchant.findUnique({ where: { id: mid } });
+      if (!merchant) return sendError(res, 404, "NOT_FOUND", "Merchant not found");
+      if (merchant.status !== "active") {
+        return sendError(res, 409, "INVALID_STATE", `Merchant is ${merchant.status}`);
+      }
+
+      const store = await prisma.store.create({
+        data: {
+          merchantId: mid,
+          name: String(name).trim(),
+          address1: address1 ? String(address1).trim() : null,
+          city: city ? String(city).trim() : null,
+          state: state ? String(state).trim().toUpperCase() : null,
+          postal: postal ? String(postal).trim() : null,
+          status: status || "active",
+          phoneRaw: phone ? String(phone).trim() : "",
+          phoneCountry: "US",
+        },
+      });
+
+      emitPvHook("merchant.store.created", {
+        tc: "TC-MERCHANT-STORE-CREATE-01",
+        sev: "info",
+        stable: "merchant:store:create",
+        merchantId: mid,
+        storeId: store.id,
+      });
+
+      return res.status(201).json(store);
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
   /* -----------------------------
      Merchant Users
   -------------------------------- */

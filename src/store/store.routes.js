@@ -9,9 +9,107 @@ function buildStoreRouter(deps) {
     parseIntParam,
     crypto,
     enforceStoreAndMerchantActive,
+    requireJwt,
+    requireAdmin,
   } = deps;
 
   const router = express.Router();
+
+  /* -----------------------------
+     Admin: Create Store
+  -------------------------------- */
+
+  router.patch("/stores/:storeId", requireJwt, requireAdmin, async (req, res) => {
+    const storeId = parseIntParam(req.params.storeId);
+    if (!storeId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid storeId");
+
+    const { name, address1, city, state, postal, status, statusReason } = req.body || {};
+
+    // Determine what kind of patch this is
+    const isProfilePatch = name !== undefined || address1 !== undefined || city !== undefined || state !== undefined || postal !== undefined;
+    const isStatusPatch = status !== undefined;
+
+    if (!isProfilePatch && !isStatusPatch) {
+      return sendError(res, 400, "VALIDATION_ERROR", "No fields to update");
+    }
+
+    if (isProfilePatch) {
+      if (!name || !String(name).trim()) return sendError(res, 400, "VALIDATION_ERROR", "name is required");
+      if (!address1 || !String(address1).trim()) return sendError(res, 400, "VALIDATION_ERROR", "address is required");
+      if (!city || !String(city).trim()) return sendError(res, 400, "VALIDATION_ERROR", "city is required");
+      if (!state || !String(state).trim()) return sendError(res, 400, "VALIDATION_ERROR", "state is required");
+    }
+
+    const VALID_STORE_STATUSES = ["active", "suspended", "archived"];
+    if (isStatusPatch && !VALID_STORE_STATUSES.includes(status)) {
+      return sendError(res, 400, "VALIDATION_ERROR", `status must be one of: ${VALID_STORE_STATUSES.join(", ")}`);
+    }
+
+    try {
+      const existing = await prisma.store.findUnique({ where: { id: storeId } });
+      if (!existing) return sendError(res, 404, "NOT_FOUND", "Store not found");
+
+      const data = {};
+      if (isProfilePatch) {
+        data.name = String(name).trim();
+        data.address1 = String(address1).trim();
+        data.city = String(city).trim();
+        data.state = String(state).trim().toUpperCase();
+        data.postal = postal ? String(postal).trim() : null;
+      }
+      if (isStatusPatch) {
+        data.status = status;
+        data.statusReason = statusReason ?? null;
+      }
+
+      const updated = await prisma.store.update({
+        where: { id: storeId },
+        data,
+        include: { merchant: true },
+      });
+
+      return res.json(updated);
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
+  router.post("/stores", requireJwt, requireAdmin, async (req, res) => {
+    const { merchantId, name, address1, city, state, postal } = req.body || {};
+
+    const mid = parseIntParam(merchantId);
+    if (!mid) return sendError(res, 400, "VALIDATION_ERROR", "merchantId is required");
+    if (!name || !String(name).trim()) return sendError(res, 400, "VALIDATION_ERROR", "name is required");
+    if (!address1 || !String(address1).trim()) return sendError(res, 400, "VALIDATION_ERROR", "address is required");
+    if (!city || !String(city).trim()) return sendError(res, 400, "VALIDATION_ERROR", "city is required");
+    if (!state || !String(state).trim()) return sendError(res, 400, "VALIDATION_ERROR", "state is required");
+
+    try {
+      const merchant = await prisma.merchant.findUnique({ where: { id: mid } });
+      if (!merchant) return sendError(res, 404, "NOT_FOUND", "Merchant not found");
+      if (merchant.status !== "active") {
+        return sendError(res, 409, "INVALID_STATE", `Merchant is ${merchant.status}`);
+      }
+
+      const store = await prisma.store.create({
+        data: {
+          merchantId: mid,
+          name: String(name).trim(),
+          address1: String(address1).trim(),
+          city: String(city).trim(),
+          state: String(state).trim().toUpperCase(),
+          postal: postal ? String(postal).trim() : null,
+          status: "active",
+          phoneRaw: "",
+          phoneCountry: "US",
+        },
+      });
+
+      return res.status(201).json(store);
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
 
   /* -----------------------------
      Public QR PNG
