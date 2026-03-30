@@ -72,7 +72,18 @@ function verifyWebhook({ rawBody, signatureHeader }) {
   return stripe.webhooks.constructEvent(rawBody, signatureHeader, secret);
 }
 
+async function retrievePaymentIntent(intentId) {
+  const stripe = getStripe();
+  const intent = await stripe.paymentIntents.retrieve(intentId);
+  return {
+    intentId: intent.id,
+    clientSecret: intent.client_secret,
+    status: intent.status,
+  };
+}
+
 module.exports = {
   createPaymentIntent,
+  retrievePaymentIntent,
   verifyWebhook,
 };

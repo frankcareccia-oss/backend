@@ -2,6 +2,13 @@
 
 const { buildShortPayRouter } = require("./src/payments/shortpay.routes");
 const buildAuthRouter = require("./src/auth/auth.routes");
+const {
+  isPosOnlyMerchantUser,
+  canAccessInvoicesForMerchant,
+  normalizeRole,
+  normalizeMemberStatus,
+  buildRequireMerchantUserManager,
+} = require("./src/merchant/merchant.authz");
 
 const { sendMail } = require("./src/utils/mail");
 
@@ -9,6 +16,7 @@ console.log("PerkValet backend loaded: pv-merchant-users-fix-v5");
 require("dotenv").config();
 
 const { createBillingPolicyStore } = require("./src/billing/billing.service");
+const { buildBillingHelpers } = require("./src/billing/billing.helpers");
 
 const { registerPaymentsRoutes } = require("./src/payments/payments.routes");
 const { registerPosRoutes } = require("./src/pos/pos.routes");
@@ -51,41 +59,6 @@ const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || "15m";
 // Optional: behind reverse proxy?
 if (process.env.TRUST_PROXY === "1") {
   app.set("trust proxy", 1);
-}
-
-/* -----------------------------
-   Helpers
--------------------------------- */
-
-async function ensureBillingAccountForMerchant(merchantId) {
-  // Try to derive a sensible billing email:
-  // 1) owner/merchant_admin user email if present
-  // 2) fallback to a safe dev placeholder
-  const merchant = await prisma.merchant.findUnique({
-    where: { id: merchantId },
-    include: {
-      merchantUsers: {
-        include: { user: true },
-      },
-    },
-  });
-
-  const derivedEmail =
-    merchant?.merchantUsers?.find((mu) => mu.role === "owner" && mu.user?.email)?.user?.email ||
-    merchant?.merchantUsers?.find((mu) => mu.role === "merchant_admin" && mu.user?.email)?.user?.email ||
-    merchant?.merchantUsers?.find((mu) => mu.user?.email)?.user?.email ||
-    `billing+merchant${merchantId}@example.com`; // dev-safe fallback
-
-  // merchantId is UNIQUE on BillingAccount, so upsert is perfect and race-safe
-  return prisma.billingAccount.upsert({
-    where: { merchantId },
-    update: {}, // don't overwrite existing data
-    create: {
-      merchantId,
-      billingEmail: derivedEmail,
-      // provider/status use schema defaults
-    },
-  });
 }
 
 function sendError(res, httpStatus, code, message, extras) {
@@ -361,111 +334,10 @@ const validateBillingPolicy = billingPolicyStore.validateBillingPolicy;
 const saveBillingPolicyToDisk = billingPolicyStore.saveBillingPolicyToDisk;
 let BILLING_POLICY = billingPolicyStore.loadBillingPolicyFromDisk();
 
-/* -----------------------------
-   Merchant overrides: effective policy
--------------------------------- */
-
-function pickOverrideInt(overrides, key) {
-  if (!overrides || typeof overrides !== "object") return null;
-  const v = overrides[key];
-  return Number.isInteger(v) ? v : null;
-}
-
-async function getMerchantPolicyBundle(merchantId) {
-  const global = BILLING_POLICY;
-
-  const acct = await prisma.billingAccount.findUnique({
-    where: { merchantId },
-    select: { id: true, merchantId: true, policyOverridesJson: true },
-  });
-
-  if (!acct) return { error: { http: 404, code: "BILLING_ACCOUNT_NOT_FOUND", message: "BillingAccount not found" } };
-
-  const overrides = acct.policyOverridesJson || null;
-
-  const effective = {
-    ...global,
-    graceDays: pickOverrideInt(overrides, "graceDays") ?? global.graceDays,
-    lateFeeCents: pickOverrideInt(overrides, "lateFeeCents") ?? global.lateFeeCents,
-    lateFeeNetDays: pickOverrideInt(overrides, "lateFeeNetDays") ?? global.lateFeeNetDays,
-    guestPayTokenDays: pickOverrideInt(overrides, "guestPayTokenDays") ?? global.guestPayTokenDays,
-    defaultNetTermsDays: pickOverrideInt(overrides, "defaultNetTermsDays") ?? global.defaultNetTermsDays,
-  };
-
-  if (!global.allowedNetTermsDays.includes(effective.defaultNetTermsDays)) {
-    effective.defaultNetTermsDays = global.defaultNetTermsDays;
-  }
-
-  return { accountId: acct.id, merchantId: acct.merchantId, global, overrides, effective };
-}
-
-function validateOverrides(body, global) {
-  if (body == null || typeof body !== "object") return { ok: false, msg: "Body must be an object" };
-  if (body.clear === true) return { ok: true, overrides: null, clear: true };
-
-  const o = {};
-  const keys = ["graceDays", "lateFeeCents", "lateFeeNetDays", "guestPayTokenDays", "defaultNetTermsDays"];
-
-  for (const k of keys) {
-    if (body[k] === undefined || body[k] === null || body[k] === "") continue;
-
-    const v = sanitizeInt(body[k]);
-    if (v == null) return { ok: false, msg: `${k} must be an integer` };
-    if (k === "graceDays" && v < 0) return { ok: false, msg: "graceDays must be >= 0" };
-    if (k !== "graceDays" && v < 0) return { ok: false, msg: `${k} must be >= 0` };
-    if (k === "lateFeeNetDays" && v < 1) return { ok: false, msg: "lateFeeNetDays must be >= 1" };
-    if (k === "guestPayTokenDays" && v < 1) return { ok: false, msg: "guestPayTokenDays must be >= 1" };
-    if (k === "defaultNetTermsDays" && !global.allowedNetTermsDays.includes(v)) {
-      return { ok: false, msg: "defaultNetTermsDays must be one of allowedNetTermsDays (global)" };
-    }
-    o[k] = v;
-  }
-
-  return { ok: true, overrides: o };
-}
-
-/* -----------------------------
-   Late fee helpers
--------------------------------- */
-
-function addDays(date, days) {
-  return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
-}
-
-async function findExistingLateFeeInvoice(originalInvoiceId) {
-  return prisma.invoice.findFirst({
-    where: {
-      relatedToInvoiceId: originalInvoiceId,
-      lineItems: { some: { sourceType: "late_fee", sourceRefId: String(originalInvoiceId) } },
-    },
-    select: { id: true, status: true },
-  });
-}
-
-function lateFeeEligibility(original, now, effectivePolicy) {
-  if (!original) return { eligible: false, reason: "INVOICE_NOT_FOUND" };
-  if (!(original.status === "issued" || original.status === "past_due"))
-    return { eligible: false, reason: "NOT_ISSUED_OR_PAST_DUE" };
-  if (!original.dueAt) return { eligible: false, reason: "MISSING_DUE_AT" };
-  if (original.status === "paid" || original.status === "void")
-    return { eligible: false, reason: "INVOICE_NOT_ELIGIBLE_STATUS" };
-  if ((original.amountPaidCents || 0) >= (original.totalCents || 0))
-    return { eligible: false, reason: "ALREADY_PAID" };
-
-  const graceMs = (effectivePolicy.graceDays || 0) * 24 * 60 * 60 * 1000;
-  if (now.getTime() <= new Date(original.dueAt).getTime() + graceMs)
-    return { eligible: false, reason: "NOT_PAST_GRACE_PERIOD" };
-
-  return { eligible: true };
-}
-
-function isLateFeeInvoice(inv) {
-  return (
-    Boolean(inv?.relatedToInvoiceId) &&
-    Array.isArray(inv?.lineItems) &&
-    inv.lineItems.some((li) => li.sourceType === "late_fee")
-  );
-}
+const billingHelpers = buildBillingHelpers({
+  prisma,
+  getGlobalBillingPolicy: () => BILLING_POLICY,
+});
 
 /* -----------------------------
    Middleware
@@ -600,87 +472,10 @@ app.use(
 
 app.get("/", (_req, res) => res.json({ status: "PerkValet backend running ?" }));
 
-/* -----------------------------
-   Public QR PNG
--------------------------------- */
-
-/* -----------------------------
-   Merchant portal (JWT only)
--------------------------------- */
-
-function isPosOnlyMerchantUser(user) {
-  // Treat as POS-only if the user has at least one active merchant membership
-  // and ALL memberships are store_subadmin.
-  const mus = Array.isArray(user?.merchantUsers) ? user.merchantUsers : [];
-  if (!mus.length) return false;
-
-  const roles = mus.map((m) => m?.role).filter(Boolean);
-  if (!roles.length) return false;
-
-  return roles.every((r) => r === "store_subadmin");
-}
-
-/**
- * Thread U ? Merchant user management helpers
- */
-function canManageUsersForMerchant(user, merchantId) {
-  const mus = Array.isArray(user?.merchantUsers) ? user.merchantUsers : [];
-  const m = mus.find((x) => x.status === "active" && x.merchantId === merchantId);
-  if (!m) return false;
-  return m.role === "owner" || m.role === "merchant_admin";
-}
-
-function canAccessInvoicesForMerchant(user, merchantId) {
-  const mus = Array.isArray(user?.merchantUsers) ? user.merchantUsers : [];
-  const m = mus.find((x) => x.status === "active" && x.merchantId === merchantId);
-  if (!m) return false;
-  return m.role === "owner" || m.role === "merchant_admin" || m.role === "ap_clerk";
-}
-
-function normalizeRole(role) {
-  const r = String(role || "").trim();
-  const allowed = ["owner", "merchant_admin", "ap_clerk", "merchant_employee", "store_admin", "store_subadmin"];
-  return allowed.includes(r) ? r : null;
-}
-
-function normalizeMemberStatus(status) {
-  const s = String(status || "").trim();
-  const allowed = ["active", "suspended"];
-  return allowed.includes(s) ? s : null;
-}
-
-async function requireMerchantUserManager(req, res, merchantId) {
-  const user = await prisma.user.findUnique({
-    where: { id: req.userId },
-    select: {
-      id: true,
-      systemRole: true,
-      merchantUsers: {
-        where: { status: "active" },
-        select: { merchantId: true, role: true, status: true },
-      },
-    },
-  });
-
-  if (!user) {
-    sendError(res, 404, "NOT_FOUND", "User not found");
-    return null;
-  }
-  if (user.systemRole === "pv_admin") {
-    sendError(res, 403, "FORBIDDEN", "pv_admin does not use merchant portal");
-    return null;
-  }
-  if (isPosOnlyMerchantUser(user)) {
-    sendError(res, 403, "FORBIDDEN", "POS associates cannot manage users");
-    return null;
-  }
-  if (!canManageUsersForMerchant(user, merchantId)) {
-    sendError(res, 403, "FORBIDDEN", "Not authorized to manage users for this merchant");
-    return null;
-  }
-
-  return user;
-}
+const requireMerchantUserManager = buildRequireMerchantUserManager({
+  prisma,
+  sendError,
+});
 
 app.use(
   buildMerchantRouter({
@@ -698,6 +493,7 @@ app.use(
     bcrypt,
     isPosOnlyMerchantUser,
     canAccessInvoicesForMerchant,
+    ensureBillingAccountForMerchant: billingHelpers.ensureBillingAccountForMerchant,
   })
 );
 
@@ -743,17 +539,18 @@ app.use(
   buildAdminRouter({
     prisma,
     requireAdmin,
+    requireJwt,
     sendError,
     handlePrismaError,
     parseIntParam,
     validateBillingPolicy,
     saveBillingPolicyToDisk,
     BILLING_POLICY,
-    ensureBillingAccountForMerchant,
-    lateFeeEligibility,
-    findExistingLateFeeInvoice,
-    getMerchantPolicyBundle,
-    validateOverrides,
+    ensureBillingAccountForMerchant: billingHelpers.ensureBillingAccountForMerchant,
+    lateFeeEligibility: billingHelpers.lateFeeEligibility,
+    findExistingLateFeeInvoice: billingHelpers.findExistingLateFeeInvoice,
+    getMerchantPolicyBundle: billingHelpers.getMerchantPolicyBundle,
+    validateOverrides: billingHelpers.validateOverrides,
   })
 );
 
@@ -780,6 +577,8 @@ app.use(
     parseIntParam,
     crypto,
     enforceStoreAndMerchantActive,
+    requireJwt,
+    requireAdmin,
   })
 );
 

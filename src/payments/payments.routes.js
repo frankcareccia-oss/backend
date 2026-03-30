@@ -1,7 +1,7 @@
 ﻿// backend/src/payments/payments.routes.js
 const express = require("express");
 const { mintRawToken, sha256Hex, computeGuestTokenExpiry, now } = require("./guestToken");
-const { createPaymentIntent, verifyWebhook } = require("./stripe");
+const { createPaymentIntent, retrievePaymentIntent, verifyWebhook } = require("./stripe");
 
 /**
  * Payments + Guest Pay routes (NO-MIGRATIONS MODE)
@@ -39,7 +39,9 @@ function pvHook(event, fields = {}) {
   }
 }
 
-function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAdmin, publicBaseUrl }) {
+function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAdmin, publicBaseUrl, requireJwt }) {
+  // requireJwt may be passed directly or fall back to requireAuth (same function, different name)
+  if (!requireJwt) requireJwt = requireAuth;
   if (!app) throw new Error("registerPaymentsRoutes: app required");
   if (!prisma) throw new Error("registerPaymentsRoutes: prisma required");
   if (!sendError) throw new Error("registerPaymentsRoutes: sendError required");
@@ -245,6 +247,16 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
         existingCreatedAt: existing.createdAt ? new Date(existing.createdAt).toISOString() : null,
       });
 
+      // Try to return the existing clientSecret so the frontend can reuse the PaymentIntent
+      try {
+        const { clientSecret, status } = await retrievePaymentIntent(existing.providerChargeId);
+        if (clientSecret && status !== "succeeded" && status !== "canceled") {
+          return res.json({ clientSecret, reused: true });
+        }
+      } catch {
+        // Stripe retrieve failed — fall through to 409
+      }
+
       const err = new Error(
         "A payment session already exists for this invoice. Please refresh the page."
       );
@@ -306,7 +318,7 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
      ========================================================= */
 
   // POST /admin/invoices/:invoiceId/guest-pay-token
-  router.post("/admin/invoices/:invoiceId/guest-pay-token", requireAdminOrFail, async (req, res) => {
+  router.post("/admin/invoices/:invoiceId/guest-pay-token", requireJwt, requireAdminOrFail, async (req, res) => {
     try {
       const invoiceId = Number(req.params.invoiceId);
       if (!Number.isInteger(invoiceId) || invoiceId <= 0) {
@@ -372,7 +384,7 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
   });
 
   // GET /admin/invoices/:invoiceId/guest-pay-token (metadata only)
-  router.get("/admin/invoices/:invoiceId/guest-pay-token", requireAdminOrFail, async (req, res) => {
+  router.get("/admin/invoices/:invoiceId/guest-pay-token", requireJwt, requireAdminOrFail, async (req, res) => {
     try {
       const invoiceId = Number(req.params.invoiceId);
       if (!Number.isInteger(invoiceId) || invoiceId <= 0) {
@@ -499,6 +511,16 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
           existingIntentId: existing.providerChargeId,
           existingCreatedAt: existing.createdAt ? new Date(existing.createdAt).toISOString() : null,
         });
+
+        // Try to return the existing clientSecret so the frontend can reuse the PaymentIntent
+        try {
+          const { clientSecret, status } = await retrievePaymentIntent(existing.providerChargeId);
+          if (clientSecret && status !== "succeeded" && status !== "canceled") {
+            return res.json({ clientSecret, reused: true });
+          }
+        } catch {
+          // Stripe retrieve failed — fall through to 409
+        }
 
         return sendError(
           res,
@@ -716,18 +738,6 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
 
             // No reconciliation into draft/void invoices
             if (inv.status === "void" || inv.status === "draft") return;
-
-            // THREAD M: append-only payment allocation (idempotent)
-            await tx.paymentAllocation.createMany({
-              data: [
-                {
-                  paymentId: payment.id,
-                  invoiceId: inv.id,
-                  amountCents: payment.amountCents || 0,
-                },
-              ],
-              skipDuplicates: true,
-            });
 
             const newPaid = (inv.amountPaidCents || 0) + (payment.amountCents || 0);
             const fullyPaid = newPaid >= (inv.totalCents || 0);

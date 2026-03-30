@@ -12,6 +12,7 @@ function buildAdminRouter(deps) {
   const {
     prisma,
     requireAdmin,
+    requireJwt,
     sendError,
     handlePrismaError,
     parseIntParam,
@@ -22,6 +23,53 @@ function buildAdminRouter(deps) {
   } = deps;
 
   const router = express.Router();
+
+  function toIsoOrNull(value) {
+    return value ? new Date(value).toISOString() : null;
+  }
+
+  function mapInvoiceSummary(inv) {
+    return {
+      id: inv.id,
+      merchantId: inv.merchantId,
+      billingAccountId: inv.billingAccountId,
+      status: inv.status,
+      issuedAt: toIsoOrNull(inv.issuedAt),
+      netTermsDays: inv.netTermsDays ?? null,
+      dueAt: toIsoOrNull(inv.dueAt),
+      subtotalCents: inv.subtotalCents,
+      taxCents: inv.taxCents,
+      totalCents: inv.totalCents,
+      amountPaidCents: inv.amountPaidCents,
+      createdAt: toIsoOrNull(inv.createdAt),
+      updatedAt: toIsoOrNull(inv.updatedAt),
+    };
+  }
+
+  function parseMoneyToCents(raw, rawCents) {
+    if (rawCents !== undefined && rawCents !== null && rawCents !== "") {
+      const cents = Number(rawCents);
+      if (!Number.isFinite(cents) || cents < 0) return null;
+      return Math.round(cents);
+    }
+
+    if (raw === undefined || raw === null || raw === "") return 0;
+
+    const normalized = String(raw).replace(/[$,\s]/g, "").trim();
+    if (!normalized) return 0;
+
+    const amount = Number(normalized);
+    if (!Number.isFinite(amount) || amount < 0) return null;
+
+    return Math.round(amount * 100);
+  }
+
+  function parseOptionalPositiveInt(raw) {
+    if (raw === undefined || raw === null || raw === "") return null;
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 0) return null;
+    return n;
+  }
 
   router.post("/admin/merchants/:merchantId/stores", requireAdmin, async (req, res) => {
     const merchantId = parseIntParam(req.params.merchantId);
@@ -84,6 +132,93 @@ function buildAdminRouter(deps) {
     }
 
     return res.json(BILLING_POLICY);
+  });
+
+  router.post("/admin/billing/generate-invoice", requireAdmin, async (req, res) => {
+    try {
+      const merchantId = parseIntParam(req.body?.merchantId);
+      const subtotalCents = parseMoneyToCents(
+        req.body?.total ??
+        req.body?.amount ??
+        req.body?.totalAmount ??
+        req.body?.totalDollars ??
+        req.body?.subtotal,
+        req.body?.totalCents ??
+        req.body?.amountCents ??
+        req.body?.subtotalCents
+      );
+      const netTermsDays = parseOptionalPositiveInt(
+        req.body?.netTermsDays ?? req.body?.terms ?? req.body?.netTerms
+      );
+
+      if (!merchantId) {
+        return sendError(res, 400, "VALIDATION_ERROR", "merchantId is required");
+      }
+
+      if (subtotalCents === null) {
+        return sendError(
+          res,
+          400,
+          "VALIDATION_ERROR",
+          "Total amount must be a valid non-negative number"
+        );
+      }
+
+      const bundle = await getMerchantPolicyBundle(merchantId);
+      if (bundle?.error) {
+        return sendError(
+          res,
+          bundle.error.http,
+          bundle.error.code,
+          bundle.error.message
+        );
+      }
+
+      if (!bundle?.accountId) {
+        return sendError(
+          res,
+          400,
+          "INVALID_STATE",
+          "Merchant billing account not found"
+        );
+      }
+
+      const invoice = await prisma.invoice.create({
+        data: {
+          merchantId,
+          billingAccountId: bundle.accountId,
+          status: "draft",
+          issuedAt: null,
+          netTermsDays,
+          dueAt: null,
+          subtotalCents,
+          taxCents: 0,
+          totalCents: subtotalCents,
+          amountPaidCents: 0,
+
+          // 🔥 THIS IS THE NEW PART
+          lineItems: {
+            create: [
+              {
+                description: "Platform Fee",
+                quantity: 1,
+                unitPriceCents: subtotalCents,
+                amountCents: subtotalCents,
+                sourceType: "platform_fee",
+              },
+            ],
+          },
+        },
+      });
+
+      return res.status(201).json({
+        ok: true,
+        invoiceId: invoice.id,
+        invoice: mapInvoiceSummary(invoice),
+      });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
   });
 
   router.get("/admin/merchants/:merchantId/billing-policy", requireAdmin, async (req, res) => {
@@ -383,22 +518,22 @@ function buildAdminRouter(deps) {
       const result = await prisma.$transaction(async (tx) => {
         const promoted = newMembership
           ? await tx.merchantUser.update({
-              where: { id: newMembership.id },
-              data: {
-                role: "merchant_admin",
-                status: "active",
-                statusReason: null,
-              },
-            })
+            where: { id: newMembership.id },
+            data: {
+              role: "merchant_admin",
+              status: "active",
+              statusReason: null,
+            },
+          })
           : await tx.merchantUser.create({
-              data: {
-                merchantId,
-                userId: newUser.id,
-                role: "merchant_admin",
-                status: "active",
-                statusReason: null,
-              },
-            });
+            data: {
+              merchantId,
+              userId: newUser.id,
+              role: "merchant_admin",
+              status: "active",
+              statusReason: null,
+            },
+          });
 
         let priorOwnerResult = null;
 
@@ -444,6 +579,147 @@ function buildAdminRouter(deps) {
         promotedMerchantUserId: result.promoted.id,
         previousOwnerMerchantUserId: result.priorOwnerResult.id,
       });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
+  router.get("/admin/invoices", requireAdmin, async (req, res) => {
+    try {
+      const where = {};
+
+      const rawStatus = String(req.query?.status || "").trim();
+      if (rawStatus && rawStatus !== "any") {
+        where.status = rawStatus;
+      }
+
+      const rawMerchantId =
+        req.query?.merchantId ??
+        req.query?.merchant ??
+        req.query?.merchant_id;
+
+      if (rawMerchantId !== undefined && rawMerchantId !== null && rawMerchantId !== "") {
+        const merchantId = parseIntParam(rawMerchantId);
+        if (merchantId) {
+          where.merchantId = merchantId;
+        }
+      }
+
+      const items = await prisma.invoice.findMany({
+        where,
+        orderBy: [{ createdAt: "desc" }],
+        take: 200,
+      });
+
+      const mapped = items.map(mapInvoiceSummary);
+
+      return res.json({ items: mapped, nextCursor: null });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
+  router.get("/admin/invoices/:invoiceId", requireAdmin, async (req, res) => {
+    const invoiceId = parseIntParam(req.params.invoiceId);
+    if (!invoiceId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid invoiceId");
+
+    try {
+      const inv = await prisma.invoice.findUnique({
+        where: { id: invoiceId },
+        include: { lineItems: true, payments: true, relatedInvoices: true },
+      });
+
+      if (!inv) return sendError(res, 404, "INVOICE_NOT_FOUND", "Invoice not found");
+
+      return res.json({
+        invoice: mapInvoiceSummary(inv),
+        lineItems: inv.lineItems || [],
+        payments: inv.payments || [],
+        relatedInvoices: inv.relatedInvoices || [],
+      });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
+  router.get("/admin/invoices/:invoiceId/late-fee-preview", requireAdmin, async (req, res) => {
+    const invoiceId = parseIntParam(req.params.invoiceId);
+    if (!invoiceId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid invoiceId");
+
+    try {
+      const inv = await prisma.invoice.findUnique({
+        where: { id: invoiceId },
+      });
+
+      if (!inv) return sendError(res, 404, "INVOICE_NOT_FOUND", "Invoice not found");
+
+      const now = new Date();
+      const dueAt = inv.dueAt ? new Date(inv.dueAt) : null;
+      const isLate = !!(dueAt && dueAt < now);
+
+      return res.json({
+        invoiceId: inv.id,
+        status: inv.status,
+        dueAt: toIsoOrNull(inv.dueAt),
+        asOf: now.toISOString(),
+        isLate,
+        lateFeeCents: 0,
+        preview: true,
+      });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
+  router.post("/admin/invoices/:invoiceId/issue", requireJwt, requireAdmin, async (req, res) => {
+    const invoiceId = parseIntParam(req.params.invoiceId);
+    if (!invoiceId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid invoiceId");
+
+    const { netTermsDays } = req.body || {};
+
+    try {
+      const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
+      if (!invoice) return sendError(res, 404, "NOT_FOUND", "Invoice not found");
+
+      if (invoice.status !== "draft")
+        return sendError(res, 400, "INVALID_STATE", "Only draft invoices can be issued");
+
+      const terms = Number.isInteger(netTermsDays) ? netTermsDays : invoice.netTermsDays;
+      const dueAt = new Date(Date.now() + terms * 24 * 60 * 60 * 1000);
+
+      const updated = await prisma.invoice.update({
+        where: { id: invoiceId },
+        data: {
+          status: "issued",
+          issuedAt: new Date(),
+          dueAt,
+          netTermsDays: terms,
+        },
+      });
+
+      return res.json({ invoice: updated });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
+  router.post("/admin/invoices/:invoiceId/void", requireJwt, requireAdmin, async (req, res) => {
+    const invoiceId = parseIntParam(req.params.invoiceId);
+    if (!invoiceId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid invoiceId");
+
+    try {
+      const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
+      if (!invoice) return sendError(res, 404, "NOT_FOUND", "Invoice not found");
+
+      if (invoice.status === "paid")
+        return sendError(res, 400, "INVALID_STATE", "Paid invoices cannot be voided");
+
+      const updated = await prisma.invoice.update({
+        where: { id: invoiceId },
+        data: { status: "void" },
+      });
+
+      return res.json(updated);
     } catch (err) {
       return handlePrismaError(err, res);
     }

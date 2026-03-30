@@ -33,6 +33,7 @@ function buildMerchantRouter(deps) {
     bcrypt,
     isPosOnlyMerchantUser,
     canAccessInvoicesForMerchant,
+    ensureBillingAccountForMerchant,
   } = deps;
 
   /* -----------------------------
@@ -609,6 +610,9 @@ function buildMerchantRouter(deps) {
           status: "active",
         },
       });
+
+      // Auto-create BillingAccount so invoicing works immediately
+      await ensureBillingAccountForMerchant(merchant.id);
 
       emitPvHook("admin.merchant.created", {
         actorUserId: req.userId,
