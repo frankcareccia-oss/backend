@@ -84,7 +84,8 @@ model Merchant {
   invoices       Invoice[] // <-- required opposite of Invoice.merchant
 
   // Catalog (E.2)
-  products Product[]
+  products          Product[]
+  productCategories ProductCategory[]
 
   // Promotions & Loyalty (Thread E)
   promoItems       PromoItem[]
@@ -637,16 +638,47 @@ model Product {
   imageUrl    String?       @db.VarChar(2048)
   status      ProductStatus @default(active)
 
+  // Category (v3.5 model — required for reward qualification)
+  categoryId  Int?
+  category    ProductCategory? @relation(fields: [categoryId], references: [id])
+
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
   @@unique([merchantId, sku])
   @@index([merchantId, status])
+  @@index([categoryId])
 }
 
 enum ProductStatus {
   active
   inactive
+}
+
+/**
+ * ===============================
+ * Product Categories (v3.5)
+ * ===============================
+ * Groups products into rewardable units.
+ * Product → Category → Reward Program (v1).
+ * One category per product, no hierarchy.
+ */
+
+model ProductCategory {
+  id         Int           @id @default(autoincrement())
+  merchantId Int
+  merchant   Merchant      @relation(fields: [merchantId], references: [id])
+
+  name      String        @db.VarChar(200)
+  status    ProductStatus @default(active)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  products   Product[]
+  promotions Promotion[]
+
+  @@index([merchantId, status])
 }
 
 /**
@@ -746,6 +778,12 @@ model Promotion {
   name        String  @db.VarChar(200)
   description String? @db.VarChar(1000)
 
+  // v3.5 qualifying category (category-based earn model).
+  // When set, any purchase of a product in this category earns progress.
+  // null = uses PromoItem linkage (v2 model).
+  categoryId  Int?
+  category    ProductCategory? @relation(fields: [categoryId], references: [id])
+
   // Earn mechanic
   mechanic    PromoMechanic
   /// Points per qualifying event (points mechanic). Always 1 for stamps.
@@ -754,6 +792,11 @@ model Promotion {
   threshold   Int
   /// Max reward grants per visit/session. null = unlimited (merchant decides).
   maxGrantsPerVisit Int?
+
+  // Timeframe (v3.5): rolling earn window in days.
+  // e.g. 30 = progress earned more than 30 days ago does not count.
+  // null = no expiry window (progress never resets by time).
+  timeframeDays Int?
 
   // Reward definition
   rewardType  PromoRewardType
@@ -860,6 +903,10 @@ model ConsumerPromoProgress {
 
   /// Lifetime total earned (stamps or points). Never decrements — for reporting only.
   lifetimeEarned Int @default(0)
+
+  /// Timestamp of the most recent earn event. Used to enforce Promotion.timeframeDays.
+  /// null = no earn event yet.
+  lastEarnedAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

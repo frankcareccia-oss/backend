@@ -42,6 +42,7 @@ router.get(
       const products = await prisma.product.findMany({
         where,
         orderBy: { id: "asc" },
+        include: { category: true },
       });
 
       emitPvHook("catalog.product.list", {
@@ -69,7 +70,7 @@ router.post(
   requireMerchantRole("owner", "merchant_admin"),
   async (req, res) => {
     try {
-      const { name, description, sku: skuInput, imageUrl } = req.body || {};
+      const { name, description, sku: skuInput, imageUrl, categoryId: categoryIdRaw } = req.body || {};
 
       if (!name || !String(name).trim()) {
         return sendError(res, 400, "VALIDATION_ERROR", "name is required");
@@ -88,6 +89,17 @@ router.post(
         return sendError(res, 409, "UNIQUE_VIOLATION", `SKU "${sku}" already exists for this merchant`);
       }
 
+      // Validate categoryId if provided
+      let categoryId = null;
+      if (categoryIdRaw != null) {
+        categoryId = parseInt(categoryIdRaw, 10);
+        if (!categoryId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid categoryId");
+        const cat = await prisma.productCategory.findFirst({
+          where: { id: categoryId, merchantId: req.merchantId, status: "active" },
+        });
+        if (!cat) return sendError(res, 422, "INVALID_CATEGORY", "Category not found or inactive");
+      }
+
       const product = await prisma.product.create({
         data: {
           merchantId: req.merchantId,
@@ -96,7 +108,9 @@ router.post(
           imageUrl: imageUrl ? String(imageUrl).trim() : null,
           sku,
           status: "active",
+          categoryId,
         },
+        include: { category: true },
       });
 
       emitPvHook("catalog.product.created", {
@@ -134,7 +148,7 @@ router.patch(
       });
       if (!existing) return sendError(res, 404, "NOT_FOUND", "Product not found");
 
-      const { name, description, imageUrl } = req.body || {};
+      const { name, description, imageUrl, categoryId: categoryIdRaw } = req.body || {};
       const data = {};
 
       if (name !== undefined) {
@@ -147,6 +161,19 @@ router.patch(
         if (imageUrlErr) return sendError(res, 400, "VALIDATION_ERROR", imageUrlErr);
         data.imageUrl = imageUrl ? String(imageUrl).trim() : null;
       }
+      if (categoryIdRaw !== undefined) {
+        if (categoryIdRaw === null) {
+          data.categoryId = null;
+        } else {
+          const catId = parseInt(categoryIdRaw, 10);
+          if (!catId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid categoryId");
+          const cat = await prisma.productCategory.findFirst({
+            where: { id: catId, merchantId: req.merchantId, status: "active" },
+          });
+          if (!cat) return sendError(res, 422, "INVALID_CATEGORY", "Category not found or inactive");
+          data.categoryId = catId;
+        }
+      }
 
       if (!Object.keys(data).length) {
         return sendError(res, 400, "VALIDATION_ERROR", "No updatable fields provided");
@@ -155,6 +182,7 @@ router.patch(
       const product = await prisma.product.update({
         where: { id: productId },
         data,
+        include: { category: true },
       });
 
       emitPvHook("catalog.product.updated", {
@@ -283,6 +311,7 @@ router.get(
       const products = await prisma.product.findMany({
         where,
         orderBy: { id: "asc" },
+        include: { category: true },
       });
 
       return res.json({ items: products });
@@ -304,7 +333,7 @@ router.post(
     if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantId");
 
     try {
-      const { name, description, sku: skuInput, imageUrl } = req.body || {};
+      const { name, description, sku: skuInput, imageUrl, categoryId: categoryIdRaw } = req.body || {};
       if (!name || !String(name).trim()) {
         return sendError(res, 400, "VALIDATION_ERROR", "name is required");
       }
@@ -319,6 +348,14 @@ router.post(
         return sendError(res, 409, "UNIQUE_VIOLATION", `SKU "${sku}" already exists for this merchant`);
       }
 
+      let categoryId = null;
+      if (categoryIdRaw != null) {
+        categoryId = parseInt(categoryIdRaw, 10);
+        if (!categoryId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid categoryId");
+        const cat = await prisma.productCategory.findFirst({ where: { id: categoryId, merchantId } });
+        if (!cat) return sendError(res, 422, "INVALID_CATEGORY", "Category not found");
+      }
+
       const product = await prisma.product.create({
         data: {
           merchantId,
@@ -327,7 +364,9 @@ router.post(
           imageUrl: imageUrl ? String(imageUrl).trim() : null,
           sku,
           status: "active",
+          categoryId,
         },
+        include: { category: true },
       });
 
       emitPvHook("catalog.product.created", {
@@ -366,7 +405,7 @@ router.patch(
       const existing = await prisma.product.findFirst({ where: { id: productId, merchantId } });
       if (!existing) return sendError(res, 404, "NOT_FOUND", "Product not found");
 
-      const { name, description, imageUrl } = req.body || {};
+      const { name, description, imageUrl, categoryId: categoryIdRaw } = req.body || {};
       const data = {};
       if (name !== undefined) {
         if (!String(name).trim()) return sendError(res, 400, "VALIDATION_ERROR", "name cannot be empty");
@@ -378,11 +417,22 @@ router.patch(
         if (imageUrlErr) return sendError(res, 400, "VALIDATION_ERROR", imageUrlErr);
         data.imageUrl = imageUrl ? String(imageUrl).trim() : null;
       }
+      if (categoryIdRaw !== undefined) {
+        if (categoryIdRaw === null) {
+          data.categoryId = null;
+        } else {
+          const catId = parseInt(categoryIdRaw, 10);
+          if (!catId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid categoryId");
+          const cat = await prisma.productCategory.findFirst({ where: { id: catId, merchantId } });
+          if (!cat) return sendError(res, 422, "INVALID_CATEGORY", "Category not found");
+          data.categoryId = catId;
+        }
+      }
       if (!Object.keys(data).length) {
         return sendError(res, 400, "VALIDATION_ERROR", "No updatable fields provided");
       }
 
-      const product = await prisma.product.update({ where: { id: productId }, data });
+      const product = await prisma.product.update({ where: { id: productId }, data, include: { category: true } });
 
       emitPvHook("catalog.product.updated", {
         tc: "TC-CAT-PROD-UPDATE-ADMIN-01",
