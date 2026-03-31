@@ -3,11 +3,25 @@ const express = require("express");
 const { prisma } = require("../db/prisma");
 const { sendError, handlePrismaError } = require("../utils/errors");
 const { parseIntParam } = require("../utils/helpers");
-const { requireJwt, requireMerchantRole } = require("../middleware/auth");
+const { requireJwt, requireAdmin, requireMerchantRole } = require("../middleware/auth");
 const { emitPvHook } = require("../utils/hooks");
 const { generateSku } = require("./catalog.service");
 
 const router = express.Router();
+
+/* ---------------------------------------------------------------
+   Image URL validation — rejects data: URIs and enforces https/http.
+   Returns an error string, or null if valid (or empty).
+---------------------------------------------------------------- */
+function validateImageUrl(raw) {
+  if (!raw) return null;
+  const url = String(raw).trim();
+  if (!url) return null;
+  if (url.startsWith("data:")) return "Image URL must be a hosted URL (https://…), not a base64 data URI. Please upload the image to an image host first.";
+  if (!/^https?:\/\//i.test(url)) return "Image URL must start with https:// or http://";
+  if (url.length > 2048) return "Image URL is too long (max 2048 characters)";
+  return null;
+}
 
 /* ---------------------------------------------------------------
    Resolve merchantId from JWT merchant membership.
@@ -55,11 +69,13 @@ router.post(
   requireMerchantRole("owner", "merchant_admin"),
   async (req, res) => {
     try {
-      const { name, description, sku: skuInput } = req.body || {};
+      const { name, description, sku: skuInput, imageUrl } = req.body || {};
 
       if (!name || !String(name).trim()) {
         return sendError(res, 400, "VALIDATION_ERROR", "name is required");
       }
+      const imageUrlErr = validateImageUrl(imageUrl);
+      if (imageUrlErr) return sendError(res, 400, "VALIDATION_ERROR", imageUrlErr);
 
       const skuProvided = skuInput && String(skuInput).trim();
       const sku = skuProvided || (await generateSku(req.merchantId));
@@ -77,6 +93,7 @@ router.post(
           merchantId: req.merchantId,
           name: String(name).trim(),
           description: description ? String(description).trim() : null,
+          imageUrl: imageUrl ? String(imageUrl).trim() : null,
           sku,
           status: "active",
         },
@@ -117,7 +134,7 @@ router.patch(
       });
       if (!existing) return sendError(res, 404, "NOT_FOUND", "Product not found");
 
-      const { name, description } = req.body || {};
+      const { name, description, imageUrl } = req.body || {};
       const data = {};
 
       if (name !== undefined) {
@@ -125,6 +142,11 @@ router.patch(
         data.name = String(name).trim();
       }
       if (description !== undefined) data.description = description ? String(description).trim() : null;
+      if (imageUrl !== undefined) {
+        const imageUrlErr = validateImageUrl(imageUrl);
+        if (imageUrlErr) return sendError(res, 400, "VALIDATION_ERROR", imageUrlErr);
+        data.imageUrl = imageUrl ? String(imageUrl).trim() : null;
+      }
 
       if (!Object.keys(data).length) {
         return sendError(res, 400, "VALIDATION_ERROR", "No updatable fields provided");
@@ -264,6 +286,204 @@ router.get(
       });
 
       return res.json({ items: products });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  }
+);
+
+// ─── Admin CRUD endpoints ────────────────────────────────────────────────────
+
+// POST /admin/merchants/:merchantId/products — admin create product
+router.post(
+  "/admin/merchants/:merchantId/products",
+  requireJwt,
+  requireAdmin,
+  async (req, res) => {
+    const merchantId = parseIntParam(req.params.merchantId);
+    if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantId");
+
+    try {
+      const { name, description, sku: skuInput, imageUrl } = req.body || {};
+      if (!name || !String(name).trim()) {
+        return sendError(res, 400, "VALIDATION_ERROR", "name is required");
+      }
+      const imageUrlErr = validateImageUrl(imageUrl);
+      if (imageUrlErr) return sendError(res, 400, "VALIDATION_ERROR", imageUrlErr);
+
+      const skuProvided = skuInput && String(skuInput).trim();
+      const sku = skuProvided || (await generateSku(merchantId));
+
+      const existing = await prisma.product.findFirst({ where: { merchantId, sku } });
+      if (existing) {
+        return sendError(res, 409, "UNIQUE_VIOLATION", `SKU "${sku}" already exists for this merchant`);
+      }
+
+      const product = await prisma.product.create({
+        data: {
+          merchantId,
+          name: String(name).trim(),
+          description: description ? String(description).trim() : null,
+          imageUrl: imageUrl ? String(imageUrl).trim() : null,
+          sku,
+          status: "active",
+        },
+      });
+
+      emitPvHook("catalog.product.created", {
+        tc: "TC-CAT-PROD-CREATE-ADMIN-01",
+        sev: "info",
+        stable: "catalog:product:created",
+        merchantId,
+        productId: product.id,
+        productName: product.name,
+        sku: product.sku,
+        skuAutoGenerated: !skuProvided,
+        actorUserId: req.userId,
+        actorRole: "pv_admin",
+      });
+
+      return res.status(201).json({ product });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  }
+);
+
+// PATCH /admin/merchants/:merchantId/products/:productId — admin update
+router.patch(
+  "/admin/merchants/:merchantId/products/:productId",
+  requireJwt,
+  requireAdmin,
+  async (req, res) => {
+    const merchantId = parseIntParam(req.params.merchantId);
+    if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantId");
+
+    const productId = parseIntParam(req.params.productId);
+    if (!productId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid productId");
+
+    try {
+      const existing = await prisma.product.findFirst({ where: { id: productId, merchantId } });
+      if (!existing) return sendError(res, 404, "NOT_FOUND", "Product not found");
+
+      const { name, description, imageUrl } = req.body || {};
+      const data = {};
+      if (name !== undefined) {
+        if (!String(name).trim()) return sendError(res, 400, "VALIDATION_ERROR", "name cannot be empty");
+        data.name = String(name).trim();
+      }
+      if (description !== undefined) data.description = description ? String(description).trim() : null;
+      if (imageUrl !== undefined) {
+        const imageUrlErr = validateImageUrl(imageUrl);
+        if (imageUrlErr) return sendError(res, 400, "VALIDATION_ERROR", imageUrlErr);
+        data.imageUrl = imageUrl ? String(imageUrl).trim() : null;
+      }
+      if (!Object.keys(data).length) {
+        return sendError(res, 400, "VALIDATION_ERROR", "No updatable fields provided");
+      }
+
+      const product = await prisma.product.update({ where: { id: productId }, data });
+
+      emitPvHook("catalog.product.updated", {
+        tc: "TC-CAT-PROD-UPDATE-ADMIN-01",
+        sev: "info",
+        stable: "catalog:product:updated",
+        merchantId,
+        productId: product.id,
+        productName: product.name,
+        sku: product.sku,
+        changedFields: Object.keys(data),
+        actorUserId: req.userId,
+        actorRole: "pv_admin",
+      });
+
+      return res.json({ product });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  }
+);
+
+// DELETE /admin/merchants/:merchantId/products/:productId — admin soft delete
+router.delete(
+  "/admin/merchants/:merchantId/products/:productId",
+  requireJwt,
+  requireAdmin,
+  async (req, res) => {
+    const merchantId = parseIntParam(req.params.merchantId);
+    if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantId");
+
+    const productId = parseIntParam(req.params.productId);
+    if (!productId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid productId");
+
+    try {
+      const existing = await prisma.product.findFirst({ where: { id: productId, merchantId } });
+      if (!existing) return sendError(res, 404, "NOT_FOUND", "Product not found");
+      if (existing.status === "inactive") {
+        return sendError(res, 409, "ALREADY_INACTIVE", "Product is already inactive");
+      }
+
+      const product = await prisma.product.update({
+        where: { id: productId },
+        data: { status: "inactive" },
+      });
+
+      emitPvHook("catalog.product.deactivated", {
+        tc: "TC-CAT-PROD-DEACTIVATE-ADMIN-01",
+        sev: "info",
+        stable: "catalog:product:deactivated",
+        merchantId,
+        productId: product.id,
+        productName: product.name,
+        sku: product.sku,
+        actorUserId: req.userId,
+        actorRole: "pv_admin",
+      });
+
+      return res.json({ product });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  }
+);
+
+// POST /admin/merchants/:merchantId/products/:productId/reactivate — admin reactivate
+router.post(
+  "/admin/merchants/:merchantId/products/:productId/reactivate",
+  requireJwt,
+  requireAdmin,
+  async (req, res) => {
+    const merchantId = parseIntParam(req.params.merchantId);
+    if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantId");
+
+    const productId = parseIntParam(req.params.productId);
+    if (!productId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid productId");
+
+    try {
+      const existing = await prisma.product.findFirst({ where: { id: productId, merchantId } });
+      if (!existing) return sendError(res, 404, "NOT_FOUND", "Product not found");
+      if (existing.status === "active") {
+        return sendError(res, 409, "ALREADY_ACTIVE", "Product is already active");
+      }
+
+      const product = await prisma.product.update({
+        where: { id: productId },
+        data: { status: "active" },
+      });
+
+      emitPvHook("catalog.product.reactivated", {
+        tc: "TC-CAT-PROD-REACTIVATE-ADMIN-01",
+        sev: "info",
+        stable: "catalog:product:reactivated",
+        merchantId,
+        productId: product.id,
+        productName: product.name,
+        sku: product.sku,
+        actorUserId: req.userId,
+        actorRole: "pv_admin",
+      });
+
+      return res.json({ product });
     } catch (err) {
       return handlePrismaError(err, res);
     }

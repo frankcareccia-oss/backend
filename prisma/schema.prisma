@@ -619,6 +619,7 @@ model Product {
 
   name        String        @db.VarChar(200)
   description String?       @db.VarChar(1000)
+  imageUrl    String?       @db.VarChar(2048)
   status      ProductStatus @default(active)
 
   createdAt   DateTime      @default(now())

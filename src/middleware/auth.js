@@ -2,6 +2,7 @@
 const jwt = require("jsonwebtoken");
 const { prisma } = require("../db/prisma");
 const { sendError } = require("../utils/errors");
+const { parseIntParam } = require("../utils/helpers");
 
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me";
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY || "";
@@ -67,14 +68,23 @@ function requireBillingStaff(req, res, next) {
 }
 
 // Requires caller to be an active member of the merchant with one of the allowed merchant roles.
-// Attaches req.merchantRole and req.callerMerchantUser.
+// Attaches req.merchantRole, req.merchantId, and req.callerMerchantUser.
+//
+// merchantId resolution order:
+//   1. req.params.merchantId  (admin-style routes: /admin/merchants/:merchantId/...)
+//   2. any previously set req.merchantId
+//   3. look up by userId alone (merchant-facing routes: /merchant/products, etc.)
 function requireMerchantRole(...allowedRoles) {
   return async (req, res, next) => {
-    const merchantId = Number(req.params.merchantId) || req.merchantId;
-    if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "merchantId required");
+    const paramMerchantId = parseIntParam(req.params.merchantId);
+    const knownMerchantId = paramMerchantId || req.merchantId || null;
+
+    const where = knownMerchantId
+      ? { userId: req.userId, merchantId: knownMerchantId, status: "active" }
+      : { userId: req.userId, status: "active" };
 
     const mu = await prisma.merchantUser.findFirst({
-      where: { userId: req.userId, merchantId, status: "active" },
+      where,
       select: { id: true, role: true, merchantId: true },
     });
 
