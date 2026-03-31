@@ -612,6 +612,10 @@ app.use(
 // Catalog (E.2) — new domain, imports utilities directly
 app.use(catalogRouter);
 
+// Promotions & Loyalty (Thread E) — PromoItem / Promotion / OfferSet
+const promoRouter = require("./src/promo/promo.routes");
+app.use(promoRouter);
+
 /* -----------------------------
    Server
 -------------------------------- */

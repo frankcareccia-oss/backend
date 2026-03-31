@@ -45,7 +45,8 @@ model User {
   status    EntityStatus @default(active)
   updatedAt DateTime     @updatedAt
 
-  merchantUsers MerchantUser[]
+  merchantUsers      MerchantUser[]
+  grantedRedemptions PromoRedemption[] @relation("GrantedByUser")
 }
 
 model PasswordResetToken {
@@ -84,6 +85,12 @@ model Merchant {
 
   // Catalog (E.2)
   products Product[]
+
+  // Promotions & Loyalty (Thread E)
+  promoItems       PromoItem[]
+  promotions       Promotion[]
+  offerSets        OfferSet[]
+  consumerProgress ConsumerPromoProgress[]
 
   @@index([status])
 }
@@ -129,6 +136,10 @@ model Store {
   qrs            StoreQr[]
   storeUsers     StoreUser[]
   visits         Visit[]
+
+  // Promotions & Loyalty (Thread E)
+  offerSetStores      OfferSetStore[]
+  grantedRedemptions  PromoRedemption[] @relation("RedemptionGrantStore")
 
   @@index([merchantId])
   @@index([phoneE164])
@@ -199,6 +210,10 @@ model Consumer {
   merchantConsumers MerchantConsumer[]
   storeConsumers    StoreConsumer[]
   visits            Visit[]
+
+  // Promotions & Loyalty (Thread E)
+  promoProgress ConsumerPromoProgress[]
+  redemptions   PromoRedemption[]
 
   @@index([email])
   @@index([phoneE164])
@@ -632,4 +647,273 @@ model Product {
 enum ProductStatus {
   active
   inactive
+}
+
+/**
+ * ===============================
+ * Promotions & Loyalty (Thread E)
+ * ===============================
+ */
+
+// ── Enums ───────────────────────────────────────────────────────
+
+enum PromoItemType {
+  visit          // any store check-in
+  any_purchase   // any purchase, regardless of product
+  single_product // specific SKU required
+  product_bundle // multiple SKUs required in same transaction
+}
+
+enum PromoMechanic {
+  stamps // count qualifying events; threshold = milestone
+  points // earnPerUnit points per event; redeem when balance >= threshold
+}
+
+enum PromoRewardType {
+  free_item      // rewardSku references a Product.sku within this merchant
+  discount_pct   // rewardValue = integer percent (1–100)
+  discount_fixed // rewardValue = cents
+  custom         // rewardNote describes the reward (e.g. "free upgrade")
+}
+
+enum OfferSetScope {
+  merchant // applies across all stores of this merchant
+  store    // applies only to stores listed in OfferSetStore
+}
+
+enum PromoStatus {
+  active
+  paused
+  archived
+}
+
+enum OfferSetStatus {
+  draft
+  active
+  expired
+  archived
+}
+
+enum RedemptionStatus {
+  pending   // consumer confirmed intent; redemptionToken issued, awaiting POS grant
+  granted   // POS employee (or integration) confirmed the reward
+  cancelled // voided before grant
+  expired   // redemptionToken lapsed before POS acted
+}
+
+// ── Layer 1: PromoItem ──────────────────────────────────────────
+
+/// A trackable action that earns progress toward a Promotion.
+model PromoItem {
+  id          Int           @id @default(autoincrement())
+  merchantId  Int
+  name        String        @db.VarChar(200)
+  description String?       @db.VarChar(1000)
+  type        PromoItemType
+  status      PromoStatus   @default(active)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  merchant   Merchant        @relation(fields: [merchantId], references: [id])
+  skus       PromoItemSku[]
+  promotions PromotionItem[]
+
+  @@index([merchantId, status])
+}
+
+/// SKUs that qualify for a PromoItem.
+/// single_product = 1 row; product_bundle = N rows (all must appear in transaction).
+model PromoItemSku {
+  id          Int    @id @default(autoincrement())
+  promoItemId Int
+  /// References Product.sku within the same merchant (stable string ref, not FK).
+  sku         String @db.VarChar(100)
+  /// Minimum quantity of this SKU required per transaction (usually 1).
+  quantity    Int    @default(1)
+
+  promoItem PromoItem @relation(fields: [promoItemId], references: [id])
+
+  @@unique([promoItemId, sku])
+  @@index([promoItemId])
+}
+
+// ── Layer 2: Promotion ──────────────────────────────────────────
+
+/// An earn + reward rule. Consumers accumulate progress via qualifying PromoItems.
+model Promotion {
+  id          Int     @id @default(autoincrement())
+  merchantId  Int
+  name        String  @db.VarChar(200)
+  description String? @db.VarChar(1000)
+
+  // Earn mechanic
+  mechanic    PromoMechanic
+  /// Points per qualifying event (points mechanic). Always 1 for stamps.
+  earnPerUnit Int           @default(1)
+  /// Stamps or points needed to earn one reward grant.
+  threshold   Int
+  /// Max reward grants per visit/session. null = unlimited (merchant decides).
+  maxGrantsPerVisit Int?
+
+  // Reward definition
+  rewardType  PromoRewardType
+  /// discount_pct: 1–100; discount_fixed: cents; null for free_item/custom.
+  rewardValue Int?
+  /// free_item only: Product.sku (within this merchant) awarded on grant.
+  rewardSku   String? @db.VarChar(100)
+  /// custom only: human-readable reward description for consumer and POS.
+  rewardNote  String? @db.VarChar(500)
+
+  // Lifecycle
+  status    PromoStatus @default(active)
+  startAt   DateTime?
+  endAt     DateTime?
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+
+  merchant    Merchant                @relation(fields: [merchantId], references: [id])
+  items       PromotionItem[]
+  offerSets   OfferSetPromotion[]
+  progress    ConsumerPromoProgress[]
+  redemptions PromoRedemption[]
+
+  @@index([merchantId, status])
+}
+
+/// Junction: which PromoItems trigger a Promotion.
+model PromotionItem {
+  promotionId Int
+  promoItemId Int
+
+  promotion Promotion @relation(fields: [promotionId], references: [id])
+  promoItem PromoItem @relation(fields: [promoItemId], references: [id])
+
+  @@id([promotionId, promoItemId])
+}
+
+// ── Layer 3: OfferSet ───────────────────────────────────────────
+
+/// A published bundle of Promotions with a stable QR token.
+model OfferSet {
+  id          Int            @id @default(autoincrement())
+  merchantId  Int
+  name        String         @db.VarChar(200)
+  description String?        @db.VarChar(1000)
+  /// Embedded in QR payload: pv:store:<storeToken>:offers:<token>:v1:<sig>
+  token       String         @unique @db.VarChar(64)
+  scope       OfferSetScope  @default(merchant)
+  status      OfferSetStatus @default(draft)
+  startAt     DateTime?
+  endAt       DateTime?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  merchant   Merchant            @relation(fields: [merchantId], references: [id])
+  promotions OfferSetPromotion[]
+  stores     OfferSetStore[]
+
+  @@index([merchantId, status])
+  @@index([token])
+}
+
+/// Junction: Promotions included in an OfferSet, with display order.
+model OfferSetPromotion {
+  offerSetId  Int
+  promotionId Int
+  sortOrder   Int @default(0)
+
+  offerSet  OfferSet  @relation(fields: [offerSetId], references: [id])
+  promotion Promotion @relation(fields: [promotionId], references: [id])
+
+  @@id([offerSetId, promotionId])
+  @@index([offerSetId, sortOrder])
+}
+
+/// Junction: Stores included when OfferSet.scope = store.
+model OfferSetStore {
+  offerSetId Int
+  storeId    Int
+
+  offerSet OfferSet @relation(fields: [offerSetId], references: [id])
+  store    Store    @relation(fields: [storeId], references: [id])
+
+  @@id([offerSetId, storeId])
+}
+
+// ── Layer 4: Consumer Progress ──────────────────────────────────
+
+/// Running progress for one Consumer on one Promotion.
+model ConsumerPromoProgress {
+  id          Int @id @default(autoincrement())
+  consumerId  Int
+  promotionId Int
+  merchantId  Int // denormalized for query performance
+
+  /// Current stamps or points. Decremented by Promotion.threshold on each grant.
+  stampCount   Int @default(0)
+  pointBalance Int @default(0)
+
+  /// Milestones available to redeem now. Tracked explicitly (not computed) for
+  /// efficient notification queries (WHERE milestonesAvailable > 0).
+  /// Increments when balance crosses a new threshold multiple; decrements on grant.
+  milestonesAvailable Int @default(0)
+
+  /// Lifetime total earned (stamps or points). Never decrements — for reporting only.
+  lifetimeEarned Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  consumer    Consumer          @relation(fields: [consumerId], references: [id])
+  promotion   Promotion         @relation(fields: [promotionId], references: [id])
+  merchant    Merchant          @relation(fields: [merchantId], references: [id])
+  redemptions PromoRedemption[]
+
+  @@unique([consumerId, promotionId])
+  @@index([merchantId])
+  @@index([promotionId])
+  @@index([consumerId, milestonesAvailable])
+}
+
+// ── Redemption ──────────────────────────────────────────────────
+
+/// One reward grant event — created when consumer confirms intent to redeem.
+model PromoRedemption {
+  id          Int @id @default(autoincrement())
+  progressId  Int
+  promotionId Int
+  consumerId  Int
+  merchantId  Int // denormalized
+
+  /// Stamps or points consumed (= Promotion.threshold at time of redemption).
+  pointsDecremented Int
+  balanceBefore     Int
+  balanceAfter      Int
+
+  status RedemptionStatus @default(pending)
+
+  /// Short-lived token for consumer's redemption QR shown to POS.
+  /// null when grant is POS-initiated without prior consumer request.
+  redemptionToken          String?   @unique @db.VarChar(64)
+  redemptionTokenExpiresAt DateTime?
+
+  /// Populated when status → granted.
+  grantedAt        DateTime?
+  grantedByUserId  Int?    // User.id of the POS employee who granted (null if programmatic)
+  grantedByStoreId Int?    // Store.id where the grant happened
+  grantNote        String? @db.VarChar(500)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  progress   ConsumerPromoProgress @relation(fields: [progressId], references: [id])
+  promotion  Promotion             @relation(fields: [promotionId], references: [id])
+  consumer   Consumer              @relation(fields: [consumerId], references: [id])
+  grantedBy  User?                 @relation("GrantedByUser", fields: [grantedByUserId], references: [id])
+  grantStore Store?                @relation("RedemptionGrantStore", fields: [grantedByStoreId], references: [id])
+
+  @@index([consumerId, status])
+  @@index([merchantId, status])
+  @@index([progressId])
+  @@index([redemptionToken])
 }
