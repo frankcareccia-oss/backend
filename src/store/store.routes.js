@@ -144,6 +144,115 @@ function buildStoreRouter(deps) {
     }
   });
 
+  /* -----------------------------
+     Admin: Store Team
+  -------------------------------- */
+
+  router.get("/stores/:storeId/team", requireJwt, requireAdmin, async (req, res) => {
+    const storeId = parseIntParam(req.params.storeId);
+    if (!storeId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid storeId");
+
+    try {
+      const store = await prisma.store.findUnique({
+        where: { id: storeId },
+        select: { id: true, merchantId: true },
+      });
+      if (!store) return sendError(res, 404, "NOT_FOUND", "Store not found");
+
+      const storeUsers = await prisma.storeUser.findMany({
+        where: { storeId, status: "active" },
+        include: {
+          merchantUser: {
+            include: {
+              user: {
+                select: {
+                  id: true,
+                  email: true,
+                  firstName: true,
+                  lastName: true,
+                },
+              },
+            },
+          },
+        },
+        orderBy: { id: "asc" },
+      });
+
+      return res.json({
+        storeId: store.id,
+        merchantId: store.merchantId,
+        team: storeUsers.map((su) => ({
+          storeUserId: su.id,
+          merchantUserId: su.merchantUserId,
+          userId: su.merchantUser?.user?.id || null,
+          email: su.merchantUser?.user?.email || null,
+          firstName: su.merchantUser?.user?.firstName || null,
+          lastName: su.merchantUser?.user?.lastName || null,
+          role: su.merchantUser?.role || null,
+          permissionLevel: su.permissionLevel,
+          status: su.status,
+        })),
+      });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
+  router.post("/stores/:storeId/team/assign", requireJwt, requireAdmin, async (req, res) => {
+    const storeId = parseIntParam(req.params.storeId);
+    if (!storeId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid storeId");
+
+    const merchantUserId = parseIntParam(req.body?.merchantUserId);
+    if (!merchantUserId) return sendError(res, 400, "VALIDATION_ERROR", "merchantUserId is required");
+
+    const VALID_LEVELS = ["store_admin", "store_subadmin", "pos_access"];
+    const permissionLevel = String(req.body?.permissionLevel || "").trim();
+    if (!VALID_LEVELS.includes(permissionLevel)) {
+      return sendError(res, 400, "VALIDATION_ERROR", "permissionLevel must be store_admin, store_subadmin, or pos_access");
+    }
+
+    try {
+      const store = await prisma.store.findUnique({ where: { id: storeId }, select: { id: true, merchantId: true } });
+      if (!store) return sendError(res, 404, "NOT_FOUND", "Store not found");
+
+      const mu = await prisma.merchantUser.findFirst({
+        where: { id: merchantUserId, merchantId: store.merchantId, status: "active" },
+        select: { id: true },
+      });
+      if (!mu) return sendError(res, 404, "NOT_FOUND", "Merchant user not found for this store's merchant");
+
+      const su = await prisma.storeUser.upsert({
+        where: { storeId_merchantUserId: { storeId, merchantUserId } },
+        update: { permissionLevel, status: "active" },
+        create: { storeId, merchantUserId, permissionLevel, status: "active" },
+        select: { id: true, storeId: true, merchantUserId: true, permissionLevel: true, status: true },
+      });
+
+      return res.json({ ok: true, storeUser: su });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
+  router.delete("/stores/team/:storeUserId", requireJwt, requireAdmin, async (req, res) => {
+    const storeUserId = parseIntParam(req.params.storeUserId);
+    if (!storeUserId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid storeUserId");
+
+    try {
+      const existing = await prisma.storeUser.findUnique({
+        where: { id: storeUserId },
+        select: { id: true, storeId: true },
+      });
+      if (!existing) return sendError(res, 404, "NOT_FOUND", "Store team member not found");
+
+      await prisma.storeUser.delete({ where: { id: storeUserId } });
+
+      return res.json({ ok: true, storeUserId });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
   router.get("/stores/:storeId", async (req, res) => {
     const storeId = parseIntParam(req.params.storeId);
     if (!storeId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid storeId");

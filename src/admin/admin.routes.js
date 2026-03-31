@@ -33,6 +33,7 @@ function buildAdminRouter(deps) {
     return {
       id: inv.id,
       merchantId: inv.merchantId,
+      merchantName: inv.merchant?.name || null,
       billingAccountId: inv.billingAccountId,
       status: inv.status,
       issuedAt: toIsoOrNull(inv.issuedAt),
@@ -610,6 +611,7 @@ function buildAdminRouter(deps) {
         where,
         orderBy: [{ createdAt: "desc" }],
         take: 200,
+        include: { merchant: { select: { id: true, name: true } } },
       });
 
       const mapped = items.map(mapInvoiceSummary);
@@ -627,7 +629,7 @@ function buildAdminRouter(deps) {
     try {
       const inv = await prisma.invoice.findUnique({
         where: { id: invoiceId },
-        include: { lineItems: true, payments: true, relatedInvoices: true },
+        include: { lineItems: true, payments: true, relatedInvoices: true, merchant: { select: { id: true, name: true } } },
       });
 
       if (!inv) return sendError(res, 404, "INVOICE_NOT_FOUND", "Invoice not found");
