@@ -82,6 +82,9 @@ model Merchant {
   billingAccount BillingAccount?
   invoices       Invoice[] // <-- required opposite of Invoice.merchant
 
+  // Catalog (E.2)
+  products Product[]
+
   @@index([status])
 }
 
@@ -597,4 +600,35 @@ enum PaymentStatus {
   succeeded
   failed
   refunded
+}
+
+/**
+ * ===============================
+ * Catalog (E.2)
+ * ===============================
+ */
+
+model Product {
+  id          Int           @id @default(autoincrement())
+  merchantId  Int
+  merchant    Merchant      @relation(fields: [merchantId], references: [id])
+
+  // SKU: stable identity — never changes even if name changes or product is reactivated.
+  // Auto-generated as PRD-0001, PRD-0002, ... if not provided by merchant.
+  sku         String        @db.VarChar(100)
+
+  name        String        @db.VarChar(200)
+  description String?       @db.VarChar(1000)
+  status      ProductStatus @default(active)
+
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@unique([merchantId, sku])
+  @@index([merchantId, status])
+}
+
+enum ProductStatus {
+  active
+  inactive
 }

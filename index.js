@@ -35,6 +35,7 @@ const { buildVisitsRateLimiters } = require("./src/visits/visits.rateLimit");
 
 const buildStoreRouter = require("./src/store/store.routes");
 const buildVisitsRouter = require("./src/visits/visits.routes");
+const catalogRouter = require("./src/catalog/catalog.routes");
 
 const QRCode = require("qrcode");
 const crypto = require("crypto");
@@ -607,6 +608,9 @@ app.use(
     scanLimiter,
   })
 );
+
+// Catalog (E.2) — new domain, imports utilities directly
+app.use(catalogRouter);
 
 /* -----------------------------
    Server
