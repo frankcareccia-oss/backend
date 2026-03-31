@@ -86,6 +86,7 @@ model Merchant {
   // Catalog (E.2)
   products          Product[]
   productCategories ProductCategory[]
+  bundles           Bundle[]
 
   // Promotions & Loyalty (Thread E)
   promoItems       PromoItem[]
@@ -682,6 +683,7 @@ model ProductCategory {
 
   products   Product[]
   promotions Promotion[]
+  bundles    Bundle[]
 
   @@index([merchantId, status])
 }
@@ -994,4 +996,88 @@ model PromoRedemption {
   @@index([merchantId, status])
   @@index([progressId])
   @@index([redemptionToken])
+}
+
+/**
+ * ===============================
+ * Bundles (Prepaid Credits) v1
+ * ===============================
+ * Prepaid, category-based usage credits sold via staff-initiated flow.
+ * PV does not process payments. Sale recorded by staff; backend creates BundleInstance.
+ * Redemption: identify consumer → tap "Use Credit" → decrement remainingUses.
+ * Phase B/C (consumer identity + POS redemption) deferred until Scan & Visit is ready.
+ */
+
+model Bundle {
+  id         Int          @id @default(autoincrement())
+  merchantId Int
+  categoryId Int
+  name       String       @db.VarChar(200)
+  /// Number of uses included in this bundle (e.g. 10 coffees).
+  /// Editable only while status = wip or staged; immutable once live/suspended/archived.
+  quantity   Int
+  /// Sale price in dollars (e.g. 45.00)
+  price      Decimal      @db.Decimal(10, 2)
+  /// Date the bundle goes / went live. Required before staging.
+  startAt    DateTime?
+  /// Optional end date. null = runs until manually suspended or archived.
+  endAt      DateTime?
+  status     BundleStatus @default(wip)
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  merchant        Merchant         @relation(fields: [merchantId], references: [id])
+  category        ProductCategory  @relation(fields: [categoryId], references: [id])
+  bundleInstances BundleInstance[]
+  auditLogs       BundleAuditLog[]
+
+  @@index([merchantId, status])
+  @@index([categoryId])
+}
+
+/// One consumer's purchased bundle. Created by staff "Sell Bundle" action.
+/// consumerId is nullable until consumer identity layer (Phase B) is built.
+model BundleInstance {
+  id            Int       @id @default(autoincrement())
+  bundleId      Int
+  /// Consumer who owns this bundle. Nullable until Phase B (consumer identity) is live.
+  consumerId    Int?
+  remainingUses Int
+  expiresAt     DateTime?
+  createdAt     DateTime  @default(now())
+
+  bundle Bundle @relation(fields: [bundleId], references: [id])
+
+  @@index([bundleId])
+  @@index([consumerId])
+}
+
+/// Immutable audit trail for every bundle change.
+/// Never deleted. Records actor, action type, and JSON diff of changed fields.
+model BundleAuditLog {
+  id          Int      @id @default(autoincrement())
+  bundleId    Int
+  /// null = system-initiated (e.g. auto-activate on startAt)
+  actorUserId Int?
+  /// e.g. "created", "status_changed", "quantity_updated", "fields_updated"
+  action      String   @db.VarChar(100)
+  /// JSON diff: { field: "status", from: "wip", to: "staged" } or array of changes
+  changes     Json?
+  createdAt   DateTime @default(now())
+
+  bundle Bundle @relation(fields: [bundleId], references: [id])
+
+  @@index([bundleId, createdAt])
+  @@index([actorUserId])
+}
+
+/// Bundle lifecycle status.
+/// wip → staged → live → suspended → archived
+/// suspended can resume to live; archived can revert to wip for re-use.
+enum BundleStatus {
+  wip        // Being built; not visible or sellable
+  staged     // Scheduled; startAt set; not yet live
+  live       // Active and sellable
+  suspended  // Halted; existing credits still redeemable; no new sales
+  archived   // Ended; never deleted; can be re-used as new wip
 }
