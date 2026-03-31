@@ -37,6 +37,7 @@ const buildStoreRouter = require("./src/store/store.routes");
 const buildVisitsRouter = require("./src/visits/visits.routes");
 const catalogRouter = require("./src/catalog/catalog.routes");
 const categoryRouter = require("./src/catalog/category.routes");
+const storeProductRouter = require("./src/catalog/storeproduct.routes");
 
 const QRCode = require("qrcode");
 const crypto = require("crypto");
@@ -613,6 +614,7 @@ app.use(
 // Catalog (E.2) — new domain, imports utilities directly
 app.use(catalogRouter);
 app.use(categoryRouter);
+app.use(storeProductRouter);
 
 // Promotions & Loyalty (Thread E) — PromoItem / Promotion / OfferSet
 const promoRouter = require("./src/promo/promo.routes");

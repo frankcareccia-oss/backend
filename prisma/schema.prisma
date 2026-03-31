@@ -138,6 +138,9 @@ model Store {
   storeUsers     StoreUser[]
   visits         Visit[]
 
+  // Catalog — store-level product overrides
+  storeProducts StoreProduct[]
+
   // Promotions & Loyalty (Thread E)
   offerSetStores      OfferSetStore[]
   grantedRedemptions  PromoRedemption[] @relation("RedemptionGrantStore")
@@ -645,6 +648,8 @@ model Product {
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
+  storeProducts StoreProduct[]
+
   @@unique([merchantId, sku])
   @@index([merchantId, status])
   @@index([categoryId])
@@ -679,6 +684,32 @@ model ProductCategory {
   promotions Promotion[]
 
   @@index([merchantId, status])
+}
+
+/**
+ * ===============================
+ * Store Product Overrides (v1)
+ * ===============================
+ * Controls which products are enabled at each store.
+ * No row = product is available at all stores (opt-in disable model).
+ * Stores can disable products; they cannot change category or create new products.
+ * Used by POS grid generation and reward earn qualification.
+ */
+
+model StoreProduct {
+  id         Int      @id @default(autoincrement())
+  storeId    Int
+  productId  Int
+  /// true = product is available at this store; false = disabled
+  enabled    Boolean  @default(true)
+  updatedAt  DateTime @updatedAt
+
+  store   Store   @relation(fields: [storeId], references: [id])
+  product Product @relation(fields: [productId], references: [id])
+
+  @@unique([storeId, productId])
+  @@index([storeId, enabled])
+  @@index([productId])
 }
 
 /**
