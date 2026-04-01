@@ -627,6 +627,14 @@ app.use(promoRouter);
 const reportingRouter = require("./src/reporting/reporting.routes");
 app.use(reportingRouter);
 
+// Consumer auth + wallet (Phase B)
+const consumerAuthRouter = require("./src/consumer/consumer.auth.routes");
+app.use(consumerAuthRouter);
+const consumerWalletRouter = require("./src/consumer/consumer.wallet.routes");
+app.use(consumerWalletRouter);
+const consumerPromosRouter = require("./src/consumer/consumer.promotions.routes");
+app.use(consumerPromosRouter);
+
 // Consumer identity (Thread 2)
 registerConsumersRoutes(app, {
   prisma,

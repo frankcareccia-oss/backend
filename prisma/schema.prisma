@@ -231,6 +231,17 @@ model Consumer {
   @@index([status])
 }
 
+model ConsumerOtpToken {
+  id         Int       @id @default(autoincrement())
+  phoneE164  String    @db.VarChar(20)
+  code       String    @db.VarChar(6)
+  expiresAt  DateTime
+  usedAt     DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([phoneE164])
+}
+
 model ConsumerPhone {
   id         Int          @id @default(autoincrement())
   consumerId Int

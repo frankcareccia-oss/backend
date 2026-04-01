@@ -100,4 +100,38 @@ function requireMerchantRole(...allowedRoles) {
   };
 }
 
-module.exports = { requireJwt, requireAdmin, requireBillingStaff, requireMerchantRole };
+// Consumer JWT — issued by consumer.auth.routes.js
+// Claims: { consumerId, phone, role: "consumer" }
+async function requireConsumerJwt(req, res, next) {
+  const header = req.headers.authorization || "";
+  const [type, token] = header.split(" ");
+
+  if (type !== "Bearer" || !token) {
+    return sendError(res, 401, "UNAUTHORIZED", "Missing Bearer token");
+  }
+
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+
+    if (payload.role !== "consumer" || !payload.consumerId) {
+      return sendError(res, 401, "UNAUTHORIZED", "Invalid consumer token");
+    }
+
+    const consumer = await prisma.consumer.findUnique({
+      where: { id: payload.consumerId },
+      select: { id: true, status: true, phoneE164: true },
+    });
+
+    if (!consumer || consumer.status !== "active") {
+      return sendError(res, 401, "UNAUTHORIZED", "Consumer not found or inactive");
+    }
+
+    req.consumerId = consumer.id;
+    req.consumerPhone = consumer.phoneE164;
+    return next();
+  } catch {
+    return sendError(res, 401, "UNAUTHORIZED", "Invalid or expired token");
+  }
+}
+
+module.exports = { requireJwt, requireAdmin, requireBillingStaff, requireMerchantRole, requireConsumerJwt };
