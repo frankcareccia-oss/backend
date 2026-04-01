@@ -139,6 +139,9 @@ model Store {
   storeUsers     StoreUser[]
   visits         Visit[]
 
+  /// POS session inactivity timeout — configurable per store (minutes, default 5)
+  posSessionTimeoutMinutes Int @default(5)
+
   // Catalog — store-level product overrides
   storeProducts StoreProduct[]
 
@@ -219,6 +222,9 @@ model Consumer {
   // Promotions & Loyalty (Thread E)
   promoProgress ConsumerPromoProgress[]
   redemptions   PromoRedemption[]
+
+  // Entitlements (Thread 1)
+  entitlements Entitlement[]
 
   @@index([email])
   @@index([phoneE164])
@@ -320,11 +326,17 @@ model Visit {
   posIdempotencyKey String? @unique @db.VarChar(128)
   posIdentifier     String? @db.VarChar(320)
 
+  // Visit lifecycle (Thread 1)
+  status          VisitStatus @default(pending_identity)
+  associateUserId Int?
+  sessionId       String?     @db.VarChar(128)
+
   @@index([storeId, createdAt])
   @@index([consumerId, createdAt])
   @@index([merchantId, createdAt])
   @@index([posVisitId])
   @@index([posIdempotencyKey])
+  @@index([status, merchantId])
 }
 
 model PosReward {
@@ -347,6 +359,65 @@ model PosReward {
 
   @@index([merchantId, storeId, createdAt])
   @@index([posVisitId])
+}
+
+/**
+ * ===============================
+ * EventLog — append-only audit ledger (Thread 1)
+ * ===============================
+ */
+
+model EventLog {
+  id               Int      @id @default(autoincrement())
+  eventType        String   @db.VarChar(100)
+  merchantId       Int
+  storeId          Int
+  consumerId       Int?
+  ownerConsumerId  Int?
+  visitId          Int?
+  entitlementId    Int?
+  bundleInstanceId Int?
+  associateUserId  Int?
+  sessionId        String?  @db.VarChar(128)
+  source           String   @db.VarChar(50)
+  outcome          String?  @db.VarChar(50)
+  payloadJson      Json?
+  createdAt        DateTime @default(now())
+
+  @@index([merchantId, storeId, createdAt])
+  @@index([consumerId, createdAt])
+  @@index([visitId])
+  @@index([eventType, createdAt])
+  @@index([associateUserId, createdAt])
+}
+
+/**
+ * ===============================
+ * Entitlement — unified output layer (Thread 1)
+ * ===============================
+ */
+
+model Entitlement {
+  id           Int               @id @default(autoincrement())
+  consumerId   Int
+  merchantId   Int
+  storeId      Int?
+  type         EntitlementType
+  sourceId     Int
+  status       EntitlementStatus @default(active)
+  validFrom    DateTime?
+  expiresAt    DateTime?
+  metadataJson Json?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+  redeemedAt   DateTime?
+
+  consumer Consumer @relation(fields: [consumerId], references: [id])
+
+  @@index([consumerId, merchantId])
+  @@index([consumerId, status])
+  @@index([merchantId, storeId, createdAt])
+  @@index([type, status])
 }
 
 /**
@@ -569,6 +640,8 @@ enum VisitSource {
   qr_scan
   manual
   import
+  pos_integrated
+  web
 }
 
 /**
@@ -1012,7 +1085,7 @@ model Bundle {
   merchantId   Int
   name         String       @db.VarChar(200)
   /// Rule tree defining what this bundle covers.
-  /// Root: PRODUCT | AND | OR. Max 2 levels (root + PRODUCT leaves).
+  /// Root: PRODUCT | AND | OR. Max 3 levels deep.
   /// Example: { type:"AND", children:[{type:"PRODUCT",productId:1,productName:"Coffee",quantity:10},...] }
   ruleTreeJson Json
   /// Sale price in dollars (e.g. 45.00)
@@ -1022,6 +1095,8 @@ model Bundle {
   /// Optional end date. null = runs until manually suspended or archived.
   endAt        DateTime?
   status       BundleStatus @default(wip)
+  /// How redemptions are applied: "simple" = one tap consumes one set of all products.
+  redemptionMode String @default("simple")
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
 
@@ -1039,12 +1114,18 @@ model BundleInstance {
   bundleId              Int
   /// Consumer who owns this bundle. Nullable until Phase B (consumer identity) is live.
   consumerId            Int?
+  /// Store where this bundle was sold. Set on POS sell.
+  storeId               Int?
+  /// POS associate who sold this bundle.
+  soldByUserId          Int?
   /// Snapshot of the rule tree at purchase time — immutable audit record.
   originalRuleTreeJson  Json
   /// Live state of the rule tree — mutated on each redemption tap.
   remainingRuleTreeJson Json
   status                BundleInstanceStatus @default(active)
   expiresAt             DateTime?
+  /// Timestamp when instance was fully redeemed (status → redeemed).
+  redeemedAt            DateTime?
   createdAt             DateTime             @default(now())
 
   bundle       Bundle                     @relation(fields: [bundleId], references: [id])
@@ -1103,4 +1184,28 @@ enum BundleInstanceStatus {
   active    // Credits remaining
   redeemed  // Fully used
   expired   // Past expiresAt before fully used
+}
+
+/// Visit lifecycle states (Thread 1)
+enum VisitStatus {
+  pending_identity  // Visit created, no consumer attached yet
+  identified        // Consumer resolved — full actions allowed
+  anonymous         // Consumer declined identity — preview/eval only
+  evaluated         // Engines have run — terminal state
+  abandoned         // Visit never completed — terminal state
+}
+
+/// Entitlement types (Thread 1)
+enum EntitlementType {
+  reward
+  bundle
+  registration
+}
+
+/// Entitlement lifecycle status (Thread 1)
+enum EntitlementStatus {
+  active
+  redeemed
+  expired
+  revoked
 }
