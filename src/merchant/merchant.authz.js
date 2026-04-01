@@ -7,7 +7,7 @@ function isPosOnlyMerchantUser(user) {
   const roles = mus.map((m) => m?.role).filter(Boolean);
   if (!roles.length) return false;
 
-  return roles.every((r) => r === "store_subadmin");
+  return roles.every((r) => r === "merchant_employee");
 }
 
 function canManageUsersForMerchant(user, merchantId) {

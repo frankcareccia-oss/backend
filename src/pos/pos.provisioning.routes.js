@@ -340,10 +340,23 @@ function registerPosProvisioningRoutes(app, {
       if (parsed) {
         const codes = loadShiftCodes();
         const rec = codes.find((c) => c.code === codeNorm && c.status === "active");
-        if (!rec) return sendError(res, 401, "UNAUTHORIZED", "Invalid code");
-        if (posPinHash(parsed.pin) !== rec.pinHash) return sendError(res, 401, "UNAUTHORIZED", "Invalid code");
-
-        assoc = { code: rec.code, userEmail: rec.userEmail, storeId: rec.storeId, merchantIdHint: rec.merchantId };
+        if (rec) {
+          if (posPinHash(parsed.pin) !== rec.pinHash) return sendError(res, 401, "UNAUTHORIZED", "Invalid code");
+          assoc = { code: rec.code, userEmail: rec.userEmail, storeId: rec.storeId, merchantIdHint: rec.merchantId };
+        } else {
+          // Fall back to associates file — supports both pin: "1234" and code: "1#1234" formats
+          const rawAssoc = safeReadJsonFile(POS_ASSOC_FILE, { associates: [] });
+          const list = Array.isArray(rawAssoc?.associates) ? rawAssoc.associates : [];
+          const match = list.find(
+            (a) =>
+              Number(a?.storeId) === parsed.storeId &&
+              String(a?.status || "active") === "active" &&
+              a?.userEmail &&
+              (String(a?.pin || "") === parsed.pin || String(a?.code || "") === codeNorm)
+          );
+          if (!match) return sendError(res, 401, "UNAUTHORIZED", "Invalid code");
+          assoc = { code: codeNorm, userEmail: String(match.userEmail).trim().toLowerCase(), storeId: parsed.storeId };
+        }
       } else {
         assoc = loadPosAssociatesLegacy().find((a) => a.code === codeNorm) || null;
         if (!assoc) return sendError(res, 401, "UNAUTHORIZED", "Invalid code");
