@@ -18,6 +18,7 @@ const path = require("path");
 
 const { prisma } = require("../db/prisma");
 const { eventId, visitId, rewardId } = require("./pos.ids");
+const { writeEventLog } = require("../eventlog/eventlog");
 
 function emit(ctx, event, fields) {
   try {
@@ -104,7 +105,7 @@ async function persistVisit({ ctx, body, idempotencyKey }) {
 
     const consumerId = body?.consumerId ? Number(body.consumerId) : null;
 
-    await prisma.visit.create({
+    const createdVisit = await prisma.visit.create({
       data: {
         storeId: store.id,
         merchantId: store.merchantId,
@@ -126,6 +127,20 @@ async function persistVisit({ ctx, body, idempotencyKey }) {
         posIdempotencyKey: idempotencyKey,
         posIdentifier: identifier,
       },
+      select: { id: true },
+    });
+
+    // EventLog — fire-and-forget audit write
+    writeEventLog(prisma, {
+      eventType: "visit.registered",
+      merchantId: store.merchantId,
+      storeId: store.id,
+      consumerId: consumerId || null,
+      visitId: createdVisit.id,
+      associateUserId: ctx.userId ? Number(ctx.userId) : null,
+      source: "pos_integrated",
+      outcome: "success",
+      payloadJson: { posVisitId: visId, posEventId: evtId, idempotencyKey },
     });
 
     // Hooks (QA/Support/Doc/Chatbot surfaced via pvHook naming conventions)
@@ -219,6 +234,18 @@ async function persistReward({ ctx, body, idempotencyKey }) {
         identifier,
         payloadJson: body || null,
       },
+    });
+
+    // EventLog — fire-and-forget audit write
+    writeEventLog(prisma, {
+      eventType: "reward.granted",
+      merchantId: store.merchantId,
+      storeId: store.id,
+      consumerId: body?.consumerId ? Number(body.consumerId) : null,
+      associateUserId: ctx.userId ? Number(ctx.userId) : null,
+      source: "pos_integrated",
+      outcome: "success",
+      payloadJson: { posRewardId: rewId, posEventId: evtId, idempotencyKey },
     });
 
     emit(ctx, "pos.reward.persisted", {

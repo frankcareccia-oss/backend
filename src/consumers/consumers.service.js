@@ -3,6 +3,7 @@
 // Phone (E164) is the canonical key. Duplicate phone resolves to existing record.
 
 const { parsePhoneNumberFromString } = require("libphonenumber-js");
+const { writeEventLog } = require("../eventlog/eventlog");
 
 /**
  * Normalize a raw phone string to E164.
@@ -181,6 +182,19 @@ async function createConsumer(prisma, { phone, firstName, lastName, email, merch
   });
 
   const created = !consumer.createdAt || consumer.createdAt > new Date(Date.now() - 2000);
+
+  // EventLog — fire-and-forget audit write (only on new consumer, only when storeId available)
+  if (created && merchantId && storeId) {
+    writeEventLog(prisma, {
+      eventType: "consumer.created",
+      merchantId,
+      storeId,
+      consumerId: consumer.id,
+      source: "pos_integrated",
+      outcome: "success",
+      payloadJson: { phoneCountry: normalized.country, firstNamePresent: Boolean(fName) },
+    });
+  }
 
   // Ensure MerchantConsumer link
   if (merchantId) {
