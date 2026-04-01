@@ -20,6 +20,7 @@ const { buildBillingHelpers } = require("./src/billing/billing.helpers");
 
 const { registerPaymentsRoutes } = require("./src/payments/payments.routes");
 const { registerPosRoutes } = require("./src/pos/pos.routes");
+const { registerConsumersRoutes } = require("./src/consumers/consumers.routes");
 
 const { registerPosProvisioningRoutes } = require("./src/pos/pos.provisioning.routes");
 const { buildDeviceRouter } = require("./src/auth/device.routes");
@@ -621,6 +622,14 @@ app.use(bundleRouter);
 // Promotions & Loyalty (Thread E) — PromoItem / Promotion / OfferSet
 const promoRouter = require("./src/promo/promo.routes");
 app.use(promoRouter);
+
+// Consumer identity (Thread 2)
+registerConsumersRoutes(app, {
+  prisma,
+  sendError,
+  requireJwt,
+  emitPvHook,
+});
 
 /* -----------------------------
    Server
