@@ -683,7 +683,6 @@ model ProductCategory {
 
   products   Product[]
   promotions Promotion[]
-  bundles    Bundle[]
 
   @@index([merchantId, status])
 }
@@ -1000,56 +999,74 @@ model PromoRedemption {
 
 /**
  * ===============================
- * Bundles (Prepaid Credits) v1
+ * Bundles (Prepaid Credits) v2
  * ===============================
- * Prepaid, category-based usage credits sold via staff-initiated flow.
+ * Rule-tree based prepaid credits. The ruleTreeJson defines what products
+ * and combinations a bundle covers (PRODUCT / AND / OR nodes, max 2 levels).
  * PV does not process payments. Sale recorded by staff; backend creates BundleInstance.
- * Redemption: identify consumer → tap "Use Credit" → decrement remainingUses.
  * Phase B/C (consumer identity + POS redemption) deferred until Scan & Visit is ready.
  */
 
 model Bundle {
-  id         Int          @id @default(autoincrement())
-  merchantId Int
-  categoryId Int
-  name       String       @db.VarChar(200)
-  /// Number of uses included in this bundle (e.g. 10 coffees).
-  /// Editable only while status = wip or staged; immutable once live/suspended/archived.
-  quantity   Int
+  id           Int          @id @default(autoincrement())
+  merchantId   Int
+  name         String       @db.VarChar(200)
+  /// Rule tree defining what this bundle covers.
+  /// Root: PRODUCT | AND | OR. Max 2 levels (root + PRODUCT leaves).
+  /// Example: { type:"AND", children:[{type:"PRODUCT",productId:1,productName:"Coffee",quantity:10},...] }
+  ruleTreeJson Json
   /// Sale price in dollars (e.g. 45.00)
-  price      Decimal      @db.Decimal(10, 2)
+  price        Decimal      @db.Decimal(10, 2)
   /// Date the bundle goes / went live. Required before staging.
-  startAt    DateTime?
+  startAt      DateTime?
   /// Optional end date. null = runs until manually suspended or archived.
-  endAt      DateTime?
-  status     BundleStatus @default(wip)
-  createdAt  DateTime     @default(now())
-  updatedAt  DateTime     @updatedAt
+  endAt        DateTime?
+  status       BundleStatus @default(wip)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
 
   merchant        Merchant         @relation(fields: [merchantId], references: [id])
-  category        ProductCategory  @relation(fields: [categoryId], references: [id])
   bundleInstances BundleInstance[]
   auditLogs       BundleAuditLog[]
 
   @@index([merchantId, status])
-  @@index([categoryId])
 }
 
 /// One consumer's purchased bundle. Created by staff "Sell Bundle" action.
-/// consumerId is nullable until consumer identity layer (Phase B) is built.
+/// consumerId is nullable until Phase B (consumer identity) is live.
 model BundleInstance {
-  id            Int       @id @default(autoincrement())
-  bundleId      Int
+  id                    Int                  @id @default(autoincrement())
+  bundleId              Int
   /// Consumer who owns this bundle. Nullable until Phase B (consumer identity) is live.
-  consumerId    Int?
-  remainingUses Int
-  expiresAt     DateTime?
-  createdAt     DateTime  @default(now())
+  consumerId            Int?
+  /// Snapshot of the rule tree at purchase time — immutable audit record.
+  originalRuleTreeJson  Json
+  /// Live state of the rule tree — mutated on each redemption tap.
+  remainingRuleTreeJson Json
+  status                BundleInstanceStatus @default(active)
+  expiresAt             DateTime?
+  createdAt             DateTime             @default(now())
 
-  bundle Bundle @relation(fields: [bundleId], references: [id])
+  bundle       Bundle                     @relation(fields: [bundleId], references: [id])
+  eventMarkers BundleInstanceEventMarker[]
 
   @@index([bundleId])
   @@index([consumerId])
+}
+
+/// Dedup table — prevents double-firing events from POS retries or network replays.
+model BundleInstanceEventMarker {
+  id               Int      @id @default(autoincrement())
+  bundleInstanceId Int
+  eventType        String   @db.VarChar(100)
+  /// Unique key per event occurrence (e.g. transactionRef + eventType)
+  eventKey         String   @db.VarChar(255)
+  emittedAt        DateTime @default(now())
+
+  bundleInstance BundleInstance @relation(fields: [bundleInstanceId], references: [id])
+
+  @@unique([bundleInstanceId, eventType, eventKey])
+  @@index([bundleInstanceId])
 }
 
 /// Immutable audit trail for every bundle change.
@@ -1059,9 +1076,9 @@ model BundleAuditLog {
   bundleId    Int
   /// null = system-initiated (e.g. auto-activate on startAt)
   actorUserId Int?
-  /// e.g. "created", "status_changed", "quantity_updated", "fields_updated"
+  /// e.g. "created", "updated", "status_changed"
   action      String   @db.VarChar(100)
-  /// JSON diff: { field: "status", from: "wip", to: "staged" } or array of changes
+  /// JSON diff of changed fields
   changes     Json?
   createdAt   DateTime @default(now())
 
@@ -1073,11 +1090,17 @@ model BundleAuditLog {
 
 /// Bundle lifecycle status.
 /// wip → staged → live → suspended → archived
-/// suspended can resume to live; archived can revert to wip for re-use.
 enum BundleStatus {
   wip        // Being built; not visible or sellable
   staged     // Scheduled; startAt set; not yet live
   live       // Active and sellable
   suspended  // Halted; existing credits still redeemable; no new sales
-  archived   // Ended; never deleted; can be re-used as new wip
+  archived   // Ended; never deleted; can be duplicated as new wip
+}
+
+/// BundleInstance lifecycle status.
+enum BundleInstanceStatus {
+  active    // Credits remaining
+  redeemed  // Fully used
+  expired   // Past expiresAt before fully used
 }

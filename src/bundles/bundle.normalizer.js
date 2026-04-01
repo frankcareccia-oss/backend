@@ -2,8 +2,11 @@
 //
 // Normalizes raw inputs into clean internal objects consumed by the engine and service.
 //
-// Phase A: handles create and patch payloads (category + quantity model).
-// Phase B/C: normalizeTransactionInput() will unify POS and manual PV payloads
+// Rule tree shape (max 2 levels deep for v1):
+//   Single product: { type:"PRODUCT", productId:1, productName:"Coffee", quantity:10 }
+//   Multi-product:  { type:"AND"|"OR", children:[ ...PRODUCT nodes ] }
+//
+// Phase B/C: normalizeTransactionInput() unifies POS and manual PV payloads
 //            into a canonical BundleTransactionInput before the engine evaluates them.
 
 // ── Date helpers ───────────────────────────────────────────────
@@ -16,14 +19,81 @@ function parseDate(raw, label) {
   return { value: d, error: null };
 }
 
+// ── Rule tree validation ───────────────────────────────────────
+
+/**
+ * Validates a rule tree node. Returns an array of error strings (empty = valid).
+ * Enforces max 2 levels: root must be PRODUCT | AND | OR;
+ * children of AND/OR must all be PRODUCT nodes.
+ */
+function validateRuleTree(tree) {
+  if (!tree || typeof tree !== "object") return ["ruleTree is required"];
+  const errors = [];
+
+  if (!["PRODUCT", "AND", "OR"].includes(tree.type))
+    return [`ruleTree.type must be PRODUCT, AND, or OR (got: ${tree.type})`];
+
+  if (tree.type === "PRODUCT") {
+    if (!Number.isInteger(Number(tree.productId)) || Number(tree.productId) < 1)
+      errors.push("PRODUCT node must have a valid productId");
+    if (!tree.productName || !String(tree.productName).trim())
+      errors.push("PRODUCT node must have a productName");
+    const qty = parseInt(tree.quantity, 10);
+    if (!Number.isInteger(qty) || qty < 1)
+      errors.push("PRODUCT node quantity must be a positive integer");
+  } else {
+    // AND / OR
+    if (!Array.isArray(tree.children) || tree.children.length < 1)
+      return [`${tree.type} node must have at least one child`];
+    if (tree.children.length > 10)
+      errors.push(`${tree.type} node cannot have more than 10 children`);
+    for (let i = 0; i < tree.children.length; i++) {
+      const child = tree.children[i];
+      if (!child || child.type !== "PRODUCT")
+        errors.push(`${tree.type}.children[${i}] must be a PRODUCT node (max 2 levels)`);
+      else {
+        if (!Number.isInteger(Number(child.productId)) || Number(child.productId) < 1)
+          errors.push(`${tree.type}.children[${i}] must have a valid productId`);
+        if (!child.productName || !String(child.productName).trim())
+          errors.push(`${tree.type}.children[${i}] must have a productName`);
+        const qty = parseInt(child.quantity, 10);
+        if (!Number.isInteger(qty) || qty < 1)
+          errors.push(`${tree.type}.children[${i}] quantity must be a positive integer`);
+      }
+    }
+  }
+
+  return errors;
+}
+
+/**
+ * Canonicalizes a rule tree: coerces types and trims strings.
+ * Call after validateRuleTree passes.
+ */
+function canonicalizeRuleTree(tree) {
+  if (tree.type === "PRODUCT") {
+    return {
+      type: "PRODUCT",
+      productId: parseInt(tree.productId, 10),
+      productName: String(tree.productName).trim(),
+      quantity: parseInt(tree.quantity, 10),
+    };
+  }
+  return {
+    type: tree.type,
+    children: tree.children.map(child => ({
+      type: "PRODUCT",
+      productId: parseInt(child.productId, 10),
+      productName: String(child.productName).trim(),
+      quantity: parseInt(child.quantity, 10),
+    })),
+  };
+}
+
 // ── Lifecycle constants ────────────────────────────────────────
 
-// States where quantity is still mutable
-const MUTABLE_QTY_STATES = ["wip", "staged"];
+const MUTABLE_RULE_STATES = ["wip", "staged"];
 
-// Valid status transitions (from → allowed tos).
-// WIP/Staged are deleted (not archived) to remove them.
-// Archived bundles are cloned via /duplicate — no status transition from archived.
 const VALID_TRANSITIONS = {
   wip:       ["staged"],
   staged:    ["wip", "live"],
@@ -39,15 +109,15 @@ const VALID_TRANSITIONS = {
  * Returns { errors: string[], input: object|null }.
  */
 function normalizeCreateInput(body) {
-  const { name, categoryId, quantity, price, startAt, endAt } = body || {};
+  const { name, price, startAt, endAt, ruleTree } = body || {};
   const errors = [];
 
   if (!name || !String(name).trim()) errors.push("name is required");
-  if (!categoryId || !Number.isInteger(Number(categoryId))) errors.push("categoryId is required");
-  const qty = parseInt(quantity, 10);
-  if (!quantity || !Number.isInteger(qty) || qty < 1) errors.push("quantity must be a positive integer");
   if (price === undefined || price === null || isNaN(Number(price)) || Number(price) < 0)
     errors.push("price must be a non-negative number");
+
+  const treeErrors = validateRuleTree(ruleTree);
+  errors.push(...treeErrors);
 
   const start = parseDate(startAt, "Start Date");
   const end   = parseDate(endAt,   "End Date");
@@ -61,12 +131,11 @@ function normalizeCreateInput(body) {
   return {
     errors: [],
     input: {
-      name:       String(name).trim(),
-      categoryId: parseInt(categoryId, 10),
-      quantity:   qty,
-      price:      Number(price),
-      startAt:    start.value,
-      endAt:      end.value,
+      name:        String(name).trim(),
+      price:       Number(price),
+      ruleTreeJson: canonicalizeRuleTree(ruleTree),
+      startAt:     start.value,
+      endAt:       end.value,
     },
   };
 }
@@ -76,10 +145,9 @@ function normalizeCreateInput(body) {
 /**
  * Validates and diffs a bundle update request body against the existing record.
  * Returns { data: object, auditChanges: array, errors: string[] }.
- * Only fields that actually changed are included in `data`.
  */
 function normalizePatchInput(body, existing) {
-  const { name, price, quantity, startAt, endAt, status } = body || {};
+  const { name, price, ruleTree, startAt, endAt, status } = body || {};
   const errors = [];
   const data = {};
   const auditChanges = [];
@@ -105,16 +173,17 @@ function normalizePatchInput(body, existing) {
     }
   }
 
-  if (quantity !== undefined) {
-    if (!MUTABLE_QTY_STATES.includes(existing.status)) {
-      errors.push(`quantity cannot be changed once a bundle is ${existing.status}`);
+  if (ruleTree !== undefined) {
+    if (!MUTABLE_RULE_STATES.includes(existing.status)) {
+      errors.push(`rule tree cannot be changed once a bundle is ${existing.status}`);
     } else {
-      const qty = parseInt(quantity, 10);
-      if (!Number.isInteger(qty) || qty < 1) {
-        errors.push("quantity must be a positive integer");
-      } else if (qty !== existing.quantity) {
-        data.quantity = qty;
-        auditChanges.push({ field: "quantity", from: existing.quantity, to: qty });
+      const treeErrors = validateRuleTree(ruleTree);
+      if (treeErrors.length) {
+        errors.push(...treeErrors);
+      } else {
+        const canonical = canonicalizeRuleTree(ruleTree);
+        data.ruleTreeJson = canonical;
+        auditChanges.push({ field: "ruleTree", from: existing.ruleTreeJson, to: canonical });
       }
     }
   }
@@ -168,9 +237,6 @@ function normalizePatchInput(body, existing) {
  * Phase B/C: normalizes a raw POS or manual PV payload into a canonical
  * BundleTransactionInput before the engine evaluates it.
  *
- * Both integrated POS and manual PV flows must produce identical output
- * from this function — the engine must never see the source mode.
- *
  * Expected shape (Phase B/C):
  *   {
  *     sourceMode: 'integrated_pos' | 'manual_pv'
@@ -190,6 +256,8 @@ module.exports = {
   normalizeCreateInput,
   normalizePatchInput,
   normalizeTransactionInput,
+  validateRuleTree,
+  canonicalizeRuleTree,
   VALID_TRANSITIONS,
-  MUTABLE_QTY_STATES,
+  MUTABLE_RULE_STATES,
 };

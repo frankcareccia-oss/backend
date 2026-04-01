@@ -18,7 +18,7 @@ const normalizer     = require("./bundle.normalizer");
 const engine         = require("./bundle.engine");
 const events         = require("./bundle.events");
 
-const BUNDLE_INCLUDE = { category: true };
+const BUNDLE_INCLUDE = {};
 
 function formatBundle(b) {
   return {
@@ -36,12 +36,6 @@ async function logAudit(bundleId, actorUserId, action, changes) {
     // Audit log failure must never break the main operation
     console.error("[bundle.audit] Failed to write audit log:", e?.message);
   }
-}
-
-async function verifyCategoryMerchant(categoryId, merchantId) {
-  return prisma.productCategory.findFirst({
-    where: { id: categoryId, merchantId, status: "active" },
-  });
 }
 
 // ── List ───────────────────────────────────────────────────────
@@ -66,18 +60,14 @@ async function createBundle(merchantId, body, actorUserId, actorRole) {
   const { errors, input } = normalizer.normalizeCreateInput(body);
   if (errors.length) return { errors };
 
-  const cat = await verifyCategoryMerchant(input.categoryId, merchantId);
-  if (!cat) return { errors: ["Category not found or inactive"] };
-
   const bundle = await prisma.bundle.create({
     data: { merchantId, ...input, status: "wip" },
     include: BUNDLE_INCLUDE,
   });
 
   await logAudit(bundle.id, actorUserId, "created", {
-    name: bundle.name, categoryId: input.categoryId,
-    quantity: bundle.quantity, price: Number(bundle.price),
-    startAt: input.startAt, endAt: input.endAt, status: "wip",
+    name: bundle.name, ruleTree: input.ruleTreeJson,
+    price: Number(bundle.price), startAt: input.startAt, endAt: input.endAt, status: "wip",
   });
 
   events.onBundleCreated({ merchantId, bundleId: bundle.id, actorUserId, actorRole });
@@ -127,10 +117,7 @@ async function deleteBundle(merchantId, bundleId, actorUserId, actorRole) {
 // ── Duplicate ──────────────────────────────────────────────────
 
 async function duplicateBundle(merchantId, bundleId, actorUserId, actorRole) {
-  const existing = await prisma.bundle.findFirst({
-    where: { id: bundleId, merchantId },
-    include: { category: true },
-  });
+  const existing = await prisma.bundle.findFirst({ where: { id: bundleId, merchantId } });
   if (!existing) return { notFound: true };
   if (existing.status !== "archived")
     return { invalidState: "Only archived bundles can be duplicated" };
@@ -138,21 +125,20 @@ async function duplicateBundle(merchantId, bundleId, actorUserId, actorRole) {
   const clone = await prisma.bundle.create({
     data: {
       merchantId,
-      categoryId: existing.categoryId,
-      name:       existing.name,
-      quantity:   existing.quantity,
-      price:      existing.price,
-      startAt:    null,
-      endAt:      null,
-      status:     "wip",
+      name:         existing.name,
+      ruleTreeJson: existing.ruleTreeJson,
+      price:        existing.price,
+      startAt:      null,
+      endAt:        null,
+      status:       "wip",
     },
-    include: { category: true },
+    include: BUNDLE_INCLUDE,
   });
 
   await logAudit(clone.id, actorUserId, "created", {
     duplicatedFromBundleId: bundleId,
-    name: clone.name, categoryId: clone.categoryId,
-    quantity: clone.quantity, price: Number(clone.price), status: "wip",
+    name: clone.name, ruleTree: clone.ruleTreeJson,
+    price: Number(clone.price), status: "wip",
   });
 
   events.onBundleDuplicated({
