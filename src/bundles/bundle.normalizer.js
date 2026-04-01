@@ -47,13 +47,18 @@ function validateRuleTree(tree) {
       return [`${tree.type} node must have at least one child`];
     if (tree.children.length > 10)
       errors.push(`${tree.type} node cannot have more than 10 children`);
+    const seenIds = new Set();
     for (let i = 0; i < tree.children.length; i++) {
       const child = tree.children[i];
-      if (!child || child.type !== "PRODUCT")
+      if (!child || child.type !== "PRODUCT") {
         errors.push(`${tree.type}.children[${i}] must be a PRODUCT node (max 2 levels)`);
-      else {
+      } else {
         if (!Number.isInteger(Number(child.productId)) || Number(child.productId) < 1)
           errors.push(`${tree.type}.children[${i}] must have a valid productId`);
+        else if (seenIds.has(Number(child.productId)))
+          errors.push(`Product appears more than once in the bundle — each product can only be added once`);
+        else
+          seenIds.add(Number(child.productId));
         if (!child.productName || !String(child.productName).trim())
           errors.push(`${tree.type}.children[${i}] must have a productName`);
         const qty = parseInt(child.quantity, 10);
