@@ -623,6 +623,10 @@ app.use(bundleRouter);
 const promoRouter = require("./src/promo/promo.routes");
 app.use(promoRouter);
 
+// Reporting (Thread R)
+const reportingRouter = require("./src/reporting/reporting.routes");
+app.use(reportingRouter);
+
 // Consumer identity (Thread 2)
 registerConsumersRoutes(app, {
   prisma,

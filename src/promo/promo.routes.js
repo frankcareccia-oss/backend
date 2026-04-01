@@ -348,6 +348,7 @@ router.get(
         where,
         include: {
           items: { include: { promoItem: { include: { skus: true } } } },
+          category: true,
         },
         orderBy: { id: "asc" },
       });
@@ -379,6 +380,7 @@ router.get(
         where: { id: promotionId, merchantId: req.merchantId },
         include: {
           items: { include: { promoItem: { include: { skus: true } } } },
+          category: true,
         },
       });
       if (!promotion) return sendError(res, 404, "NOT_FOUND", "Promotion not found");
@@ -401,6 +403,7 @@ router.post(
         name, description,
         mechanic, earnPerUnit, threshold, maxGrantsPerVisit,
         rewardType, rewardValue, rewardSku, rewardNote,
+        categoryId,
         promoItemIds,
         startAt, endAt,
       } = req.body || {};
@@ -457,6 +460,7 @@ router.post(
           rewardValue: rewardValue ?? null,
           rewardSku: rewardSku ? String(rewardSku).trim() : null,
           rewardNote: rewardNote ? String(rewardNote).trim() : null,
+          categoryId: categoryId ? parseInt(categoryId, 10) : null,
           status: "active",
           startAt: startAt ? new Date(startAt) : null,
           endAt: endAt ? new Date(endAt) : null,
@@ -466,6 +470,7 @@ router.post(
         },
         include: {
           items: { include: { promoItem: { include: { skus: true } } } },
+          category: true,
         },
       });
 
@@ -504,6 +509,7 @@ router.patch(
         name, description, status,
         threshold, maxGrantsPerVisit,
         rewardType, rewardValue, rewardSku, rewardNote,
+        categoryId,
         promoItemIds,
         startAt, endAt,
       } = req.body || {};
@@ -554,6 +560,7 @@ router.patch(
       }
       if (startAt !== undefined) data.startAt = startAt ? new Date(startAt) : null;
       if (endAt !== undefined) data.endAt = endAt ? new Date(endAt) : null;
+      if (categoryId !== undefined) data.categoryId = categoryId ? parseInt(categoryId, 10) : null;
 
       let itemOps;
       if (promoItemIds !== undefined) {
@@ -580,6 +587,7 @@ router.patch(
         data: { ...data, ...(itemOps ? { items: itemOps } : {}) },
         include: {
           items: { include: { promoItem: { include: { skus: true } } } },
+          category: true,
         },
       });
 
@@ -1084,7 +1092,7 @@ router.get("/admin/merchants/:merchantId/promotions", requireJwt, requireAdmin, 
     if (VALID_PROMO_STATUSES.includes(status)) where.status = status;
     const promotions = await prisma.promotion.findMany({
       where,
-      include: { items: { include: { promoItem: { include: { skus: true } } } } },
+      include: { items: { include: { promoItem: { include: { skus: true } } } }, category: true },
       orderBy: { id: "asc" },
     });
     return res.json({ promotions });
@@ -1095,7 +1103,7 @@ router.post("/admin/merchants/:merchantId/promotions", requireJwt, requireAdmin,
   const merchantId = parseIntParam(req.params.merchantId);
   if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantId");
   try {
-    const { name, description, mechanic, earnPerUnit, threshold, maxGrantsPerVisit, rewardType, rewardValue, rewardSku, rewardNote, promoItemIds, startAt, endAt } = req.body || {};
+    const { name, description, mechanic, earnPerUnit, threshold, maxGrantsPerVisit, rewardType, rewardValue, rewardSku, rewardNote, categoryId, promoItemIds, startAt, endAt } = req.body || {};
     if (!name || !String(name).trim()) return sendError(res, 400, "VALIDATION_ERROR", "name is required");
     if (!VALID_MECHANICS.includes(mechanic)) return sendError(res, 400, "VALIDATION_ERROR", `mechanic must be one of: ${VALID_MECHANICS.join(", ")}`);
     if (!Number.isInteger(threshold) || threshold < 1) return sendError(res, 400, "VALIDATION_ERROR", "threshold must be a positive integer");
@@ -1122,12 +1130,13 @@ router.post("/admin/merchants/:merchantId/promotions", requireJwt, requireAdmin,
         rewardType, rewardValue: rewardValue ?? null,
         rewardSku: rewardSku ? String(rewardSku).trim() : null,
         rewardNote: rewardNote ? String(rewardNote).trim() : null,
+        categoryId: categoryId ? parseInt(categoryId, 10) : null,
         status: "active",
         startAt: startAt ? new Date(startAt) : null,
         endAt: endAt ? new Date(endAt) : null,
         items: { create: itemIds.map((id) => ({ promoItemId: id })) },
       },
-      include: { items: { include: { promoItem: { include: { skus: true } } } } },
+      include: { items: { include: { promoItem: { include: { skus: true } } } }, category: true },
     });
     emitPvHook("promo.promotion.created", { tc: "TC-PROMO-PROMO-CREATE-ADMIN-01", sev: "info", stable: "promo:promotion:created", merchantId, promotionId: promotion.id, promotionName: promotion.name, mechanic, rewardType, threshold, actorUserId: req.userId, actorRole: "pv_admin" });
     return res.status(201).json({ promotion });
@@ -1142,7 +1151,7 @@ router.patch("/admin/merchants/:merchantId/promotions/:promotionId", requireJwt,
     const existing = await prisma.promotion.findFirst({ where: { id: promotionId, merchantId } });
     if (!existing) return sendError(res, 404, "NOT_FOUND", "Promotion not found");
     if (existing.status === "archived") return sendError(res, 409, "ARCHIVED", "Cannot update an archived Promotion");
-    const { name, description, status, threshold, maxGrantsPerVisit, rewardType, rewardValue, rewardSku, rewardNote, promoItemIds, startAt, endAt } = req.body || {};
+    const { name, description, status, threshold, maxGrantsPerVisit, rewardType, rewardValue, rewardSku, rewardNote, categoryId, promoItemIds, startAt, endAt } = req.body || {};
     const data = {};
     if (name !== undefined) { if (!String(name).trim()) return sendError(res, 400, "VALIDATION_ERROR", "name cannot be empty"); data.name = String(name).trim(); }
     if (description !== undefined) data.description = description ? String(description).trim() : null;
@@ -1152,6 +1161,7 @@ router.patch("/admin/merchants/:merchantId/promotions/:promotionId", requireJwt,
     if (rewardValue !== undefined) data.rewardValue = rewardValue ?? null;
     if (rewardSku !== undefined) data.rewardSku = rewardSku ? String(rewardSku).trim() : null;
     if (rewardNote !== undefined) data.rewardNote = rewardNote ? String(rewardNote).trim() : null;
+    if (categoryId !== undefined) data.categoryId = categoryId ? parseInt(categoryId, 10) : null;
     if (startAt !== undefined) data.startAt = startAt ? new Date(startAt) : null;
     if (endAt !== undefined) data.endAt = endAt ? new Date(endAt) : null;
     let itemOps;
@@ -1167,7 +1177,7 @@ router.patch("/admin/merchants/:merchantId/promotions/:promotionId", requireJwt,
     const promotion = await prisma.promotion.update({
       where: { id: promotionId },
       data: { ...data, ...(itemOps ? { items: itemOps } : {}) },
-      include: { items: { include: { promoItem: { include: { skus: true } } } } },
+      include: { items: { include: { promoItem: { include: { skus: true } } } }, category: true },
     });
     emitPvHook("promo.promotion.updated", { tc: "TC-PROMO-PROMO-UPDATE-ADMIN-01", sev: "info", stable: "promo:promotion:updated", merchantId, promotionId: promotion.id, actorUserId: req.userId, actorRole: "pv_admin" });
     return res.json({ promotion });
