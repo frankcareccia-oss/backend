@@ -17,6 +17,7 @@ const { prisma }     = require("../db/prisma");
 const normalizer     = require("./bundle.normalizer");
 const engine         = require("./bundle.engine");
 const events         = require("./bundle.events");
+const { safeNormalizePhone } = require("../consumers/consumers.service");
 
 const BUNDLE_INCLUDE = {};
 
@@ -162,20 +163,191 @@ async function getAuditLog(merchantId, bundleId) {
   return { logs };
 }
 
-// ── Engine passthroughs (Phase B/C) ───────────────────────────
-//
-// Routes will call these once consumer identity and POS transaction
-// payloads exist. The normalizer converts the raw payload; the engine
-// evaluates it; the service persists the result and fires events.
+// ── Phase C — POS sell / redeem ───────────────────────────────
 
-async function previewRedemption(rawInput, instance) {
-  const transactionInput = normalizer.normalizeTransactionInput(rawInput);
-  return engine.preview(transactionInput, instance);
+/**
+ * List live bundles for a merchant (POS sell screen).
+ */
+async function listLiveBundlesForMerchant(merchantId) {
+  const bundles = await prisma.bundle.findMany({
+    where: { merchantId, status: "live" },
+    orderBy: { name: "asc" },
+  });
+  return { bundles: bundles.map(formatBundle) };
 }
 
-async function consumeRedemption(rawInput, instance) {
-  const transactionInput = normalizer.normalizeTransactionInput(rawInput);
-  return engine.consume(transactionInput, instance);
+/**
+ * Look up a consumer by phone (E164 or raw) or email.
+ * Returns { consumer } or { notFound: true }.
+ */
+async function lookupConsumer(identifier) {
+  if (!identifier) return { notFound: true };
+  const s = String(identifier).trim();
+
+  // Normalize phone properly (handles country codes, formatting)
+  const normalized = safeNormalizePhone(s);
+  const digits = s.replace(/[^\d]/g, "");
+  const wherePhone = normalized
+    ? [{ phoneE164: normalized.e164 }]
+    : digits.length >= 10
+      ? [{ phoneE164: `+${digits}` }, { phoneE164: s }]
+      : [];
+
+  const consumer = await prisma.consumer.findFirst({
+    where: {
+      OR: [
+        { email: s },
+        ...wherePhone,
+      ],
+      status: "active",
+    },
+    select: { id: true, email: true, firstName: true, lastName: true, phoneE164: true, phoneRaw: true },
+  });
+
+  return consumer ? { consumer } : { notFound: true };
+}
+
+/**
+ * List active BundleInstances for a consumer, scoped to a merchant.
+ */
+async function listConsumerBundleInstances(consumerId, merchantId) {
+  const instances = await prisma.bundleInstance.findMany({
+    where: { consumerId, status: "active", bundle: { merchantId } },
+    include: {
+      bundle: { select: { id: true, name: true, price: true } },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+
+  return {
+    instances: instances.map((inst) => ({
+      ...inst,
+      remaining: engine.describeRemaining(inst),
+    })),
+  };
+}
+
+/**
+ * Sell a bundle — creates a BundleInstance for a consumer.
+ * consumerId is optional (anonymous sale supported).
+ */
+async function sellBundle(merchantId, storeId, bundleId, consumerId, actorUserId) {
+  const bundle = await prisma.bundle.findFirst({
+    where: { id: bundleId, merchantId, status: "live" },
+  });
+  if (!bundle) return { notFound: true };
+
+  if (consumerId) {
+    const consumer = await prisma.consumer.findUnique({
+      where: { id: consumerId },
+      select: { id: true, status: true },
+    });
+    if (!consumer || consumer.status !== "active") {
+      return { errors: ["Consumer not found or inactive"] };
+    }
+  }
+
+  const instance = await prisma.bundleInstance.create({
+    data: {
+      bundleId,
+      consumerId: consumerId || null,
+      storeId: storeId || null,
+      soldByUserId: actorUserId || null,
+      originalRuleTreeJson: bundle.ruleTreeJson,
+      remainingRuleTreeJson: bundle.ruleTreeJson,
+      status: "active",
+    },
+    include: { bundle: { select: { id: true, name: true, price: true } } },
+  });
+
+  await logAudit(bundleId, actorUserId, "sold", {
+    instanceId: instance.id,
+    consumerId: consumerId || null,
+    storeId: storeId || null,
+    price: Number(bundle.price),
+  });
+
+  return {
+    instance: { ...instance, remaining: engine.describeRemaining(instance) },
+  };
+}
+
+/**
+ * Redeem one set from a bundle instance (simple mode).
+ * idempotencyKey prevents double-redeem on network retry.
+ */
+async function redeemBundleInstance(instanceId, merchantId, actorUserId, idempotencyKey) {
+  const instance = await prisma.bundleInstance.findFirst({
+    where: { id: instanceId, bundle: { merchantId } },
+    include: { bundle: { select: { id: true, name: true, merchantId: true } } },
+  });
+
+  if (!instance) return { notFound: true };
+  if (instance.status !== "active") {
+    return { invalidState: `Bundle instance is already ${instance.status}` };
+  }
+
+  // Idempotency check
+  if (idempotencyKey) {
+    const existing = await prisma.bundleInstanceEventMarker.findUnique({
+      where: {
+        bundleInstanceId_eventType_eventKey: {
+          bundleInstanceId: instanceId,
+          eventType: "redeem",
+          eventKey: String(idempotencyKey),
+        },
+      },
+    });
+    if (existing) {
+      return { instance: { ...instance, remaining: engine.describeRemaining(instance) }, idempotent: true };
+    }
+  }
+
+  const result = engine.consume(instance);
+  if (!result.success) {
+    return { invalidState: "Bundle instance has no remaining uses" };
+  }
+
+  const now = new Date();
+  const ops = [
+    prisma.bundleInstance.update({
+      where: { id: instanceId },
+      data: {
+        remainingRuleTreeJson: result.updatedRemaining,
+        status: result.status,
+        ...(result.status === "redeemed" ? { redeemedAt: now } : {}),
+      },
+      include: { bundle: { select: { id: true, name: true } } },
+    }),
+  ];
+  if (idempotencyKey) {
+    ops.push(
+      prisma.bundleInstanceEventMarker.create({
+        data: { bundleInstanceId: instanceId, eventType: "redeem", eventKey: String(idempotencyKey) },
+      })
+    );
+  }
+
+  const [updated] = await prisma.$transaction(ops);
+
+  await logAudit(instance.bundle.id, actorUserId, "redeemed", {
+    instanceId,
+    newStatus: result.status,
+    idempotencyKey: idempotencyKey || null,
+  });
+
+  return { instance: { ...updated, remaining: engine.describeRemaining(updated) } };
+}
+
+/**
+ * Preview a redemption (dry-run, no DB write).
+ */
+async function previewRedemption(instanceId, merchantId) {
+  const instance = await prisma.bundleInstance.findFirst({
+    where: { id: instanceId, bundle: { merchantId } },
+  });
+  if (!instance) return { notFound: true };
+  return engine.preview(instance);
 }
 
 module.exports = {
@@ -185,6 +357,11 @@ module.exports = {
   deleteBundle,
   duplicateBundle,
   getAuditLog,
+  // Phase C
+  listLiveBundlesForMerchant,
+  lookupConsumer,
+  listConsumerBundleInstances,
+  sellBundle,
+  redeemBundleInstance,
   previewRedemption,
-  consumeRedemption,
 };
