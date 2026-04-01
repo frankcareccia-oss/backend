@@ -52,7 +52,15 @@ function registerConsumersRoutes(app, { prisma, sendError, requireJwt, emitPvHoo
         consumerId: result.consumer.id,
       });
 
-      return res.json({ found: true, consumer: result.consumer });
+      return res.json({
+        found: true,
+        consumer: result.consumer,
+        visitCount: result.visitCount,
+        lastVisitAt: result.lastVisitAt,
+        promotionProgress: result.promotionProgress,
+        rewardEarned: result.rewardEarned,
+        rewardLabel: result.rewardLabel,
+      });
     } catch (e) {
       emitPvHook("consumer.lookup.failed.api", {
         tc: "TC-CONS-04",

@@ -21,6 +21,57 @@ function safeNormalizePhone(input, defaultCountry = "US") {
 }
 
 /**
+ * Fetch the primary active promotion for a merchant and the consumer's progress on it.
+ * Returns promotionProgress / rewardEarned / rewardLabel, or nulls if no active promo.
+ */
+async function fetchPromoProgress(prisma, consumerId, merchantId) {
+  const promotions = await prisma.promotion.findMany({
+    where: { merchantId, status: "active" },
+    orderBy: { createdAt: "asc" },
+    take: 1,
+    select: {
+      id: true,
+      name: true,
+      threshold: true,
+      rewardType: true,
+      rewardValue: true,
+      rewardNote: true,
+    },
+  });
+
+  if (!promotions.length) return { promotionProgress: null, rewardEarned: false, rewardLabel: null };
+
+  const promo = promotions[0];
+
+  const prog = await prisma.consumerPromoProgress.findUnique({
+    where: { consumerId_promotionId: { consumerId, promotionId: promo.id } },
+    select: { stampCount: true, milestonesAvailable: true },
+  });
+
+  const current = prog?.stampCount ?? 0;
+  const rewardEarned = (prog?.milestonesAvailable ?? 0) > 0;
+
+  let rewardLabel = promo.name;
+  if (promo.rewardType === "discount_pct" && promo.rewardValue) {
+    rewardLabel = `${promo.rewardValue}% off`;
+  } else if (promo.rewardType === "discount_fixed" && promo.rewardValue) {
+    rewardLabel = `$${(promo.rewardValue / 100).toFixed(2)} off`;
+  } else if (promo.rewardNote) {
+    rewardLabel = promo.rewardNote;
+  }
+
+  return {
+    promotionProgress: {
+      current,
+      target: promo.threshold,
+      label: `${promo.name}: ${current} / ${promo.threshold}`,
+    },
+    rewardEarned,
+    rewardLabel,
+  };
+}
+
+/**
  * Look up a consumer by phone number.
  * Returns the consumer record or null if not found.
  * Pass merchantId to also return visit stats for that merchant.
@@ -73,7 +124,18 @@ async function lookupByPhone(prisma, phone, { merchantId, storeId } = {}) {
     lastVisitAt = stats._max.createdAt ?? null;
   }
 
-  return { found: true, consumer, visitCount, lastVisitAt };
+  let promotionProgress = null;
+  let rewardEarned = false;
+  let rewardLabel = null;
+
+  if (resolvedMerchantId) {
+    const promoData = await fetchPromoProgress(prisma, consumer.id, resolvedMerchantId);
+    promotionProgress = promoData.promotionProgress;
+    rewardEarned = promoData.rewardEarned;
+    rewardLabel = promoData.rewardLabel;
+  }
+
+  return { found: true, consumer, visitCount, lastVisitAt, promotionProgress, rewardEarned, rewardLabel };
 }
 
 /**
@@ -151,4 +213,4 @@ async function createConsumer(prisma, { phone, firstName, lastName, email, merch
   return { consumer, created };
 }
 
-module.exports = { lookupByPhone, createConsumer, safeNormalizePhone };
+module.exports = { lookupByPhone, createConsumer, safeNormalizePhone, fetchPromoProgress };
