@@ -23,8 +23,9 @@ function safeNormalizePhone(input, defaultCountry = "US") {
 /**
  * Look up a consumer by phone number.
  * Returns the consumer record or null if not found.
+ * Pass merchantId to also return visit stats for that merchant.
  */
-async function lookupByPhone(prisma, phone) {
+async function lookupByPhone(prisma, phone, { merchantId, storeId } = {}) {
   const normalized = safeNormalizePhone(phone);
   if (!normalized) return { error: "invalid_phone" };
 
@@ -45,7 +46,34 @@ async function lookupByPhone(prisma, phone) {
   if (!consumer) return { found: false, e164: normalized.e164 };
   if (consumer.status === "archived") return { found: false, e164: normalized.e164 };
 
-  return { found: true, consumer };
+  // Visit stats scoped to merchant (merchantId direct, or inferred from storeId)
+  let visitCount = null;
+  let lastVisitAt = null;
+  let resolvedMerchantId = merchantId ? Number(merchantId) : null;
+
+  if (!resolvedMerchantId && storeId) {
+    const store = await prisma.store.findUnique({
+      where: { id: Number(storeId) },
+      select: { merchantId: true },
+    });
+    resolvedMerchantId = store?.merchantId ?? null;
+  }
+
+  if (resolvedMerchantId) {
+    const stats = await prisma.visit.aggregate({
+      where: {
+        consumerId: consumer.id,
+        merchantId: resolvedMerchantId,
+        status: { not: "abandoned" },
+      },
+      _count: { id: true },
+      _max: { createdAt: true },
+    });
+    visitCount = stats._count.id ?? 0;
+    lastVisitAt = stats._max.createdAt ?? null;
+  }
+
+  return { found: true, consumer, visitCount, lastVisitAt };
 }
 
 /**

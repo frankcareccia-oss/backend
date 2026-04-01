@@ -23,11 +23,14 @@ function registerConsumersRoutes(app, { prisma, sendError, requireJwt, emitPvHoo
       stable: "consumer:lookup",
     });
 
-    const { phone } = req.body || {};
+    const { phone, merchantId, storeId } = req.body || {};
     if (!phone) return sendError(res, 400, "VALIDATION_ERROR", "phone is required");
 
     try {
-      const result = await lookupByPhone(prisma, phone);
+      const result = await lookupByPhone(prisma, phone, {
+        merchantId: merchantId ? Number(merchantId) : null,
+        storeId: storeId ? Number(storeId) : null,
+      });
 
       if (result.error === "invalid_phone") {
         return sendError(res, 400, "VALIDATION_ERROR", "Invalid phone number");
@@ -75,7 +78,7 @@ function registerConsumersRoutes(app, { prisma, sendError, requireJwt, emitPvHoo
 
     if (!phone) return sendError(res, 400, "VALIDATION_ERROR", "phone is required");
     if (!firstName || !String(firstName).trim()) return sendError(res, 400, "VALIDATION_ERROR", "firstName is required");
-    if (!lastName || !String(lastName).trim()) return sendError(res, 400, "VALIDATION_ERROR", "lastName is required");
+    // lastName is optional — POS new-customer form may omit it
     if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "merchantId is required");
 
     try {

@@ -102,13 +102,16 @@ async function persistVisit({ ctx, body, idempotencyKey }) {
     const identifier =
       body && (body.identifier || body.email) ? String(body.identifier || body.email) : null;
 
+    const consumerId = body?.consumerId ? Number(body.consumerId) : null;
+
     await prisma.visit.create({
       data: {
         storeId: store.id,
         merchantId: store.merchantId,
-        consumerId: null,
+        consumerId,
         qrId: null,
-        source: "manual",
+        source: "pos_integrated",
+        status: consumerId ? "identified" : "pending_identity",
         metadata: {
           pos: true,
           eventType: "pos.visit",
