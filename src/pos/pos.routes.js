@@ -9,6 +9,8 @@ const { requireIdempotency } = require("./pos.idempotency");
 const posPersist = require("./pos.persist");
 const { persistVisit, persistReward } = posPersist;
 
+const { processRewardGrant } = require("./pos.reward");
+
 const posRead = require("./pos.read");
 const { getVisitByPosVisitId, getRewardById } = posRead;
 
@@ -538,7 +540,7 @@ function registerPosRoutes(app, { prisma, sendError, requireAuth }) {
         status: "active",
         suspendedAt: null,
         archivedAt: null,
-        permissionLevel: { in: ["admin", "subadmin"] },
+        permissionLevel: { in: ["store_admin", "store_subadmin", "pos_access"] },
       },
       select: {
         storeId: true,
@@ -963,6 +965,30 @@ function registerPosRoutes(app, { prisma, sendError, requireAuth }) {
         const ctx = await requirePosContext(req, res);
         if (!ctx) return;
 
+        // Phase A: process reward grant (validate eligibility, decrement progress, create PromoRedemption)
+        const consumerId = req.body?.consumerId ? Number(req.body.consumerId) : null;
+        let grantResult = null;
+
+        if (consumerId) {
+          grantResult = await processRewardGrant(prisma, {
+            consumerId,
+            merchantId: ctx.merchantId,
+            storeId: ctx.storeId,
+            associateUserId: ctx.userId,
+          });
+
+          if (grantResult.error === "no_reward_available") {
+            hook("pos.reward.failed.api", {
+              tc: "TC-POS-API-06",
+              sev: "warn",
+              stable: "pos:reward:no_reward",
+              reason: "no_reward_available",
+              consumerId,
+            });
+            return sendError(res, 422, "NO_REWARD_AVAILABLE", "No reward available for this consumer");
+          }
+        }
+
         const result = await persistReward({
           ctx: { ...ctx, pvHook: hook, at: new Date().toISOString() },
           body: req.body,
@@ -976,9 +1002,21 @@ function registerPosRoutes(app, { prisma, sendError, requireAuth }) {
           merchantId: ctx.merchantId,
           storeId: ctx.storeId,
           rewardId: result.rewardId,
+          redemptionId: grantResult?.redemptionId || null,
         });
 
-        return res.json({ ok: true, rewardId: result.rewardId, identifier: String(identifier) });
+        return res.json({
+          ok: true,
+          rewardId: result.rewardId,
+          identifier: String(identifier),
+          ...(grantResult ? {
+            success: grantResult.success,
+            redemptionId: grantResult.redemptionId,
+            consumer: grantResult.consumer,
+            reward: grantResult.reward,
+            progress: grantResult.progress,
+          } : {}),
+        });
       } catch (e) {
         hook("pos.reward.failed.api", {
           tc: "TC-POS-API-08",
@@ -990,6 +1028,206 @@ function registerPosRoutes(app, { prisma, sendError, requireAuth }) {
       }
     }
   );
+
+  // ─────────────────────────────────────────────────────────────
+  // Phase C — Bundle sell / redeem endpoints
+  // ─────────────────────────────────────────────────────────────
+
+  const bundleService = require("../bundles/bundle.service");
+
+  // GET /pos/bundles/available — live bundles for this merchant
+  router.get("/pos/bundles/available", requireAuth, async (req, res) => {
+    const hook = getHook(req);
+    try {
+      const ctx = await requirePosContext(req, res);
+      if (!ctx) return;
+
+      const result = await bundleService.listLiveBundlesForMerchant(ctx.merchantId);
+
+      hook("pos.bundles.available.api", {
+        tc: "TC-POS-BUNDLES-01",
+        sev: "info",
+        stable: `store:${ctx.storeId}`,
+        merchantId: ctx.merchantId,
+        storeId: ctx.storeId,
+        count: result.bundles.length,
+      });
+
+      return res.json(result);
+    } catch (e) {
+      hook("pos.bundles.available.failed.api", {
+        tc: "TC-POS-BUNDLES-01E",
+        sev: "error",
+        stable: "pos:bundles:available:error",
+        error: e?.message || String(e),
+      });
+      return sendError(res, 500, "SERVER_ERROR", "Failed to load bundles");
+    }
+  });
+
+  // GET /pos/bundles/consumer?identifier=<phone|email>
+  // Returns consumer info + their active bundle instances for this merchant.
+  router.get("/pos/bundles/consumer", requireAuth, async (req, res) => {
+    const hook = getHook(req);
+    try {
+      const ctx = await requirePosContext(req, res);
+      if (!ctx) return;
+
+      const identifier = String(req.query.identifier || "").trim();
+      if (!identifier) return sendError(res, 400, "VALIDATION_ERROR", "identifier query param required");
+
+      const lookup = await bundleService.lookupConsumer(identifier);
+      if (lookup.notFound) {
+        hook("pos.bundles.consumer.not_found.api", {
+          tc: "TC-POS-BUNDLES-02",
+          sev: "info",
+          stable: `store:${ctx.storeId}`,
+          merchantId: ctx.merchantId,
+        });
+        return res.json({ consumer: null, instances: [] });
+      }
+
+      const { consumer } = lookup;
+      const { instances } = await bundleService.listConsumerBundleInstances(consumer.id, ctx.merchantId);
+
+      hook("pos.bundles.consumer.found.api", {
+        tc: "TC-POS-BUNDLES-03",
+        sev: "info",
+        stable: `store:${ctx.storeId}`,
+        merchantId: ctx.merchantId,
+        consumerId: consumer.id,
+        instanceCount: instances.length,
+      });
+
+      return res.json({ consumer, instances });
+    } catch (e) {
+      hook("pos.bundles.consumer.failed.api", {
+        tc: "TC-POS-BUNDLES-03E",
+        sev: "error",
+        stable: "pos:bundles:consumer:error",
+        error: e?.message || String(e),
+      });
+      return sendError(res, 500, "SERVER_ERROR", "Consumer lookup failed");
+    }
+  });
+
+  // POST /pos/bundles/sell — sell a bundle (creates BundleInstance)
+  router.post("/pos/bundles/sell", requireAuth, async (req, res) => {
+    const hook = getHook(req);
+    try {
+      const ctx = await requirePosContext(req, res);
+      if (!ctx) return;
+
+      const bundleId = Number(req.body?.bundleId);
+      if (!Number.isInteger(bundleId) || bundleId < 1) {
+        return sendError(res, 400, "VALIDATION_ERROR", "bundleId is required");
+      }
+
+      const consumerId = req.body?.consumerId ? Number(req.body.consumerId) : null;
+      if (consumerId !== null && (!Number.isInteger(consumerId) || consumerId < 1)) {
+        return sendError(res, 400, "VALIDATION_ERROR", "consumerId must be a positive integer or omitted");
+      }
+
+      hook("pos.bundles.sell.requested.api", {
+        tc: "TC-POS-BUNDLES-04",
+        sev: "info",
+        stable: `store:${ctx.storeId}`,
+        merchantId: ctx.merchantId,
+        storeId: ctx.storeId,
+        bundleId,
+        consumerId: consumerId || null,
+      });
+
+      const result = await bundleService.sellBundle(
+        ctx.merchantId,
+        ctx.storeId,
+        bundleId,
+        consumerId,
+        ctx.userId
+      );
+
+      if (result.notFound) return sendError(res, 404, "NOT_FOUND", "Bundle not found or not available for sale");
+      if (result.errors) return sendError(res, 400, "VALIDATION_ERROR", result.errors.join("; "));
+
+      hook("pos.bundles.sell.succeeded.api", {
+        tc: "TC-POS-BUNDLES-05",
+        sev: "info",
+        stable: `store:${ctx.storeId}`,
+        merchantId: ctx.merchantId,
+        storeId: ctx.storeId,
+        bundleId,
+        instanceId: result.instance.id,
+        consumerId: consumerId || null,
+      });
+
+      return res.status(201).json(result);
+    } catch (e) {
+      hook("pos.bundles.sell.failed.api", {
+        tc: "TC-POS-BUNDLES-05E",
+        sev: "error",
+        stable: "pos:bundles:sell:error",
+        error: e?.message || String(e),
+      });
+      return sendError(res, 500, "SERVER_ERROR", "Sell failed");
+    }
+  });
+
+  // POST /pos/bundles/:instanceId/redeem — consume one set from a bundle instance
+  router.post("/pos/bundles/:instanceId/redeem", requireAuth, async (req, res) => {
+    const hook = getHook(req);
+    try {
+      const ctx = await requirePosContext(req, res);
+      if (!ctx) return;
+
+      const instanceId = Number(req.params.instanceId);
+      if (!Number.isInteger(instanceId) || instanceId < 1) {
+        return sendError(res, 400, "VALIDATION_ERROR", "Invalid instanceId");
+      }
+
+      const idempotencyKey = String(req.headers["x-idempotency-key"] || req.body?.idempotencyKey || "").trim() || null;
+
+      hook("pos.bundles.redeem.requested.api", {
+        tc: "TC-POS-BUNDLES-06",
+        sev: "info",
+        stable: `store:${ctx.storeId}`,
+        merchantId: ctx.merchantId,
+        storeId: ctx.storeId,
+        instanceId,
+        hasIdempotencyKey: Boolean(idempotencyKey),
+      });
+
+      const result = await bundleService.redeemBundleInstance(
+        instanceId,
+        ctx.merchantId,
+        ctx.userId,
+        idempotencyKey
+      );
+
+      if (result.notFound) return sendError(res, 404, "NOT_FOUND", "Bundle instance not found");
+      if (result.invalidState) return sendError(res, 409, "INVALID_STATE", result.invalidState);
+
+      hook("pos.bundles.redeem.succeeded.api", {
+        tc: "TC-POS-BUNDLES-07",
+        sev: "info",
+        stable: `store:${ctx.storeId}`,
+        merchantId: ctx.merchantId,
+        storeId: ctx.storeId,
+        instanceId,
+        newStatus: result.instance.status,
+        idempotent: Boolean(result.idempotent),
+      });
+
+      return res.json(result);
+    } catch (e) {
+      hook("pos.bundles.redeem.failed.api", {
+        tc: "TC-POS-BUNDLES-07E",
+        sev: "error",
+        stable: "pos:bundles:redeem:error",
+        error: e?.message || String(e),
+      });
+      return sendError(res, 500, "SERVER_ERROR", "Redeem failed");
+    }
+  });
 
   return { router };
 }

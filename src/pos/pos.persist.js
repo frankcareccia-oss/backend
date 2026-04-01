@@ -19,6 +19,7 @@ const path = require("path");
 const { prisma } = require("../db/prisma");
 const { eventId, visitId, rewardId } = require("./pos.ids");
 const { writeEventLog } = require("../eventlog/eventlog");
+const { accumulateStamps } = require("./pos.stamps");
 
 function emit(ctx, event, fields) {
   try {
@@ -142,6 +143,20 @@ async function persistVisit({ ctx, body, idempotencyKey }) {
       outcome: "success",
       payloadJson: { posVisitId: visId, posEventId: evtId, idempotencyKey },
     });
+
+    // Stamp accumulation — runs for identified consumers only; errors never block POS
+    if (consumerId) {
+      try {
+        await accumulateStamps(prisma, {
+          consumerId,
+          merchantId: store.merchantId,
+          storeId: store.id,
+          visitId: createdVisit.id,
+        });
+      } catch (e) {
+        console.error("[stamps] accumulateStamps threw unexpectedly:", e?.message || String(e));
+      }
+    }
 
     // Hooks (QA/Support/Doc/Chatbot surfaced via pvHook naming conventions)
     emit(ctx, "pos.visit.persisted", {
