@@ -748,8 +748,11 @@ model ProductCategory {
   merchantId Int
   merchant   Merchant      @relation(fields: [merchantId], references: [id])
 
-  name      String        @db.VarChar(200)
-  status    ProductStatus @default(active)
+  name         String              @db.VarChar(200)
+  status       ProductStatus       @default(active)
+  /// "standard" = purchase-based; "visit" = any identified store visit qualifies.
+  /// Each merchant has exactly one visit-type category (auto-created, protected from deletion).
+  categoryType ProductCategoryType @default(standard)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -758,6 +761,12 @@ model ProductCategory {
   promotions Promotion[]
 
   @@index([merchantId, status])
+  @@index([merchantId, categoryType])
+}
+
+enum ProductCategoryType {
+  standard
+  visit
 }
 
 /**

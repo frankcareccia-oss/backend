@@ -623,6 +623,11 @@ function buildMerchantRouter(deps) {
       // Auto-create BillingAccount so invoicing works immediately
       await ensureBillingAccountForMerchant(merchant.id);
 
+      // Auto-create the protected "Store Visit" category for visit-based promotions
+      await prisma.productCategory.create({
+        data: { merchantId: merchant.id, name: "Store Visit", categoryType: "visit", status: "active" },
+      });
+
       emitPvHook("admin.merchant.created", {
         actorUserId: req.userId,
         merchantId: merchant.id,

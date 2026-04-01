@@ -30,7 +30,7 @@ router.get(
 
       const categories = await prisma.productCategory.findMany({
         where,
-        orderBy: { name: "asc" },
+        orderBy: [{ categoryType: "asc" }, { name: "asc" }],
         include: { _count: { select: { products: true } } },
       });
 
@@ -99,6 +99,8 @@ router.patch(
         where: { id: categoryId, merchantId: req.merchantId },
       });
       if (!existing) return sendError(res, 404, "NOT_FOUND", "Category not found");
+      if (existing.categoryType === "visit")
+        return sendError(res, 409, "PROTECTED", "The Store Visit category cannot be modified");
       if (existing.status === "inactive")
         return sendError(res, 409, "INACTIVE", "Cannot update an inactive category");
 
@@ -158,6 +160,8 @@ router.delete(
         include: { _count: { select: { products: true } } },
       });
       if (!existing) return sendError(res, 404, "NOT_FOUND", "Category not found");
+      if (existing.categoryType === "visit")
+        return sendError(res, 409, "PROTECTED", "The Store Visit category cannot be deactivated");
       if (existing.status === "inactive")
         return sendError(res, 409, "ALREADY_INACTIVE", "Category is already inactive");
 
