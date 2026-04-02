@@ -724,7 +724,9 @@ model Product {
   name        String        @db.VarChar(200)
   description String?       @db.VarChar(1000)
   imageUrl    String?       @db.VarChar(2048)
-  status      ProductStatus @default(active)
+  /// AI-generated (and merchant-editable) compliance blurb: product description + allergen/dietary statement.
+  complianceText String?    @db.Text
+  status      ProductStatus @default(draft)
 
   // Category (v3.5 model — required for reward qualification)
   categoryId  Int?
@@ -741,6 +743,7 @@ model Product {
 }
 
 enum ProductStatus {
+  draft
   active
   inactive
 }
@@ -844,6 +847,16 @@ enum PromoStatus {
   archived
 }
 
+/// Promotion (earn rule) publication lifecycle — mirrors BundleStatus.
+/// draft → staged → active → paused → archived
+enum PromotionStatus {
+  draft      // Being configured; not visible to earn engine or consumers
+  staged     // startAt set; scheduled; visible to admins only
+  active     // Running; consumers can earn stamps
+  paused     // Temporarily halted; progress preserved
+  archived   // Ended; never deleted; can be duplicated as new draft
+}
+
 enum OfferSetStatus {
   draft
   active
@@ -932,8 +945,11 @@ model Promotion {
   /// custom only: human-readable reward description for consumer and POS.
   rewardNote  String? @db.VarChar(500)
 
+  /// AI-generated (and merchant-editable) terms & conditions shown to consumers in the detail view.
+  legalText   String? @db.Text
+
   // Lifecycle
-  status    PromoStatus @default(active)
+  status    PromotionStatus @default(draft)
   startAt   DateTime?
   endAt     DateTime?
   createdAt DateTime    @default(now())
@@ -1117,6 +1133,8 @@ model Bundle {
   status       BundleStatus @default(wip)
   /// How redemptions are applied: "simple" = one tap consumes one set of all products.
   redemptionMode String @default("simple")
+  /// AI-generated (and merchant-editable) terms & conditions shown to consumers at point of sale.
+  legalText    String?      @db.Text
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
 

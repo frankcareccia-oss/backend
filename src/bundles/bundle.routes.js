@@ -10,6 +10,8 @@ const express = require("express");
 const { sendError, handlePrismaError } = require("../utils/errors");
 const { parseIntParam } = require("../utils/helpers");
 const { requireJwt, requireAdmin, requireMerchantRole } = require("../middleware/auth");
+const { prisma } = require("../db/prisma");
+const { draftBundleTerms } = require("../utils/aiDraft");
 const service = require("./bundle.service");
 
 const router = express.Router();
@@ -118,9 +120,71 @@ router.post(
   }
 );
 
+// POST /merchant/bundles/generate-terms
+// Calls Claude to draft T&C text based on bundle parameters.
+// Merchant reviews and edits before saving with the bundle.
+router.post(
+  "/merchant/bundles/generate-terms",
+  requireJwt,
+  requireMerchantRole("owner", "merchant_admin"),
+  async (req, res) => {
+    try {
+      const { name, price, componentsDesc, startAt, endAt } = req.body || {};
+      if (!name) return sendError(res, 400, "VALIDATION_ERROR", "name is required");
+
+      const merchant = await prisma.merchant.findUnique({
+        where: { id: req.merchantId },
+        select: { name: true },
+      });
+
+      const draft = await draftBundleTerms({
+        merchantName: merchant?.name || null,
+        name, price, componentsDesc, startAt, endAt,
+      });
+
+      return res.json({ draft });
+    } catch (err) {
+      if (err.code === "AI_UNAVAILABLE") return sendError(res, 503, "AI_UNAVAILABLE", err.message);
+      console.error("[bundle generate-terms]", err?.message || err);
+      return sendError(res, 500, "AI_ERROR", "Failed to generate terms draft");
+    }
+  }
+);
+
 // ══════════════════════════════════════════════════════════════
 //  ADMIN ROUTES
 // ══════════════════════════════════════════════════════════════
+
+// POST /admin/merchants/:merchantId/bundles/generate-terms
+router.post(
+  "/admin/merchants/:merchantId/bundles/generate-terms",
+  requireJwt,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const merchantId = parseIntParam(req.params.merchantId);
+      if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantId");
+      const { name, price, componentsDesc, startAt, endAt } = req.body || {};
+      if (!name) return sendError(res, 400, "VALIDATION_ERROR", "name is required");
+
+      const merchant = await prisma.merchant.findUnique({
+        where: { id: merchantId },
+        select: { name: true },
+      });
+
+      const draft = await draftBundleTerms({
+        merchantName: merchant?.name || null,
+        name, price, componentsDesc, startAt, endAt,
+      });
+
+      return res.json({ draft });
+    } catch (err) {
+      if (err.code === "AI_UNAVAILABLE") return sendError(res, 503, "AI_UNAVAILABLE", err.message);
+      console.error("[admin bundle generate-terms]", err?.message || err);
+      return sendError(res, 500, "AI_ERROR", "Failed to generate terms draft");
+    }
+  }
+);
 
 // GET /admin/merchants/:merchantId/bundles[?status=...]
 router.get(

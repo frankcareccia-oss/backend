@@ -6,6 +6,7 @@ const { parseIntParam } = require("../utils/helpers");
 const { requireJwt, requireAdmin, requireMerchantRole } = require("../middleware/auth");
 const { emitPvHook } = require("../utils/hooks");
 const { generateSku } = require("./catalog.service");
+const { draftProductInfo } = require("../utils/aiDraft");
 
 const router = express.Router();
 
@@ -24,6 +25,18 @@ function validateImageUrl(raw) {
 }
 
 /* ---------------------------------------------------------------
+   Product status lifecycle: draft → active → inactive
+   draft:    being configured; not visible to earn engine or consumers
+   active:   live; qualifies for earn rules
+   inactive: deactivated; reactivatable
+---------------------------------------------------------------- */
+const VALID_PRODUCT_TRANSITIONS = {
+  draft:    ["active"],
+  active:   ["inactive"],
+  inactive: ["active"],
+};
+
+/* ---------------------------------------------------------------
    Resolve merchantId from JWT merchant membership.
    Caller must already have requireJwt + requireMerchantRole run.
 ---------------------------------------------------------------- */
@@ -37,7 +50,7 @@ router.get(
     try {
       const { status } = req.query;
       const where = { merchantId: req.merchantId };
-      if (status === "active" || status === "inactive") where.status = status;
+      if (status === "draft" || status === "active" || status === "inactive") where.status = status;
 
       const products = await prisma.product.findMany({
         where,
@@ -70,7 +83,7 @@ router.post(
   requireMerchantRole("owner", "merchant_admin"),
   async (req, res) => {
     try {
-      const { name, description, sku: skuInput, imageUrl, categoryId: categoryIdRaw } = req.body || {};
+      const { name, description, complianceText, sku: skuInput, imageUrl, categoryId: categoryIdRaw } = req.body || {};
 
       if (!name || !String(name).trim()) {
         return sendError(res, 400, "VALIDATION_ERROR", "name is required");
@@ -105,9 +118,10 @@ router.post(
           merchantId: req.merchantId,
           name: String(name).trim(),
           description: description ? String(description).trim() : null,
+          complianceText: complianceText ? String(complianceText).trim() : null,
           imageUrl: imageUrl ? String(imageUrl).trim() : null,
           sku,
-          status: "active",
+          status: "draft",
           categoryId,
         },
         include: { category: true },
@@ -148,7 +162,7 @@ router.patch(
       });
       if (!existing) return sendError(res, 404, "NOT_FOUND", "Product not found");
 
-      const { name, description, imageUrl, categoryId: categoryIdRaw } = req.body || {};
+      const { name, description, complianceText, imageUrl, categoryId: categoryIdRaw } = req.body || {};
       const data = {};
 
       if (name !== undefined) {
@@ -156,6 +170,7 @@ router.patch(
         data.name = String(name).trim();
       }
       if (description !== undefined) data.description = description ? String(description).trim() : null;
+      if (complianceText !== undefined) data.complianceText = complianceText ? String(complianceText).trim() : null;
       if (imageUrl !== undefined) {
         const imageUrlErr = validateImageUrl(imageUrl);
         if (imageUrlErr) return sendError(res, 400, "VALIDATION_ERROR", imageUrlErr);
@@ -220,9 +235,9 @@ router.delete(
       });
       if (!existing) return sendError(res, 404, "NOT_FOUND", "Product not found");
 
-      if (existing.status === "inactive") {
-        return sendError(res, 409, "ALREADY_INACTIVE", "Product is already inactive");
-      }
+      const deactivateAllowed = VALID_PRODUCT_TRANSITIONS[existing.status] || [];
+      if (!deactivateAllowed.includes("inactive"))
+        return sendError(res, 409, "INVALID_STATE", `Cannot deactivate a product with status "${existing.status}"`);
 
       const product = await prisma.product.update({
         where: { id: productId },
@@ -263,9 +278,9 @@ router.post(
       });
       if (!existing) return sendError(res, 404, "NOT_FOUND", "Product not found");
 
-      if (existing.status === "active") {
-        return sendError(res, 409, "ALREADY_ACTIVE", "Product is already active");
-      }
+      const reactivateAllowed = VALID_PRODUCT_TRANSITIONS[existing.status] || [];
+      if (!reactivateAllowed.includes("active"))
+        return sendError(res, 409, "INVALID_STATE", `Cannot reactivate a product with status "${existing.status}"`);
 
       const product = await prisma.product.update({
         where: { id: productId },
@@ -291,6 +306,75 @@ router.post(
   }
 );
 
+// POST /merchant/products/:productId/activate — draft → active
+router.post(
+  "/merchant/products/:productId/activate",
+  requireJwt,
+  requireMerchantRole("owner", "merchant_admin"),
+  async (req, res) => {
+    try {
+      const productId = parseIntParam(req.params.productId);
+      if (!productId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid productId");
+
+      const existing = await prisma.product.findFirst({
+        where: { id: productId, merchantId: req.merchantId },
+      });
+      if (!existing) return sendError(res, 404, "NOT_FOUND", "Product not found");
+      if (existing.status !== "draft")
+        return sendError(res, 409, "INVALID_STATE", `Only draft products can be activated (current: ${existing.status})`);
+
+      const product = await prisma.product.update({
+        where: { id: productId },
+        data: { status: "active" },
+        include: { category: true },
+      });
+
+      emitPvHook("catalog.product.activated", {
+        tc: "TC-CAT-PROD-ACTIVATE-01", sev: "info", stable: "catalog:product:activated",
+        merchantId: req.merchantId, productId: product.id, productName: product.name, sku: product.sku,
+        actorUserId: req.userId, actorRole: req.merchantRole,
+      });
+
+      return res.json({ product });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  }
+);
+
+// POST /merchant/products/generate-info
+// Calls Claude to draft a compliance blurb for a product.
+// Merchant reviews and edits before saving.
+router.post(
+  "/merchant/products/generate-info",
+  requireJwt,
+  requireMerchantRole("owner", "merchant_admin"),
+  async (req, res) => {
+    try {
+      const { productName, categoryName, description, allergens, dietaryFlags } = req.body || {};
+      if (!productName) return sendError(res, 400, "VALIDATION_ERROR", "productName is required");
+
+      const merchant = await prisma.merchant.findUnique({
+        where: { id: req.merchantId },
+        select: { name: true },
+      });
+
+      const draft = await draftProductInfo({
+        merchantName: merchant?.name || null,
+        productName, categoryName, description,
+        allergens: Array.isArray(allergens) ? allergens : [],
+        dietaryFlags: Array.isArray(dietaryFlags) ? dietaryFlags : [],
+      });
+
+      return res.json({ draft });
+    } catch (err) {
+      if (err.code === "AI_UNAVAILABLE") return sendError(res, 503, "AI_UNAVAILABLE", err.message);
+      console.error("[product generate-info]", err?.message || err);
+      return sendError(res, 500, "AI_ERROR", "Failed to generate product info draft");
+    }
+  }
+);
+
 // GET /admin/merchants/:merchantId/products — pv_admin oversight
 router.get(
   "/admin/merchants/:merchantId/products",
@@ -306,7 +390,7 @@ router.get(
     try {
       const { status } = req.query;
       const where = { merchantId };
-      if (status === "active" || status === "inactive") where.status = status;
+      if (status === "draft" || status === "active" || status === "inactive") where.status = status;
 
       const products = await prisma.product.findMany({
         where,
@@ -333,7 +417,7 @@ router.post(
     if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantId");
 
     try {
-      const { name, description, sku: skuInput, imageUrl, categoryId: categoryIdRaw } = req.body || {};
+      const { name, description, complianceText, sku: skuInput, imageUrl, categoryId: categoryIdRaw } = req.body || {};
       if (!name || !String(name).trim()) {
         return sendError(res, 400, "VALIDATION_ERROR", "name is required");
       }
@@ -361,9 +445,10 @@ router.post(
           merchantId,
           name: String(name).trim(),
           description: description ? String(description).trim() : null,
+          complianceText: complianceText ? String(complianceText).trim() : null,
           imageUrl: imageUrl ? String(imageUrl).trim() : null,
           sku,
-          status: "active",
+          status: "draft",
           categoryId,
         },
         include: { category: true },
@@ -405,13 +490,14 @@ router.patch(
       const existing = await prisma.product.findFirst({ where: { id: productId, merchantId } });
       if (!existing) return sendError(res, 404, "NOT_FOUND", "Product not found");
 
-      const { name, description, imageUrl, categoryId: categoryIdRaw } = req.body || {};
+      const { name, description, complianceText, imageUrl, categoryId: categoryIdRaw } = req.body || {};
       const data = {};
       if (name !== undefined) {
         if (!String(name).trim()) return sendError(res, 400, "VALIDATION_ERROR", "name cannot be empty");
         data.name = String(name).trim();
       }
       if (description !== undefined) data.description = description ? String(description).trim() : null;
+      if (complianceText !== undefined) data.complianceText = complianceText ? String(complianceText).trim() : null;
       if (imageUrl !== undefined) {
         const imageUrlErr = validateImageUrl(imageUrl);
         if (imageUrlErr) return sendError(res, 400, "VALIDATION_ERROR", imageUrlErr);
@@ -469,9 +555,9 @@ router.delete(
     try {
       const existing = await prisma.product.findFirst({ where: { id: productId, merchantId } });
       if (!existing) return sendError(res, 404, "NOT_FOUND", "Product not found");
-      if (existing.status === "inactive") {
-        return sendError(res, 409, "ALREADY_INACTIVE", "Product is already inactive");
-      }
+      const adminDeactivateAllowed = VALID_PRODUCT_TRANSITIONS[existing.status] || [];
+      if (!adminDeactivateAllowed.includes("inactive"))
+        return sendError(res, 409, "INVALID_STATE", `Cannot deactivate a product with status "${existing.status}"`);
 
       const product = await prisma.product.update({
         where: { id: productId },
@@ -512,9 +598,10 @@ router.post(
     try {
       const existing = await prisma.product.findFirst({ where: { id: productId, merchantId } });
       if (!existing) return sendError(res, 404, "NOT_FOUND", "Product not found");
-      if (existing.status === "active") {
-        return sendError(res, 409, "ALREADY_ACTIVE", "Product is already active");
-      }
+      const adminReactivateAllowed = VALID_PRODUCT_TRANSITIONS[existing.status] || [];
+      if (!adminReactivateAllowed.includes("active"))
+        return sendError(res, 409, "INVALID_STATE", `Cannot reactivate a product with status "${existing.status}"`);
+
 
       const product = await prisma.product.update({
         where: { id: productId },
@@ -536,6 +623,73 @@ router.post(
       return res.json({ product });
     } catch (err) {
       return handlePrismaError(err, res);
+    }
+  }
+);
+
+// POST /admin/merchants/:merchantId/products/:productId/activate — admin draft → active
+router.post(
+  "/admin/merchants/:merchantId/products/:productId/activate",
+  requireJwt,
+  requireAdmin,
+  async (req, res) => {
+    const merchantId = parseIntParam(req.params.merchantId);
+    const productId  = parseIntParam(req.params.productId);
+    if (!merchantId || !productId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid params");
+    try {
+      const existing = await prisma.product.findFirst({ where: { id: productId, merchantId } });
+      if (!existing) return sendError(res, 404, "NOT_FOUND", "Product not found");
+      if (existing.status !== "draft")
+        return sendError(res, 409, "INVALID_STATE", `Only draft products can be activated (current: ${existing.status})`);
+
+      const product = await prisma.product.update({
+        where: { id: productId },
+        data: { status: "active" },
+        include: { category: true },
+      });
+
+      emitPvHook("catalog.product.activated", {
+        tc: "TC-CAT-PROD-ACTIVATE-ADMIN-01", sev: "info", stable: "catalog:product:activated",
+        merchantId, productId: product.id, productName: product.name, sku: product.sku,
+        actorUserId: req.userId, actorRole: "pv_admin",
+      });
+
+      return res.json({ product });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  }
+);
+
+// POST /admin/merchants/:merchantId/products/generate-info
+router.post(
+  "/admin/merchants/:merchantId/products/generate-info",
+  requireJwt,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const merchantId = parseIntParam(req.params.merchantId);
+      if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantId");
+      const { productName, categoryName, description, allergens, dietaryFlags } = req.body || {};
+      if (!productName) return sendError(res, 400, "VALIDATION_ERROR", "productName is required");
+
+      const merchant = await prisma.merchant.findUnique({
+        where: { id: merchantId },
+        select: { name: true },
+      });
+
+      const draft = await draftProductInfo({
+        merchantName: merchant?.name || null,
+        productName, categoryName, description,
+        allergens: Array.isArray(allergens) ? allergens : [],
+        dietaryFlags: Array.isArray(dietaryFlags) ? dietaryFlags : [],
+      });
+
+      return res.json({ draft });
+    } catch (err) {
+      if (err.code === "AI_UNAVAILABLE") return sendError(res, 503, "AI_UNAVAILABLE", err.message);
+      console.error("[admin product generate-info]", err?.message || err);
+      return sendError(res, 500, "AI_ERROR", "Failed to generate product info draft");
     }
   }
 );

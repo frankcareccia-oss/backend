@@ -2,9 +2,10 @@
 //
 // Normalizes raw inputs into clean internal objects consumed by the engine and service.
 //
-// Rule tree shape (max 2 levels deep for v1):
-//   Single product: { type:"PRODUCT", productId:1, productName:"Coffee", quantity:10 }
-//   Multi-product:  { type:"AND"|"OR", children:[ ...PRODUCT nodes ] }
+// Rule tree shape (max 3 levels deep):
+//   Single product:  { type:"PRODUCT", productId:1, productName:"Coffee", quantity:10 }
+//   Flat group:      { type:"AND"|"OR", children:[ ...PRODUCT nodes ] }
+//   Nested group:    { type:"AND", children:[ PRODUCT, { type:"OR", children:[PRODUCT, PRODUCT] } ] }
 //
 // Phase B/C: normalizeTransactionInput() unifies POS and manual PV payloads
 //            into a canonical BundleTransactionInput before the engine evaluates them.
@@ -23,15 +24,18 @@ function parseDate(raw, label) {
 
 /**
  * Validates a rule tree node. Returns an array of error strings (empty = valid).
- * Enforces max 2 levels: root must be PRODUCT | AND | OR;
- * children of AND/OR must all be PRODUCT nodes.
+ * Enforces max 3 levels: root may be PRODUCT | AND | OR;
+ * children of AND/OR may be PRODUCT or AND/OR (depth 1 only);
+ * grandchildren must be PRODUCT.
  */
-function validateRuleTree(tree) {
+function validateRuleTree(tree, depth) {
+  depth = depth || 0;
   if (!tree || typeof tree !== "object") return ["ruleTree is required"];
-  const errors = [];
 
   if (!["PRODUCT", "AND", "OR"].includes(tree.type))
     return [`ruleTree.type must be PRODUCT, AND, or OR (got: ${tree.type})`];
+
+  const errors = [];
 
   if (tree.type === "PRODUCT") {
     if (!Number.isInteger(Number(tree.productId)) || Number(tree.productId) < 1)
@@ -41,30 +45,58 @@ function validateRuleTree(tree) {
     const qty = parseInt(tree.quantity, 10);
     if (!Number.isInteger(qty) || qty < 1)
       errors.push("PRODUCT node quantity must be a positive integer");
-  } else {
-    // AND / OR
-    if (!Array.isArray(tree.children) || tree.children.length < 1)
-      return [`${tree.type} node must have at least one child`];
-    if (tree.children.length > 10)
-      errors.push(`${tree.type} node cannot have more than 10 children`);
-    const seenIds = new Set();
-    for (let i = 0; i < tree.children.length; i++) {
-      const child = tree.children[i];
-      if (!child || child.type !== "PRODUCT") {
-        errors.push(`${tree.type}.children[${i}] must be a PRODUCT node (max 2 levels)`);
+    return errors;
+  }
+
+  // AND / OR
+  if (!Array.isArray(tree.children) || tree.children.length < 1)
+    return [`${tree.type} node must have at least one child`];
+  if (tree.children.length > 10)
+    errors.push(`${tree.type} node cannot have more than 10 children`);
+
+  for (let i = 0; i < tree.children.length; i++) {
+    const child = tree.children[i];
+    if (!child || typeof child !== "object") {
+      errors.push(`${tree.type}.children[${i}] is not a valid node`);
+      continue;
+    }
+    if (!["PRODUCT", "AND", "OR"].includes(child.type)) {
+      errors.push(`${tree.type}.children[${i}].type must be PRODUCT, AND, or OR`);
+      continue;
+    }
+    if (child.type === "PRODUCT") {
+      if (!Number.isInteger(Number(child.productId)) || Number(child.productId) < 1)
+        errors.push(`${tree.type}.children[${i}] must have a valid productId`);
+      if (!child.productName || !String(child.productName).trim())
+        errors.push(`${tree.type}.children[${i}] must have a productName`);
+      const qty = parseInt(child.quantity, 10);
+      if (!Number.isInteger(qty) || qty < 1)
+        errors.push(`${tree.type}.children[${i}] quantity must be a positive integer`);
+    } else {
+      // Nested AND / OR — only allowed at depth 0 (max 3 levels total)
+      if (depth >= 1) {
+        errors.push(`${tree.type}.children[${i}] nesting too deep — max 3 levels`);
       } else {
-        if (!Number.isInteger(Number(child.productId)) || Number(child.productId) < 1)
-          errors.push(`${tree.type}.children[${i}] must have a valid productId`);
-        else if (seenIds.has(Number(child.productId)))
-          errors.push(`Product appears more than once in the bundle — each product can only be added once`);
-        else
-          seenIds.add(Number(child.productId));
-        if (!child.productName || !String(child.productName).trim())
-          errors.push(`${tree.type}.children[${i}] must have a productName`);
-        const qty = parseInt(child.quantity, 10);
-        if (!Number.isInteger(qty) || qty < 1)
-          errors.push(`${tree.type}.children[${i}] quantity must be a positive integer`);
+        const childErrors = validateRuleTree(child, depth + 1);
+        childErrors.forEach(e => errors.push(`children[${i}]: ${e}`));
       }
+    }
+  }
+
+  // Per-scope duplicate check: only PRODUCT children at this level (not cross-group).
+  // Each AND/OR node enforces uniqueness among its own direct PRODUCT children.
+  // The same product may appear in different nested groups (e.g. "(A or B) and (A or C)").
+  if (errors.length === 0) {
+    const seen = new Set();
+    for (const child of tree.children) {
+      if (child.type !== "PRODUCT") continue;
+      const id = Number(child.productId);
+      if (!Number.isInteger(id) || id < 1) continue;
+      if (seen.has(id)) {
+        errors.push("Product appears more than once at the same level — each product can only be added once per group");
+        break;
+      }
+      seen.add(id);
     }
   }
 
@@ -86,12 +118,7 @@ function canonicalizeRuleTree(tree) {
   }
   return {
     type: tree.type,
-    children: tree.children.map(child => ({
-      type: "PRODUCT",
-      productId: parseInt(child.productId, 10),
-      productName: String(child.productName).trim(),
-      quantity: parseInt(child.quantity, 10),
-    })),
+    children: tree.children.map(child => canonicalizeRuleTree(child)),
   };
 }
 
@@ -114,7 +141,7 @@ const VALID_TRANSITIONS = {
  * Returns { errors: string[], input: object|null }.
  */
 function normalizeCreateInput(body) {
-  const { name, price, startAt, endAt, ruleTree } = body || {};
+  const { name, price, startAt, endAt, ruleTree, legalText } = body || {};
   const errors = [];
 
   if (!name || !String(name).trim()) errors.push("name is required");
@@ -141,6 +168,7 @@ function normalizeCreateInput(body) {
       ruleTreeJson: canonicalizeRuleTree(ruleTree),
       startAt:     start.value,
       endAt:       end.value,
+      legalText:   legalText ? String(legalText).trim() : null,
     },
   };
 }
@@ -152,7 +180,7 @@ function normalizeCreateInput(body) {
  * Returns { data: object, auditChanges: array, errors: string[] }.
  */
 function normalizePatchInput(body, existing) {
-  const { name, price, ruleTree, startAt, endAt, status } = body || {};
+  const { name, price, ruleTree, startAt, endAt, status, legalText } = body || {};
   const errors = [];
   const data = {};
   const auditChanges = [];
@@ -230,6 +258,14 @@ function normalizePatchInput(body, existing) {
     } else {
       data.status = status;
       auditChanges.push({ field: "status", from: existing.status, to: status });
+    }
+  }
+
+  if (legalText !== undefined) {
+    const cleaned = legalText ? String(legalText).trim() : null;
+    if (cleaned !== (existing.legalText ?? null)) {
+      data.legalText = cleaned;
+      auditChanges.push({ field: "legalText", from: existing.legalText ?? null, to: cleaned });
     }
   }
 

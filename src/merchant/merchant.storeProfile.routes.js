@@ -110,6 +110,14 @@ function buildMerchantStoreProfileRouter(deps) {
       if (typeof b.postal === "string") data.postal = b.postal.trim();
       if (typeof b.status === "string") data.status = b.status;
 
+      // POS session timeout (merchant-configurable, 1–120 minutes)
+      if (b.posSessionTimeoutMinutes !== undefined) {
+        const t = Number(b.posSessionTimeoutMinutes);
+        if (!Number.isInteger(t) || t < 1 || t > 120)
+          return sendError(res, 400, "VALIDATION_ERROR", "posSessionTimeoutMinutes must be an integer between 1 and 120");
+        data.posSessionTimeoutMinutes = t;
+      }
+
       // Location phone (Store.*)
       if (typeof b.phoneCountry === "string") data.phoneCountry = b.phoneCountry;
       if (typeof b.phoneRaw === "string") data.phoneRaw = b.phoneRaw;

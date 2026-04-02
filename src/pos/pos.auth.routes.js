@@ -144,7 +144,8 @@ function isPosOnlyMerchantUser(user) {
   if (!mus.length) return false;
   const roles = mus.map((m) => m?.role).filter(Boolean);
   if (!roles.length) return false;
-  return roles.every((r) => r === "store_subadmin");
+  // POS associates are merchant_employee role (StorePermissionLevel pos_access checked separately)
+  return roles.every((r) => r === "merchant_employee");
 }
 
 function registerPosAuthRoutes(app, { prisma, sendError, jwt, jwtSecret, jwtExpiresIn, emitPvHook }) {
@@ -267,7 +268,7 @@ function registerPosAuthRoutes(app, { prisma, sendError, jwt, jwtSecret, jwtExpi
 
       const store = await prisma.store.findUnique({
         where: { id: targetStoreId },
-        select: { id: true, merchantId: true, status: true },
+        select: { id: true, merchantId: true, status: true, posSessionTimeoutMinutes: true },
       });
 
       if (!store) return sendError(res, 404, "NOT_FOUND", "Store not found");
@@ -309,6 +310,7 @@ function registerPosAuthRoutes(app, { prisma, sendError, jwt, jwtSecret, jwtExpi
         posSession: true,
         storeId: store.id,
         merchantId: store.merchantId,
+        sessionTimeoutMinutes: store.posSessionTimeoutMinutes ?? 5,
       });
     } catch (e) {
       hook("pos.auth.login.failed.api", {

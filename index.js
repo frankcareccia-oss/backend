@@ -545,6 +545,10 @@ app.use(
   })
 );
 
+// POS loyalty redemption (Phase B) — before global requireJwt
+const posLoyaltyRouter = require("./src/pos/pos.loyalty.routes");
+app.use(posLoyaltyRouter);
+
 // Consumer auth + wallet + promotions (Phase B) — must be before global requireJwt
 const consumerAuthRouter = require("./src/consumer/consumer.auth.routes");
 app.use(consumerAuthRouter);

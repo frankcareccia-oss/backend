@@ -16,6 +16,7 @@ const { sendError, handlePrismaError } = require("../utils/errors");
 const { parseIntParam } = require("../utils/helpers");
 const { requireJwt, requireAdmin, requireMerchantRole } = require("../middleware/auth");
 const { emitPvHook } = require("../utils/hooks");
+const { draftPromoTerms } = require("../utils/aiDraft");
 
 const router = express.Router();
 
@@ -24,7 +25,15 @@ const router = express.Router();
 const VALID_ITEM_TYPES    = ["visit", "any_purchase", "single_product", "product_bundle"];
 const VALID_MECHANICS     = ["stamps", "points"];
 const VALID_REWARD_TYPES  = ["free_item", "discount_pct", "discount_fixed", "custom"];
-const VALID_PROMO_STATUSES = ["active", "paused", "archived"];
+const VALID_PROMO_STATUSES = ["active", "paused", "archived"]; // PromoItem statuses
+const VALID_PROMOTION_STATUSES = ["draft", "staged", "active", "paused", "archived"];
+const VALID_PROMO_TRANSITIONS = {
+  draft:    ["staged", "archived"],
+  staged:   ["draft",  "active"],
+  active:   ["paused", "archived"],
+  paused:   ["active", "archived"],
+  archived: [],
+};
 const VALID_OS_SCOPES     = ["merchant", "store"];
 const VALID_OS_STATUSES   = ["draft", "active", "expired", "archived"];
 
@@ -342,7 +351,7 @@ router.get(
     try {
       const { status } = req.query;
       const where = { merchantId: req.merchantId };
-      if (VALID_PROMO_STATUSES.includes(status)) where.status = status;
+      if (VALID_PROMOTION_STATUSES.includes(status)) where.status = status;
 
       const promotions = await prisma.promotion.findMany({
         where,
@@ -400,7 +409,7 @@ router.post(
   async (req, res) => {
     try {
       const {
-        name, description,
+        name, description, legalText,
         mechanic, earnPerUnit, threshold, maxGrantsPerVisit,
         rewardType, rewardValue, rewardSku, rewardNote,
         categoryId,
@@ -452,6 +461,7 @@ router.post(
           merchantId: req.merchantId,
           name: String(name).trim(),
           description: description ? String(description).trim() : null,
+          legalText: legalText ? String(legalText).trim() : null,
           mechanic,
           earnPerUnit: earn,
           threshold,
@@ -461,7 +471,7 @@ router.post(
           rewardSku: rewardSku ? String(rewardSku).trim() : null,
           rewardNote: rewardNote ? String(rewardNote).trim() : null,
           categoryId: categoryId ? parseInt(categoryId, 10) : null,
-          status: "active",
+          status: "draft",
           startAt: startAt ? new Date(startAt) : null,
           endAt: endAt ? new Date(endAt) : null,
           items: {
@@ -488,6 +498,45 @@ router.post(
   }
 );
 
+// POST /merchant/promotions/generate-terms
+// Calls Claude to draft T&C text based on promotion parameters.
+// Merchant can review and edit before saving with the promotion.
+router.post(
+  "/merchant/promotions/generate-terms",
+  requireJwt,
+  requireMerchantRole("owner", "merchant_admin"),
+  async (req, res) => {
+    try {
+      const {
+        name, categoryName,
+        threshold, rewardType, rewardValue, rewardSku, rewardNote,
+        timeframeDays, startAt, endAt, maxGrantsPerVisit,
+      } = req.body || {};
+
+      if (!name || !threshold || !rewardType)
+        return sendError(res, 400, "VALIDATION_ERROR", "name, threshold, and rewardType are required");
+
+      const merchant = await prisma.merchant.findUnique({
+        where: { id: req.merchantId },
+        select: { name: true },
+      });
+
+      const draft = await draftPromoTerms({
+        merchantName: merchant?.name || null,
+        name, categoryName,
+        threshold, rewardType, rewardValue, rewardSku, rewardNote,
+        timeframeDays, startAt, endAt, maxGrantsPerVisit,
+      });
+
+      return res.json({ draft });
+    } catch (err) {
+      if (err.code === "AI_UNAVAILABLE") return sendError(res, 503, "AI_UNAVAILABLE", err.message);
+      console.error("[promo generate-terms]", err?.message || err);
+      return sendError(res, 500, "AI_ERROR", "Failed to generate terms draft");
+    }
+  }
+);
+
 // PATCH /merchant/promotions/:promotionId
 router.patch(
   "/merchant/promotions/:promotionId",
@@ -501,12 +550,13 @@ router.patch(
       const existing = await prisma.promotion.findFirst({
         where: { id: promotionId, merchantId: req.merchantId },
       });
+      // legalText destructured below with the rest of req.body
       if (!existing) return sendError(res, 404, "NOT_FOUND", "Promotion not found");
       if (existing.status === "archived")
         return sendError(res, 409, "ARCHIVED", "Cannot update an archived Promotion");
 
       const {
-        name, description, status,
+        name, description, legalText, status,
         threshold, maxGrantsPerVisit,
         rewardType, rewardValue, rewardSku, rewardNote,
         categoryId,
@@ -520,9 +570,15 @@ router.patch(
         data.name = String(name).trim();
       }
       if (description !== undefined) data.description = description ? String(description).trim() : null;
+      if (legalText !== undefined) data.legalText = legalText ? String(legalText).trim() : null;
       if (status !== undefined) {
-        if (!VALID_PROMO_STATUSES.includes(status))
-          return sendError(res, 400, "VALIDATION_ERROR", `status must be one of: ${VALID_PROMO_STATUSES.join(", ")}`);
+        if (!VALID_PROMOTION_STATUSES.includes(status))
+          return sendError(res, 400, "VALIDATION_ERROR", `status must be one of: ${VALID_PROMOTION_STATUSES.join(", ")}`);
+        if (status !== existing.status) {
+          const allowed = VALID_PROMO_TRANSITIONS[existing.status] || [];
+          if (!allowed.includes(status))
+            return sendError(res, 409, "INVALID_STATE", `Cannot transition from ${existing.status} to ${status}`);
+        }
         data.status = status;
       }
       if (threshold !== undefined) {
@@ -634,6 +690,61 @@ router.delete(
       });
 
       return res.json({ promotion });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  }
+);
+
+// POST /merchant/promotions/:promotionId/duplicate
+// Clones an archived promotion into a new draft. Dates cleared.
+router.post(
+  "/merchant/promotions/:promotionId/duplicate",
+  requireJwt,
+  requireMerchantRole("owner", "merchant_admin"),
+  async (req, res) => {
+    try {
+      const promotionId = parseIntParam(req.params.promotionId);
+      if (!promotionId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid promotionId");
+
+      const existing = await prisma.promotion.findFirst({
+        where: { id: promotionId, merchantId: req.merchantId },
+        include: { items: { select: { promoItemId: true } } },
+      });
+      if (!existing) return sendError(res, 404, "NOT_FOUND", "Promotion not found");
+      if (existing.status !== "archived")
+        return sendError(res, 409, "INVALID_STATE", "Only archived promotions can be duplicated");
+
+      const clone = await prisma.promotion.create({
+        data: {
+          merchantId: req.merchantId,
+          name: existing.name,
+          description: existing.description,
+          legalText: existing.legalText,
+          mechanic: existing.mechanic,
+          earnPerUnit: existing.earnPerUnit,
+          threshold: existing.threshold,
+          maxGrantsPerVisit: existing.maxGrantsPerVisit,
+          rewardType: existing.rewardType,
+          rewardValue: existing.rewardValue,
+          rewardSku: existing.rewardSku,
+          rewardNote: existing.rewardNote,
+          categoryId: existing.categoryId,
+          status: "draft",
+          startAt: null,
+          endAt: null,
+          items: { create: existing.items.map(i => ({ promoItemId: i.promoItemId })) },
+        },
+        include: { items: { include: { promoItem: { include: { skus: true } } } }, category: true },
+      });
+
+      emitPvHook("promo.promotion.duplicated", {
+        tc: "TC-PROMO-PROMO-DUP-01", sev: "info", stable: "promo:promotion:duplicated",
+        merchantId: req.merchantId, sourcePromotionId: promotionId, newPromotionId: clone.id,
+        promotionName: clone.name, actorUserId: req.userId, actorRole: req.merchantRole,
+      });
+
+      return res.status(201).json({ promotion: clone });
     } catch (err) {
       return handlePrismaError(err, res);
     }
@@ -1062,7 +1173,7 @@ router.patch("/admin/merchants/:merchantId/promo-items/:itemId", requireJwt, req
     }
     if (!Object.keys(data).length && !skuOps) return sendError(res, 400, "VALIDATION_ERROR", "No updatable fields provided");
     const item = await prisma.promoItem.update({ where: { id: itemId }, data: { ...data, ...(skuOps ? { skus: skuOps } : {}) }, include: { skus: true } });
-    emitPvHook("promo.item.updated", { tc: "TC-PROMO-ITEM-UPDATE-ADMIN-01", sev: "info", stable: "promo:item:updated", merchantId, promoItemId: item.id, actorUserId: req.userId, actorRole: "pv_admin" });
+    emitPvHook("promo.item.updated", { tc: "TC-PROMO-ITEM-UPDATE-ADMIN-01", sev: "info", stable: "promo:item:updated", merchantId, promoItemId: item.id, promoItemName: item.name, changedFields: [...Object.keys(data), ...(skuOps ? ["skus"] : [])], actorUserId: req.userId, actorRole: "pv_admin" });
     return res.json({ item });
   } catch (err) { return handlePrismaError(err, res); }
 });
@@ -1076,7 +1187,7 @@ router.delete("/admin/merchants/:merchantId/promo-items/:itemId", requireJwt, re
     if (!existing) return sendError(res, 404, "NOT_FOUND", "PromoItem not found");
     if (existing.status === "archived") return sendError(res, 409, "ALREADY_ARCHIVED", "Already archived");
     const item = await prisma.promoItem.update({ where: { id: itemId }, data: { status: "archived" }, include: { skus: true } });
-    emitPvHook("promo.item.archived", { tc: "TC-PROMO-ITEM-ARCHIVE-ADMIN-01", sev: "info", stable: "promo:item:archived", merchantId, promoItemId: item.id, actorUserId: req.userId, actorRole: "pv_admin" });
+    emitPvHook("promo.item.archived", { tc: "TC-PROMO-ITEM-ARCHIVE-ADMIN-01", sev: "info", stable: "promo:item:archived", merchantId, promoItemId: item.id, promoItemName: item.name, actorUserId: req.userId, actorRole: "pv_admin" });
     return res.json({ item });
   } catch (err) { return handlePrismaError(err, res); }
 });
@@ -1089,7 +1200,7 @@ router.get("/admin/merchants/:merchantId/promotions", requireJwt, requireAdmin, 
   try {
     const { status } = req.query;
     const where = { merchantId };
-    if (VALID_PROMO_STATUSES.includes(status)) where.status = status;
+    if (VALID_PROMOTION_STATUSES.includes(status)) where.status = status;
     const promotions = await prisma.promotion.findMany({
       where,
       include: { items: { include: { promoItem: { include: { skus: true } } } }, category: true },
@@ -1131,7 +1242,7 @@ router.post("/admin/merchants/:merchantId/promotions", requireJwt, requireAdmin,
         rewardSku: rewardSku ? String(rewardSku).trim() : null,
         rewardNote: rewardNote ? String(rewardNote).trim() : null,
         categoryId: categoryId ? parseInt(categoryId, 10) : null,
-        status: "active",
+        status: "draft",
         startAt: startAt ? new Date(startAt) : null,
         endAt: endAt ? new Date(endAt) : null,
         items: { create: itemIds.map((id) => ({ promoItemId: id })) },
@@ -1151,11 +1262,19 @@ router.patch("/admin/merchants/:merchantId/promotions/:promotionId", requireJwt,
     const existing = await prisma.promotion.findFirst({ where: { id: promotionId, merchantId } });
     if (!existing) return sendError(res, 404, "NOT_FOUND", "Promotion not found");
     if (existing.status === "archived") return sendError(res, 409, "ARCHIVED", "Cannot update an archived Promotion");
-    const { name, description, status, threshold, maxGrantsPerVisit, rewardType, rewardValue, rewardSku, rewardNote, categoryId, promoItemIds, startAt, endAt } = req.body || {};
+    const { name, description, legalText, status, threshold, maxGrantsPerVisit, rewardType, rewardValue, rewardSku, rewardNote, categoryId, promoItemIds, startAt, endAt } = req.body || {};
     const data = {};
     if (name !== undefined) { if (!String(name).trim()) return sendError(res, 400, "VALIDATION_ERROR", "name cannot be empty"); data.name = String(name).trim(); }
     if (description !== undefined) data.description = description ? String(description).trim() : null;
-    if (status !== undefined) { if (!VALID_PROMO_STATUSES.includes(status)) return sendError(res, 400, "VALIDATION_ERROR", "Invalid status"); data.status = status; }
+    if (legalText !== undefined) data.legalText = legalText ? String(legalText).trim() : null;
+    if (status !== undefined) {
+      if (!VALID_PROMOTION_STATUSES.includes(status)) return sendError(res, 400, "VALIDATION_ERROR", "Invalid status");
+      if (status !== existing.status) {
+        const allowed = VALID_PROMO_TRANSITIONS[existing.status] || [];
+        if (!allowed.includes(status)) return sendError(res, 409, "INVALID_STATE", `Cannot transition from ${existing.status} to ${status}`);
+      }
+      data.status = status;
+    }
     if (threshold !== undefined) { if (!Number.isInteger(threshold) || threshold < 1) return sendError(res, 400, "VALIDATION_ERROR", "threshold must be a positive integer"); data.threshold = threshold; }
     if (maxGrantsPerVisit !== undefined) { if (maxGrantsPerVisit !== null && (!Number.isInteger(maxGrantsPerVisit) || maxGrantsPerVisit < 1)) return sendError(res, 400, "VALIDATION_ERROR", "maxGrantsPerVisit must be a positive integer or null"); data.maxGrantsPerVisit = maxGrantsPerVisit; }
     if (rewardValue !== undefined) data.rewardValue = rewardValue ?? null;
@@ -1179,7 +1298,7 @@ router.patch("/admin/merchants/:merchantId/promotions/:promotionId", requireJwt,
       data: { ...data, ...(itemOps ? { items: itemOps } : {}) },
       include: { items: { include: { promoItem: { include: { skus: true } } } }, category: true },
     });
-    emitPvHook("promo.promotion.updated", { tc: "TC-PROMO-PROMO-UPDATE-ADMIN-01", sev: "info", stable: "promo:promotion:updated", merchantId, promotionId: promotion.id, actorUserId: req.userId, actorRole: "pv_admin" });
+    emitPvHook("promo.promotion.updated", { tc: "TC-PROMO-PROMO-UPDATE-ADMIN-01", sev: "info", stable: "promo:promotion:updated", merchantId, promotionId: promotion.id, promotionName: promotion.name, changedFields: [...Object.keys(data), ...(itemOps ? ["items"] : [])], actorUserId: req.userId, actorRole: "pv_admin" });
     return res.json({ promotion });
   } catch (err) { return handlePrismaError(err, res); }
 });
@@ -1193,8 +1312,45 @@ router.delete("/admin/merchants/:merchantId/promotions/:promotionId", requireJwt
     if (!existing) return sendError(res, 404, "NOT_FOUND", "Promotion not found");
     if (existing.status === "archived") return sendError(res, 409, "ALREADY_ARCHIVED", "Already archived");
     const promotion = await prisma.promotion.update({ where: { id: promotionId }, data: { status: "archived" } });
-    emitPvHook("promo.promotion.archived", { tc: "TC-PROMO-PROMO-ARCHIVE-ADMIN-01", sev: "info", stable: "promo:promotion:archived", merchantId, promotionId: promotion.id, actorUserId: req.userId, actorRole: "pv_admin" });
+    emitPvHook("promo.promotion.archived", { tc: "TC-PROMO-PROMO-ARCHIVE-ADMIN-01", sev: "info", stable: "promo:promotion:archived", merchantId, promotionId: promotion.id, promotionName: promotion.name, actorUserId: req.userId, actorRole: "pv_admin" });
     return res.json({ promotion });
+  } catch (err) { return handlePrismaError(err, res); }
+});
+
+router.post("/admin/merchants/:merchantId/promotions/:promotionId/duplicate", requireJwt, requireAdmin, async (req, res) => {
+  const merchantId   = parseIntParam(req.params.merchantId);
+  const promotionId  = parseIntParam(req.params.promotionId);
+  if (!merchantId || !promotionId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid params");
+  try {
+    const existing = await prisma.promotion.findFirst({
+      where: { id: promotionId, merchantId },
+      include: { items: { select: { promoItemId: true } } },
+    });
+    if (!existing) return sendError(res, 404, "NOT_FOUND", "Promotion not found");
+    if (existing.status !== "archived")
+      return sendError(res, 409, "INVALID_STATE", "Only archived promotions can be duplicated");
+
+    const clone = await prisma.promotion.create({
+      data: {
+        merchantId,
+        name: existing.name, description: existing.description, legalText: existing.legalText,
+        mechanic: existing.mechanic, earnPerUnit: existing.earnPerUnit, threshold: existing.threshold,
+        maxGrantsPerVisit: existing.maxGrantsPerVisit,
+        rewardType: existing.rewardType, rewardValue: existing.rewardValue,
+        rewardSku: existing.rewardSku, rewardNote: existing.rewardNote,
+        categoryId: existing.categoryId, status: "draft", startAt: null, endAt: null,
+        items: { create: existing.items.map(i => ({ promoItemId: i.promoItemId })) },
+      },
+      include: { items: { include: { promoItem: { include: { skus: true } } } }, category: true },
+    });
+
+    emitPvHook("promo.promotion.duplicated", {
+      tc: "TC-PROMO-PROMO-DUP-ADMIN-01", sev: "info", stable: "promo:promotion:duplicated",
+      merchantId, sourcePromotionId: promotionId, newPromotionId: clone.id,
+      promotionName: clone.name, actorUserId: req.userId, actorRole: "pv_admin",
+    });
+
+    return res.status(201).json({ promotion: clone });
   } catch (err) { return handlePrismaError(err, res); }
 });
 
@@ -1252,7 +1408,7 @@ router.post("/admin/merchants/:merchantId/offer-sets", requireJwt, requireAdmin,
         stores: { include: { store: { select: { id: true, name: true } } } },
       },
     });
-    emitPvHook("promo.offer_set.created", { tc: "TC-PROMO-OS-CREATE-ADMIN-01", sev: "info", stable: "promo:offer_set:created", merchantId, offerSetId: offerSet.id, token: offerSet.token, actorUserId: req.userId, actorRole: "pv_admin" });
+    emitPvHook("promo.offer_set.created", { tc: "TC-PROMO-OS-CREATE-ADMIN-01", sev: "info", stable: "promo:offer_set:created", merchantId, offerSetId: offerSet.id, offerSetName: offerSet.name, token: offerSet.token, promotionCount: promIds.length, actorUserId: req.userId, actorRole: "pv_admin" });
     return res.status(201).json({ offerSet });
   } catch (err) { return handlePrismaError(err, res); }
 });
@@ -1292,7 +1448,7 @@ router.patch("/admin/merchants/:merchantId/offer-sets/:offerSetId", requireJwt, 
       data: { ...data, ...(storeOps ? { stores: storeOps } : {}), ...(promoOps ? { promotions: promoOps } : {}) },
       include: { promotions: { include: { promotion: true }, orderBy: { sortOrder: "asc" } }, stores: { include: { store: { select: { id: true, name: true } } } } },
     });
-    emitPvHook("promo.offer_set.updated", { tc: "TC-PROMO-OS-UPDATE-ADMIN-01", sev: "info", stable: "promo:offer_set:updated", merchantId, offerSetId: offerSet.id, actorUserId: req.userId, actorRole: "pv_admin" });
+    emitPvHook("promo.offer_set.updated", { tc: "TC-PROMO-OS-UPDATE-ADMIN-01", sev: "info", stable: "promo:offer_set:updated", merchantId, offerSetId: offerSet.id, offerSetName: offerSet.name, changedFields: [...Object.keys(data), ...(storeOps ? ["stores"] : []), ...(promoOps ? ["promotions"] : [])], actorUserId: req.userId, actorRole: "pv_admin" });
     return res.json({ offerSet });
   } catch (err) { return handlePrismaError(err, res); }
 });
