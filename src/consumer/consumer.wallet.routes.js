@@ -1,9 +1,10 @@
 // src/consumer/consumer.wallet.routes.js
 //
-// Consumer wallet — earned entitlements + summary
-//   GET /me/summary             — stat counts for wallet chips
-//   GET /me/wallet              — list active entitlements with reward context
-//   GET /me/wallet/:id          — single entitlement detail
+// Consumer wallet — earned entitlements + summary + redemption
+//   GET  /me/summary                  — stat counts for wallet chips
+//   GET  /me/wallet                   — list entitlements with reward context
+//   GET  /me/wallet/:id               — single entitlement detail
+//   POST /me/wallet/:id/redeem-request — initiate redemption, generate token
 
 "use strict";
 
@@ -11,6 +12,7 @@ const express = require("express");
 const { prisma } = require("../db/prisma");
 const { sendError, handlePrismaError } = require("../utils/errors");
 const { requireConsumerJwt } = require("../middleware/auth");
+const { writeEventLog } = require("../eventlog/eventlog");
 
 const router = express.Router();
 
@@ -191,6 +193,67 @@ router.get("/me/wallet/:id", requireConsumerJwt, async (req, res) => {
         metadata: entitlement.metadataJson || null,
         promotion,
       },
+    });
+  } catch (err) {
+    return handlePrismaError(err, res);
+  }
+});
+
+// ──────────────────────────────────────────────
+// POST /me/wallet/:id/redeem-request
+// Consumer initiates a redemption. Generates a short token on the linked
+// PromoRedemption for the POS associate to confirm.
+// ──────────────────────────────────────────────
+router.post("/me/wallet/:id/redeem-request", requireConsumerJwt, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!id) return sendError(res, 400, "VALIDATION_ERROR", "Invalid id");
+
+    const entitlement = await prisma.entitlement.findFirst({
+      where: { id, consumerId: req.consumerId },
+    });
+    if (!entitlement) return sendError(res, 404, "NOT_FOUND", "Entitlement not found");
+    if (entitlement.status !== "active")
+      return sendError(res, 409, "NOT_REDEEMABLE", "This reward is not active");
+    if (entitlement.type !== "reward")
+      return sendError(res, 409, "NOT_SUPPORTED", "Only reward entitlements can be redeemed this way");
+
+    // Find the linked PromoRedemption
+    const redemption = await prisma.promoRedemption.findUnique({
+      where: { id: entitlement.sourceId },
+    });
+    if (!redemption)
+      return sendError(res, 500, "DATA_ERROR", "Reward record not found");
+
+    // Generate 6-char alphanumeric token (uppercase, no ambiguous chars)
+    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    const token = Array.from({ length: 6 }, () =>
+      chars[Math.floor(Math.random() * chars.length)]
+    ).join("");
+
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+    await prisma.promoRedemption.update({
+      where: { id: redemption.id },
+      data: { redemptionToken: token, redemptionTokenExpiresAt: expiresAt },
+    });
+
+    writeEventLog(prisma, {
+      eventType: "reward.redeem_requested",
+      merchantId: redemption.merchantId,
+      storeId: redemption.grantedByStoreId || 0,
+      consumerId: req.consumerId,
+      entitlementId: id,
+      source: "consumer_app",
+      outcome: "token_issued",
+      payloadJson: { token, expiresAt },
+    });
+
+    return res.json({
+      ok: true,
+      token,
+      expiresAt,
+      entitlementId: id,
     });
   } catch (err) {
     return handlePrismaError(err, res);
