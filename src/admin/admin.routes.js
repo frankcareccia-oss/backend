@@ -113,6 +113,83 @@ function buildAdminRouter(deps) {
     }
   });
 
+  // ── Platform Config ──────────────────────────────────────────────────────
+  // Known keys and their defaults. Add new settings here — they'll be seeded
+  // automatically on first GET if missing from the DB.
+  const PLATFORM_CONFIG_DEFAULTS = {
+    consumer_jwt_ttl_days:    "90",
+    consumer_otp_ttl_minutes: "15",
+  };
+
+  const PLATFORM_CONFIG_META = {
+    consumer_jwt_ttl_days:    { label: "Consumer session length (days)", type: "number", min: 1, max: 365 },
+    consumer_otp_ttl_minutes: { label: "SMS code validity (minutes)",    type: "number", min: 1, max: 60  },
+  };
+
+  // Ensure all known keys exist in DB (upsert defaults on first use)
+  async function seedPlatformConfigDefaults() {
+    for (const [key, value] of Object.entries(PLATFORM_CONFIG_DEFAULTS)) {
+      await prisma.platformConfig.upsert({
+        where: { key },
+        create: { key, value },
+        update: {},   // never overwrite an existing value
+      });
+    }
+  }
+
+  router.get("/admin/platform/config", requireAdmin, async (_req, res) => {
+    try {
+      await seedPlatformConfigDefaults();
+      const rows = await prisma.platformConfig.findMany({ orderBy: { key: "asc" } });
+      const config = {};
+      for (const r of rows) config[r.key] = r.value;
+      return res.json({ config, meta: PLATFORM_CONFIG_META });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
+  router.put("/admin/platform/config", requireAdmin, async (req, res) => {
+    try {
+      const updates = req.body || {};
+      const allowedKeys = new Set(Object.keys(PLATFORM_CONFIG_DEFAULTS));
+      const errors = {};
+
+      for (const [key, rawValue] of Object.entries(updates)) {
+        if (!allowedKeys.has(key)) { errors[key] = "Unknown config key"; continue; }
+        const meta = PLATFORM_CONFIG_META[key];
+        const val = String(rawValue ?? "").trim();
+        if (meta?.type === "number") {
+          const n = Number(val);
+          if (!Number.isInteger(n) || n < meta.min || n > meta.max) {
+            errors[key] = `Must be an integer between ${meta.min} and ${meta.max}`;
+          }
+        }
+      }
+
+      if (Object.keys(errors).length) {
+        return sendError(res, 400, "VALIDATION_ERROR", "Invalid config values", { fields: errors });
+      }
+
+      for (const [key, rawValue] of Object.entries(updates)) {
+        if (!allowedKeys.has(key)) continue;
+        await prisma.platformConfig.upsert({
+          where: { key },
+          create: { key, value: String(rawValue).trim(), updatedBy: req.userId },
+          update: { value: String(rawValue).trim(), updatedBy: req.userId },
+        });
+      }
+
+      const rows = await prisma.platformConfig.findMany({ orderBy: { key: "asc" } });
+      const config = {};
+      for (const r of rows) config[r.key] = r.value;
+      return res.json({ ok: true, config });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+  // ─────────────────────────────────────────────────────────────────────────
+
   router.get("/admin/billing-policy", requireAdmin, (_req, res) => {
     res.json(BILLING_POLICY);
   });

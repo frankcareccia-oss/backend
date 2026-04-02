@@ -16,8 +16,17 @@ const { normalizePhone } = require("../../utils/phone");
 const router = express.Router();
 
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret-change-me";
-const OTP_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const OTP_LENGTH = 6;
+
+// Read a platform config value from DB; fall back to provided default if missing.
+async function getPlatformConfig(key, defaultValue) {
+  try {
+    const row = await prisma.platformConfig.findUnique({ where: { key } });
+    return row ? row.value : defaultValue;
+  } catch {
+    return defaultValue;
+  }
+}
 
 function generateCode() {
   return String(Math.floor(100000 + Math.random() * 900000));
@@ -39,8 +48,9 @@ router.post("/consumer/auth/otp/start", async (req, res) => {
       return sendError(res, 400, "VALIDATION_ERROR", "Invalid phone number");
     }
 
+    const otpMinutes = parseInt(await getPlatformConfig("consumer_otp_ttl_minutes", "15"), 10);
     const code = generateCode();
-    const expiresAt = new Date(Date.now() + OTP_TTL_MS);
+    const expiresAt = new Date(Date.now() + otpMinutes * 60 * 1000);
 
     await prisma.consumerOtpToken.create({
       data: { phoneE164: normalized.e164, code, expiresAt },
@@ -113,7 +123,8 @@ router.post("/consumer/auth/otp/verify", async (req, res) => {
       role: "consumer",
     };
 
-    const accessToken = jwt.sign(jwtPayload, JWT_SECRET, { expiresIn: "30d" });
+    const jwtDays = parseInt(await getPlatformConfig("consumer_jwt_ttl_days", "90"), 10);
+    const accessToken = jwt.sign(jwtPayload, JWT_SECRET, { expiresIn: `${jwtDays}d` });
 
     return res.json({
       ok: true,

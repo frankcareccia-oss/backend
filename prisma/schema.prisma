@@ -1270,3 +1270,12 @@ enum EntitlementStatus {
   expired
   revoked
 }
+
+/// Platform-level configuration — editable by pv_admin via admin panel.
+/// One row per setting key; value is always stored as a string.
+model PlatformConfig {
+  key       String   @id @db.VarChar(100)
+  value     String   @db.VarChar(500)
+  updatedAt DateTime @updatedAt
+  updatedBy Int?     // userId of the pv_admin who last changed it
+}

@@ -267,4 +267,59 @@ router.delete("/me/promotions/:id/join", requireConsumerJwt, async (req, res) =>
   }
 });
 
+// ──────────────────────────────────────────────
+// POST /me/scan
+// Authenticated consumer scans a store QR code.
+// Records a Visit and optionally stores GPS coordinates in metadata
+// for future geofencing / location-based features.
+// Body: { token: string, lat?: number, lng?: number }
+// ──────────────────────────────────────────────
+router.post("/me/scan", requireConsumerJwt, async (req, res) => {
+  try {
+    const { token, lat, lng } = req.body;
+    if (!token) return sendError(res, 400, "VALIDATION_ERROR", "token is required");
+
+    const qr = await prisma.storeQr.findFirst({
+      where: { token, status: "active" },
+      include: { store: { include: { merchant: true } } },
+    });
+    if (!qr) return sendError(res, 404, "QR_NOT_FOUND", "Invalid or inactive QR code");
+
+    const store = qr.store;
+    if (store.status && store.status !== "active") {
+      return sendError(res, 409, "STORE_NOT_ACTIVE", `Store is ${store.status}`);
+    }
+    if (store.merchant?.status && store.merchant.status !== "active") {
+      return sendError(res, 409, "MERCHANT_NOT_ACTIVE", `Merchant is ${store.merchant.status}`);
+    }
+
+    const metadata = {
+      source: "consumer_app",
+      ...(lat != null && lng != null ? { lat: Number(lat), lng: Number(lng), capturedAt: new Date().toISOString() } : {}),
+    };
+
+    const visit = await prisma.visit.create({
+      data: {
+        storeId: qr.storeId,
+        qrId: qr.id,
+        consumerId: req.consumerId,
+        merchantId: store.merchantId,
+        source: "qr_scan",
+        metadata,
+      },
+    });
+
+    return res.json({
+      ok: true,
+      visitId: visit.id,
+      storeId: store.id,
+      storeName: store.name || null,
+      merchantId: store.merchantId,
+      merchantName: store.merchant?.name || null,
+    });
+  } catch (err) {
+    return handlePrismaError(err, res);
+  }
+});
+
 module.exports = router;
