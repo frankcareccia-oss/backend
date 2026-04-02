@@ -69,20 +69,19 @@ async function draftPromoTerms({
     ? `A maximum of ${maxGrantsPerVisit} reward(s) may be redeemed per visit.`
     : "";
 
-  const prompt = `You are a legal copywriter for a consumer loyalty rewards program. Write clear, plain-English Terms & Conditions for the program described below. Requirements: 5–7 sentences, under 220 words, second person ("you earn…"), no title or heading, body text only. You must include an explicit clause that ${merchantName || "the merchant"} reserves the right to modify, suspend, or cancel this program at any time without prior notice.
+  const prompt = `Write a 2-3 sentence loyalty program summary for a mobile app. Plain English, second person, no headings. Cover: how to earn, the reward, and expiry/period. End with one short sentence that the merchant may modify or cancel the program at any time.
 
-Program Name: ${name}
-Merchant: ${merchantName || "the merchant"}
-How to earn: Collect 1 stamp for ${earnDesc}
-Stamps required: ${threshold} stamps to earn ${rewardDesc}
+Program: ${name}
+Earn: 1 stamp per ${earnDesc}. Need ${threshold} stamps to earn ${rewardDesc}.
 ${windowLine}
 ${periodLine}
-${limitLine ? limitLine + "\n" : ""}
-Write the Terms & Conditions now:`;
+${limitLine}
+
+Write the summary now:`;
 
   const msg = await getClient().messages.create({
     model: MODEL,
-    max_tokens: 450,
+    max_tokens: 150,
     messages: [{ role: "user", content: prompt }],
   });
 
@@ -108,28 +107,15 @@ async function draftBundleTerms({
     ? `Valid from ${startFmt || "date of purchase"} through ${endFmt || "further notice"}.`
     : "No fixed expiry — valid until fully redeemed or the program is closed.";
 
-  const prompt = `You are a legal copywriter for a prepaid bundle credit program. Write clear, plain-English Terms & Conditions for the bundle described below. Requirements: 6–8 sentences, under 260 words, second person, no title or heading, body text only.
+  const prompt = `Write a 2-3 sentence prepaid bundle summary for a mobile app. Plain English, second person, no headings. Cover: what's included, the price, and validity. End with one short sentence that credits are non-refundable and the merchant may cancel at any time.
 
-The terms MUST explicitly address all of the following points in order:
-1. Exactly what the bundle includes (use the contents exactly as described).
-2. The purchase price.
-3. Validity period.
-4. The bundle is non-transferable and has no cash or monetary value.
-5. No refunds or exchanges after purchase.
-6. Redemption is subject to product availability at the time of the visit.
-7. ${merchantName || "The merchant"} reserves the right to suspend or cancel this program at any time; in such cases, any remaining unused balance will be handled in accordance with applicable consumer protection law.
+Bundle: ${name} — ${componentsDesc || "as described"} for ${priceDesc}. ${periodLine}
 
-Bundle Name: ${name}
-Merchant: ${merchantName || "the merchant"}
-Purchase Price: ${priceDesc}
-Contents: ${componentsDesc || "as described"}
-${periodLine}
-
-Write the Terms & Conditions now:`;
+Write the summary now:`;
 
   const msg = await getClient().messages.create({
     model: MODEL,
-    max_tokens: 550,
+    max_tokens: 150,
     messages: [{ role: "user", content: prompt }],
   });
 

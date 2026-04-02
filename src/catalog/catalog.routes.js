@@ -83,7 +83,7 @@ router.post(
   requireMerchantRole("owner", "merchant_admin"),
   async (req, res) => {
     try {
-      const { name, description, complianceText, sku: skuInput, imageUrl, categoryId: categoryIdRaw } = req.body || {};
+      const { name, description, complianceText, sku: skuInput, imageUrl, categoryId: categoryIdRaw, startAt, endAt } = req.body || {};
 
       if (!name || !String(name).trim()) {
         return sendError(res, 400, "VALIDATION_ERROR", "name is required");
@@ -123,6 +123,8 @@ router.post(
           sku,
           status: "draft",
           categoryId,
+          startAt: startAt ? new Date(startAt) : null,
+          endAt: endAt ? new Date(endAt) : null,
         },
         include: { category: true },
       });
@@ -162,7 +164,7 @@ router.patch(
       });
       if (!existing) return sendError(res, 404, "NOT_FOUND", "Product not found");
 
-      const { name, description, complianceText, imageUrl, categoryId: categoryIdRaw } = req.body || {};
+      const { name, description, complianceText, imageUrl, categoryId: categoryIdRaw, startAt, endAt, timeframeDays } = req.body || {};
       const data = {};
 
       if (name !== undefined) {
@@ -189,6 +191,9 @@ router.patch(
           data.categoryId = catId;
         }
       }
+      if (startAt !== undefined) data.startAt = startAt ? new Date(startAt) : null;
+      if (endAt !== undefined) data.endAt = endAt ? new Date(endAt) : null;
+      if (timeframeDays !== undefined) data.timeframeDays = timeframeDays ? parseInt(timeframeDays, 10) : null;
 
       if (!Object.keys(data).length) {
         return sendError(res, 400, "VALIDATION_ERROR", "No updatable fields provided");
@@ -284,7 +289,7 @@ router.post(
 
       const product = await prisma.product.update({
         where: { id: productId },
-        data: { status: "active" },
+        data: { status: "active", firstActivatedAt: existing.firstActivatedAt ?? new Date() },
       });
 
       emitPvHook("catalog.product.reactivated", {
@@ -325,7 +330,7 @@ router.post(
 
       const product = await prisma.product.update({
         where: { id: productId },
-        data: { status: "active" },
+        data: { status: "active", firstActivatedAt: existing.firstActivatedAt ?? new Date() },
         include: { category: true },
       });
 
@@ -417,7 +422,7 @@ router.post(
     if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantId");
 
     try {
-      const { name, description, complianceText, sku: skuInput, imageUrl, categoryId: categoryIdRaw } = req.body || {};
+      const { name, description, complianceText, sku: skuInput, imageUrl, categoryId: categoryIdRaw, startAt, endAt } = req.body || {};
       if (!name || !String(name).trim()) {
         return sendError(res, 400, "VALIDATION_ERROR", "name is required");
       }
@@ -450,6 +455,8 @@ router.post(
           sku,
           status: "draft",
           categoryId,
+          startAt: startAt ? new Date(startAt) : null,
+          endAt: endAt ? new Date(endAt) : null,
         },
         include: { category: true },
       });
@@ -490,7 +497,7 @@ router.patch(
       const existing = await prisma.product.findFirst({ where: { id: productId, merchantId } });
       if (!existing) return sendError(res, 404, "NOT_FOUND", "Product not found");
 
-      const { name, description, complianceText, imageUrl, categoryId: categoryIdRaw } = req.body || {};
+      const { name, description, complianceText, imageUrl, categoryId: categoryIdRaw, startAt, endAt, timeframeDays } = req.body || {};
       const data = {};
       if (name !== undefined) {
         if (!String(name).trim()) return sendError(res, 400, "VALIDATION_ERROR", "name cannot be empty");
@@ -514,6 +521,9 @@ router.patch(
           data.categoryId = catId;
         }
       }
+      if (startAt !== undefined) data.startAt = startAt ? new Date(startAt) : null;
+      if (endAt !== undefined) data.endAt = endAt ? new Date(endAt) : null;
+      if (timeframeDays !== undefined) data.timeframeDays = timeframeDays ? parseInt(timeframeDays, 10) : null;
       if (!Object.keys(data).length) {
         return sendError(res, 400, "VALIDATION_ERROR", "No updatable fields provided");
       }
@@ -602,10 +612,9 @@ router.post(
       if (!adminReactivateAllowed.includes("active"))
         return sendError(res, 409, "INVALID_STATE", `Cannot reactivate a product with status "${existing.status}"`);
 
-
       const product = await prisma.product.update({
         where: { id: productId },
-        data: { status: "active" },
+        data: { status: "active", firstActivatedAt: existing.firstActivatedAt ?? new Date() },
       });
 
       emitPvHook("catalog.product.reactivated", {
@@ -644,7 +653,7 @@ router.post(
 
       const product = await prisma.product.update({
         where: { id: productId },
-        data: { status: "active" },
+        data: { status: "active", firstActivatedAt: existing.firstActivatedAt ?? new Date() },
         include: { category: true },
       });
 

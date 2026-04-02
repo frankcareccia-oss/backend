@@ -37,6 +37,16 @@ const VALID_PROMO_TRANSITIONS = {
 const VALID_OS_SCOPES     = ["merchant", "store"];
 const VALID_OS_STATUSES   = ["draft", "active", "expired", "archived"];
 
+async function logPromoAudit(promotionId, actorUserId, action, changes) {
+  try {
+    await prisma.promoAuditLog.create({
+      data: { promotionId, actorUserId: actorUserId || null, action, changes: changes || null },
+    });
+  } catch (e) {
+    console.error("[promo.audit] Failed to write audit log:", e?.message);
+  }
+}
+
 function generateOfferSetToken() {
   // "os_" + 12 URL-safe random chars
   return "os_" + crypto.randomBytes(9).toString("base64url");
@@ -490,6 +500,7 @@ router.post(
         mechanic, rewardType, threshold,
         actorUserId: req.userId, actorRole: req.merchantRole,
       });
+      await logPromoAudit(promotion.id, req.userId, "created", null);
 
       return res.status(201).json({ promotion });
     } catch (err) {
@@ -557,7 +568,7 @@ router.patch(
 
       const {
         name, description, legalText, status,
-        threshold, maxGrantsPerVisit,
+        threshold, maxGrantsPerVisit, timeframeDays,
         rewardType, rewardValue, rewardSku, rewardNote,
         categoryId,
         promoItemIds,
@@ -578,6 +589,8 @@ router.patch(
           const allowed = VALID_PROMO_TRANSITIONS[existing.status] || [];
           if (!allowed.includes(status))
             return sendError(res, 409, "INVALID_STATE", `Cannot transition from ${existing.status} to ${status}`);
+          if (status === "active" && !existing.firstActivatedAt)
+            data.firstActivatedAt = new Date();
         }
         data.status = status;
       }
@@ -616,6 +629,7 @@ router.patch(
       }
       if (startAt !== undefined) data.startAt = startAt ? new Date(startAt) : null;
       if (endAt !== undefined) data.endAt = endAt ? new Date(endAt) : null;
+      if (timeframeDays !== undefined) data.timeframeDays = timeframeDays ? parseInt(timeframeDays, 10) : null;
       if (categoryId !== undefined) data.categoryId = categoryId ? parseInt(categoryId, 10) : null;
 
       let itemOps;
@@ -653,6 +667,7 @@ router.patch(
         changedFields: [...Object.keys(data), ...(itemOps ? ["items"] : [])],
         actorUserId: req.userId, actorRole: req.merchantRole,
       });
+      await logPromoAudit(promotionId, req.userId, data.status && data.status !== existing.status ? `status_changed:${existing.status}→${data.status}` : "updated", Object.keys(data).length ? Object.keys(data) : null);
 
       return res.json({ promotion });
     } catch (err) {
@@ -693,6 +708,27 @@ router.delete(
     } catch (err) {
       return handlePrismaError(err, res);
     }
+  }
+);
+
+// GET /merchant/promotions/:promotionId/audit
+router.get(
+  "/merchant/promotions/:promotionId/audit",
+  requireJwt,
+  requireMerchantRole("owner", "merchant_admin"),
+  async (req, res) => {
+    try {
+      const promotionId = parseIntParam(req.params.promotionId);
+      if (!promotionId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid promotionId");
+      const promo = await prisma.promotion.findFirst({ where: { id: promotionId, merchantId: req.merchantId } });
+      if (!promo) return sendError(res, 404, "NOT_FOUND", "Promotion not found");
+      const logs = await prisma.promoAuditLog.findMany({
+        where: { promotionId },
+        orderBy: { createdAt: "desc" },
+        take: 50,
+      });
+      return res.json({ logs });
+    } catch (err) { return handlePrismaError(err, res); }
   }
 );
 
@@ -1250,6 +1286,7 @@ router.post("/admin/merchants/:merchantId/promotions", requireJwt, requireAdmin,
       include: { items: { include: { promoItem: { include: { skus: true } } } }, category: true },
     });
     emitPvHook("promo.promotion.created", { tc: "TC-PROMO-PROMO-CREATE-ADMIN-01", sev: "info", stable: "promo:promotion:created", merchantId, promotionId: promotion.id, promotionName: promotion.name, mechanic, rewardType, threshold, actorUserId: req.userId, actorRole: "pv_admin" });
+    await logPromoAudit(promotion.id, req.userId, "created", null);
     return res.status(201).json({ promotion });
   } catch (err) { return handlePrismaError(err, res); }
 });
@@ -1272,6 +1309,8 @@ router.patch("/admin/merchants/:merchantId/promotions/:promotionId", requireJwt,
       if (status !== existing.status) {
         const allowed = VALID_PROMO_TRANSITIONS[existing.status] || [];
         if (!allowed.includes(status)) return sendError(res, 409, "INVALID_STATE", `Cannot transition from ${existing.status} to ${status}`);
+        if (status === "active" && !existing.firstActivatedAt)
+          data.firstActivatedAt = new Date();
       }
       data.status = status;
     }
@@ -1283,6 +1322,8 @@ router.patch("/admin/merchants/:merchantId/promotions/:promotionId", requireJwt,
     if (categoryId !== undefined) data.categoryId = categoryId ? parseInt(categoryId, 10) : null;
     if (startAt !== undefined) data.startAt = startAt ? new Date(startAt) : null;
     if (endAt !== undefined) data.endAt = endAt ? new Date(endAt) : null;
+    const { timeframeDays: tfDays } = req.body || {};
+    if (tfDays !== undefined) data.timeframeDays = tfDays ? parseInt(tfDays, 10) : null;
     let itemOps;
     if (promoItemIds !== undefined) {
       const itemIds = Array.isArray(promoItemIds) ? promoItemIds : [];
@@ -1299,6 +1340,7 @@ router.patch("/admin/merchants/:merchantId/promotions/:promotionId", requireJwt,
       include: { items: { include: { promoItem: { include: { skus: true } } } }, category: true },
     });
     emitPvHook("promo.promotion.updated", { tc: "TC-PROMO-PROMO-UPDATE-ADMIN-01", sev: "info", stable: "promo:promotion:updated", merchantId, promotionId: promotion.id, promotionName: promotion.name, changedFields: [...Object.keys(data), ...(itemOps ? ["items"] : [])], actorUserId: req.userId, actorRole: "pv_admin" });
+    await logPromoAudit(promotionId, req.userId, data.status && data.status !== existing.status ? `status_changed:${existing.status}→${data.status}` : "updated", Object.keys(data).length ? Object.keys(data) : null);
     return res.json({ promotion });
   } catch (err) { return handlePrismaError(err, res); }
 });
@@ -1314,6 +1356,22 @@ router.delete("/admin/merchants/:merchantId/promotions/:promotionId", requireJwt
     const promotion = await prisma.promotion.update({ where: { id: promotionId }, data: { status: "archived" } });
     emitPvHook("promo.promotion.archived", { tc: "TC-PROMO-PROMO-ARCHIVE-ADMIN-01", sev: "info", stable: "promo:promotion:archived", merchantId, promotionId: promotion.id, promotionName: promotion.name, actorUserId: req.userId, actorRole: "pv_admin" });
     return res.json({ promotion });
+  } catch (err) { return handlePrismaError(err, res); }
+});
+
+router.get("/admin/merchants/:merchantId/promotions/:promotionId/audit", requireJwt, requireAdmin, async (req, res) => {
+  const merchantId = parseIntParam(req.params.merchantId);
+  const promotionId = parseIntParam(req.params.promotionId);
+  if (!merchantId || !promotionId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid params");
+  try {
+    const promo = await prisma.promotion.findFirst({ where: { id: promotionId, merchantId } });
+    if (!promo) return sendError(res, 404, "NOT_FOUND", "Promotion not found");
+    const logs = await prisma.promoAuditLog.findMany({
+      where: { promotionId },
+      orderBy: { createdAt: "desc" },
+      take: 50,
+    });
+    return res.json({ logs });
   } catch (err) { return handlePrismaError(err, res); }
 });
 

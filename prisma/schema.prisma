@@ -732,6 +732,12 @@ model Product {
   categoryId  Int?
   category    ProductCategory? @relation(fields: [categoryId], references: [id])
 
+  startAt          DateTime?
+  endAt            DateTime?
+  timeframeDays    Int?
+  /// Set once when product first transitions to active. Never reset on deactivate/reactivate.
+  firstActivatedAt DateTime?
+
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
@@ -949,17 +955,20 @@ model Promotion {
   legalText   String? @db.Text
 
   // Lifecycle
-  status    PromotionStatus @default(draft)
-  startAt   DateTime?
-  endAt     DateTime?
-  createdAt DateTime    @default(now())
-  updatedAt DateTime    @updatedAt
+  status           PromotionStatus @default(draft)
+  startAt          DateTime?
+  endAt            DateTime?
+  /// Set once when status first transitions to active. Never reset on pause/resume.
+  firstActivatedAt DateTime?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
 
   merchant    Merchant                @relation(fields: [merchantId], references: [id])
   items       PromotionItem[]
   offerSets   OfferSetPromotion[]
   progress    ConsumerPromoProgress[]
   redemptions PromoRedemption[]
+  auditLogs   PromoAuditLog[]
 
   @@index([merchantId, status])
 }
@@ -1204,6 +1213,20 @@ model BundleAuditLog {
   bundle Bundle @relation(fields: [bundleId], references: [id])
 
   @@index([bundleId, createdAt])
+  @@index([actorUserId])
+}
+
+model PromoAuditLog {
+  id          Int      @id @default(autoincrement())
+  promotionId Int
+  actorUserId Int?
+  action      String   @db.VarChar(100)
+  changes     Json?
+  createdAt   DateTime @default(now())
+
+  promotion Promotion @relation(fields: [promotionId], references: [id])
+
+  @@index([promotionId, createdAt])
   @@index([actorUserId])
 }
 
