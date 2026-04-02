@@ -545,6 +545,14 @@ app.use(
   })
 );
 
+// Consumer auth + wallet + promotions (Phase B) — must be before global requireJwt
+const consumerAuthRouter = require("./src/consumer/consumer.auth.routes");
+app.use(consumerAuthRouter);
+const consumerWalletRouter = require("./src/consumer/consumer.wallet.routes");
+app.use(consumerWalletRouter);
+const consumerPromosRouter = require("./src/consumer/consumer.promotions.routes");
+app.use(consumerPromosRouter);
+
 const buildAdminRouter = require("./src/admin/admin.routes");
 
 app.use(
@@ -627,13 +635,7 @@ app.use(promoRouter);
 const reportingRouter = require("./src/reporting/reporting.routes");
 app.use(reportingRouter);
 
-// Consumer auth + wallet (Phase B)
-const consumerAuthRouter = require("./src/consumer/consumer.auth.routes");
-app.use(consumerAuthRouter);
-const consumerWalletRouter = require("./src/consumer/consumer.wallet.routes");
-app.use(consumerWalletRouter);
-const consumerPromosRouter = require("./src/consumer/consumer.promotions.routes");
-app.use(consumerPromosRouter);
+// Consumer routes registered above (before global requireJwt wall)
 
 // Consumer identity (Thread 2)
 registerConsumersRoutes(app, {
