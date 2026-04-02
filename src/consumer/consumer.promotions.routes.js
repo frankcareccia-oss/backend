@@ -1,8 +1,10 @@
 // src/consumer/consumer.promotions.routes.js
 //
-// Consumer promotion catalog + personal progress
-//   GET /me/promotions            — active promotions (all merchants or filtered)
-//   GET /me/promotions/:id        — single promotion detail with progress
+// Consumer promotion catalog + participation
+//   GET    /me/promotions            — active promotions (all merchants or filtered)
+//   GET    /me/promotions/:id        — single promotion detail with progress
+//   POST   /me/promotions/:id/join   — subscribe / opt in to a program
+//   DELETE /me/promotions/:id/join   — leave a program (only if no progress yet)
 
 "use strict";
 
@@ -185,6 +187,77 @@ router.get("/me/promotions/:id", requireConsumerJwt, async (req, res) => {
         progress: progressSummary(progress, p.threshold),
       },
     });
+  } catch (err) {
+    return handlePrismaError(err, res);
+  }
+});
+
+// ──────────────────────────────────────────────
+// POST /me/promotions/:id/join
+// Consumer subscribes / opts in to a promotion program.
+// Creates ConsumerPromoProgress row (all zeros) if not already present.
+// ──────────────────────────────────────────────
+router.post("/me/promotions/:id/join", requireConsumerJwt, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!id) return sendError(res, 400, "VALIDATION_ERROR", "Invalid id");
+
+    const promotion = await prisma.promotion.findFirst({
+      where: { id, status: "active" },
+      select: { id: true, merchantId: true, name: true, threshold: true },
+    });
+    if (!promotion) return sendError(res, 404, "NOT_FOUND", "Promotion not found");
+
+    // Upsert — idempotent, safe to call multiple times
+    const progress = await prisma.consumerPromoProgress.upsert({
+      where: { consumerId_promotionId: { consumerId: req.consumerId, promotionId: id } },
+      create: {
+        consumerId: req.consumerId,
+        promotionId: id,
+        merchantId: promotion.merchantId,
+        stampCount: 0,
+        pointBalance: 0,
+        milestonesAvailable: 0,
+        lifetimeEarned: 0,
+      },
+      update: {}, // already joined — no-op
+    });
+
+    return res.status(201).json({
+      joined: true,
+      progress: progressSummary(progress, promotion.threshold),
+    });
+  } catch (err) {
+    return handlePrismaError(err, res);
+  }
+});
+
+// ──────────────────────────────────────────────
+// DELETE /me/promotions/:id/join
+// Consumer leaves / unsubscribes from a promotion.
+// Only allowed if stampCount === 0 (no progress yet).
+// ──────────────────────────────────────────────
+router.delete("/me/promotions/:id/join", requireConsumerJwt, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!id) return sendError(res, 400, "VALIDATION_ERROR", "Invalid id");
+
+    const progress = await prisma.consumerPromoProgress.findUnique({
+      where: { consumerId_promotionId: { consumerId: req.consumerId, promotionId: id } },
+    });
+
+    if (!progress) return sendError(res, 404, "NOT_FOUND", "Not participating in this program");
+
+    if (progress.lifetimeEarned > 0) {
+      return sendError(res, 409, "HAS_PROGRESS",
+        "Cannot leave a program once you have earned progress. Contact the merchant.");
+    }
+
+    await prisma.consumerPromoProgress.delete({
+      where: { consumerId_promotionId: { consumerId: req.consumerId, promotionId: id } },
+    });
+
+    return res.json({ left: true });
   } catch (err) {
     return handlePrismaError(err, res);
   }
