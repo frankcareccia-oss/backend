@@ -1,6 +1,7 @@
 // src/consumer/consumer.wallet.routes.js
 //
-// Consumer wallet — earned entitlements
+// Consumer wallet — earned entitlements + summary
+//   GET /me/summary             — stat counts for wallet chips
 //   GET /me/wallet              — list active entitlements with reward context
 //   GET /me/wallet/:id          — single entitlement detail
 
@@ -191,6 +192,37 @@ router.get("/me/wallet/:id", requireConsumerJwt, async (req, res) => {
         promotion,
       },
     });
+  } catch (err) {
+    return handlePrismaError(err, res);
+  }
+});
+
+// ──────────────────────────────────────────────
+// GET /me/summary
+// One-shot counts for wallet stat chips.
+// ──────────────────────────────────────────────
+router.get("/me/summary", requireConsumerJwt, async (req, res) => {
+  try {
+    const [
+      rewardsReady,
+      rewardsRedeemed,
+      programsJoined,
+    ] = await Promise.all([
+      // Active entitlements = rewards earned, not yet redeemed
+      prisma.entitlement.count({
+        where: { consumerId: req.consumerId, status: "active" },
+      }),
+      // Redeemed entitlements
+      prisma.entitlement.count({
+        where: { consumerId: req.consumerId, status: "redeemed" },
+      }),
+      // Programs the consumer has joined (has a progress row)
+      prisma.consumerPromoProgress.count({
+        where: { consumerId: req.consumerId },
+      }),
+    ]);
+
+    return res.json({ rewardsReady, rewardsRedeemed, programsJoined });
   } catch (err) {
     return handlePrismaError(err, res);
   }
