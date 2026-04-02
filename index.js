@@ -1,5 +1,5 @@
 ﻿// index.js
-require("dotenv").config();
+require("dotenv").config({ override: true });
 
 const { buildShortPayRouter } = require("./src/payments/shortpay.routes");
 const buildAuthRouter = require("./src/auth/auth.routes");
@@ -54,6 +54,7 @@ const { normalizePhone } = require("./utils/phone");
 
 const app = express();
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3001;
+const PUBLIC_BASE_URL = String(process.env.PUBLIC_BASE_URL || "http://localhost:5175").replace(/\/$/, "");
 
 const NODE_ENV = process.env.NODE_ENV || "development";
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY || "";
@@ -605,6 +606,7 @@ app.use(
     enforceStoreAndMerchantActive,
     requireJwt,
     requireAdmin,
+    publicBaseUrl: PUBLIC_BASE_URL,
   })
 );
 

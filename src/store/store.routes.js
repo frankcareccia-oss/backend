@@ -11,6 +11,7 @@ function buildStoreRouter(deps) {
     enforceStoreAndMerchantActive,
     requireJwt,
     requireAdmin,
+    publicBaseUrl,
   } = deps;
 
   const router = express.Router();
@@ -127,7 +128,8 @@ function buildStoreRouter(deps) {
       });
       if (!activeQr) return sendError(res, 404, "QR_NOT_FOUND", "No active QR for this store");
 
-      const payload = `pv:store:${activeQr.token}`;
+      const base = String(publicBaseUrl || process.env.PUBLIC_BASE_URL || "http://localhost:5175").replace(/\/$/, "");
+      const payload = `${base}/scan/${activeQr.token}`;
       const pngBuffer = await QRCode.toBuffer(payload, {
         type: "png",
         errorCorrectionLevel: "M",
