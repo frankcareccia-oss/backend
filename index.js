@@ -378,7 +378,7 @@ const paymentsReg = registerPaymentsRoutes(app, {
   sendError,
   requireAuth: requireJwt,
   requireAdmin, // <-- add this
-  publicBaseUrl: "http://localhost:3001",
+  publicBaseUrl: PUBLIC_BASE_URL,
 });
 
 app.post(
@@ -542,7 +542,7 @@ app.use(
     QRCode,
     emitPvHook,
     isPosOnlyMerchantUser,
-    publicBaseUrl: "http://localhost:3001",
+    publicBaseUrl: PUBLIC_BASE_URL,
   })
 );
 
