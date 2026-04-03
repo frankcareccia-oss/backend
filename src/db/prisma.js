@@ -5,6 +5,7 @@ const { Pool } = require("pg");
 const { PrismaClient } = require("@prisma/client");
 
 const connectionString = process.env.DATABASE_URL;
+console.log("[db] DATABASE_URL present:", !!connectionString);
 if (!connectionString) {
   throw new Error("DATABASE_URL is not set");
 }
