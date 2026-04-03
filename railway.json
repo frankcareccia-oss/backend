@@ -2,7 +2,13 @@
   "$schema": "https://railway.com/railway.schema.json",
   "build": {
     "builder": "NIXPACKS",
-    "buildCommand": "npm install && npx prisma generate"
+    "buildCommand": "npm install && npx prisma generate",
+    "nixpacksPlan": {
+      "providers": ["node"],
+      "variables": {
+        "NIXPACKS_NODE_VERSION": "22.12.0"
+      }
+    }
   },
   "deploy": {
     "startCommand": "node index.js",
