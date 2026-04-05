@@ -461,6 +461,11 @@ function buildAdminRouter(deps) {
         });
 
         createdUser = true;
+      } else if (firstName || lastName) {
+        const nameUpdate = {};
+        if (firstName) nameUpdate.firstName = firstName;
+        if (lastName) nameUpdate.lastName = lastName;
+        user = await prisma.user.update({ where: { id: user.id }, data: nameUpdate });
       }
 
       const membership = await prisma.merchantUser.upsert({
