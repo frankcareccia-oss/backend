@@ -428,6 +428,8 @@ function buildAdminRouter(deps) {
     try {
       const merchantId = parseIntParam(req.params.merchantId);
       const email = String(req.body?.email || "").trim().toLowerCase();
+      const firstName = String(req.body?.firstName || "").trim() || null;
+      const lastName = String(req.body?.lastName || "").trim() || null;
 
       if (!merchantId) {
         return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantId");
@@ -453,6 +455,8 @@ function buildAdminRouter(deps) {
             systemRole: "user",
             status: "active",
             tokenVersion: 0,
+            ...(firstName && { firstName }),
+            ...(lastName && { lastName }),
           },
         });
 
