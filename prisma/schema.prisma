@@ -67,6 +67,7 @@ model PasswordResetToken {
 model Merchant {
   id                Int                @id @default(autoincrement())
   name              String
+  merchantType      String?            // coffee_shop | restaurant | fitness | salon_spa | retail | grocery | pet_services | automotive | specialty_food | education_kids
   status            EntityStatus       @default(active)
   suspendedAt       DateTime?
   archivedAt        DateTime?

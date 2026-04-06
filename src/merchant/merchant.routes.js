@@ -613,10 +613,20 @@ function buildMerchantRouter(deps) {
         return sendError(res, 400, "VALIDATION_ERROR", "name is required");
       }
 
+      const VALID_MERCHANT_TYPES = [
+        "coffee_shop", "restaurant", "fitness", "salon_spa", "retail",
+        "grocery", "pet_services", "automotive", "specialty_food", "education_kids",
+      ];
+      const merchantType = req.body?.merchantType ?? null;
+      if (merchantType !== null && !VALID_MERCHANT_TYPES.includes(merchantType)) {
+        return sendError(res, 400, "VALIDATION_ERROR", `merchantType must be one of: ${VALID_MERCHANT_TYPES.join(", ")}`);
+      }
+
       const merchant = await prisma.merchant.create({
         data: {
           name,
           status: "active",
+          ...(merchantType ? { merchantType } : {}),
         },
       });
 
@@ -662,25 +672,47 @@ function buildMerchantRouter(deps) {
 
   router.patch("/merchants/:merchantId", requireJwt, requireAdmin, async (req, res) => {
     const merchantId = parseIntParam(req.params.merchantId);
-    const { status, statusReason } = req.body || {};
+    const { status, statusReason, merchantType } = req.body || {};
 
     if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantId");
-    if (!status || !["active", "suspended", "archived"].includes(status)) {
+
+    const VALID_MERCHANT_TYPES = [
+      "coffee_shop", "restaurant", "fitness", "salon_spa", "retail",
+      "grocery", "pet_services", "automotive", "specialty_food", "education_kids",
+    ];
+
+    // Allow merchantType-only update (no status required)
+    const updatingStatus = Boolean(status);
+    const updatingType   = merchantType !== undefined;
+
+    if (updatingStatus && !["active", "suspended", "archived"].includes(status)) {
       return sendError(res, 400, "VALIDATION_ERROR", "status must be active|suspended|archived");
+    }
+    if (updatingType && merchantType !== null && !VALID_MERCHANT_TYPES.includes(merchantType)) {
+      return sendError(res, 400, "VALIDATION_ERROR", `merchantType must be one of: ${VALID_MERCHANT_TYPES.join(", ")}`);
+    }
+    if (!updatingStatus && !updatingType) {
+      return sendError(res, 400, "VALIDATION_ERROR", "Provide status or merchantType to update");
     }
 
     try {
       const now = new Date();
+      const data = {};
+
+      if (updatingStatus) {
+        data.status          = status;
+        data.statusReason    = statusReason ?? null;
+        data.statusUpdatedAt = now;
+        data.suspendedAt     = status === "suspended" ? now : null;
+        data.archivedAt      = status === "archived"  ? now : null;
+      }
+      if (updatingType) {
+        data.merchantType = merchantType; // null clears it
+      }
 
       const merchant = await prisma.merchant.update({
         where: { id: merchantId },
-        data: {
-          status,
-          statusReason: statusReason ?? null,
-          statusUpdatedAt: now,
-          suspendedAt: status === "suspended" ? now : null,
-          archivedAt: status === "archived" ? now : null,
-        },
+        data,
       });
 
       return res.json(applyNormalizedMerchantStatus(merchant));

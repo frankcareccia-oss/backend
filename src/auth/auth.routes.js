@@ -314,6 +314,7 @@ If you did not request this, you can ignore this email.`,
                 select: {
                   id: true,
                   name: true,
+                  merchantType: true,
                 },
               },
             },
