@@ -1,0 +1,8 @@
+{
+  "associates": [
+    { "code": "7#1234",  "userEmail": "jamie@brewedawakening.com", "storeId": 7,  "status": "active" },
+    { "code": "8#5678",  "userEmail": "alex@brewedawakening.com",  "storeId": 8,  "status": "active" },
+    { "code": "9#2468",  "userEmail": "zoe@fitzoneperf.com",       "storeId": 9,  "status": "active" },
+    { "code": "10#1357", "userEmail": "carlo@fitzoneperf.com",     "storeId": 10, "status": "active" }
+  ]
+}
