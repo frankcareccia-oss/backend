@@ -14,6 +14,12 @@
  */
 
 const express = require("express");
+const { requireMerchantRole } = require("../middleware/auth");
+
+const VALID_MERCHANT_TYPES = [
+  "coffee_shop", "restaurant", "fitness", "salon_spa", "retail",
+  "grocery", "pet_services", "automotive", "specialty_food", "education_kids",
+];
 
 function buildMerchantRouter(deps) {
   const router = express.Router();
@@ -716,6 +722,28 @@ function buildMerchantRouter(deps) {
       });
 
       return res.json(applyNormalizedMerchantStatus(merchant));
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
+  // PATCH /merchant/type — merchant owner/admin sets their own merchant type
+  router.patch("/merchant/type", requireJwt, requireMerchantRole("owner", "merchant_admin"), async (req, res) => {
+    const { merchantType } = req.body || {};
+    if (merchantType !== null && merchantType !== undefined && !VALID_MERCHANT_TYPES.includes(merchantType)) {
+      return sendError(res, 400, "VALIDATION_ERROR", `merchantType must be one of: ${VALID_MERCHANT_TYPES.join(", ")}`);
+    }
+    try {
+      const merchant = await prisma.merchant.update({
+        where: { id: req.merchantId },
+        data: { merchantType: merchantType ?? null },
+      });
+      emitPvHook("merchant.type.updated", {
+        merchantId: req.merchantId,
+        actorUserId: req.userId,
+        merchantType: merchantType ?? null,
+      });
+      return res.json({ merchant });
     } catch (err) {
       return handlePrismaError(err, res);
     }
