@@ -1,8 +1,8 @@
 {
   "associates": [
-    { "code": "7#1234",  "userEmail": "jamie@brewedawakening.com", "storeId": 7,  "status": "active" },
-    { "code": "8#5678",  "userEmail": "alex@brewedawakening.com",  "storeId": 8,  "status": "active" },
-    { "code": "9#2468",  "userEmail": "zoe@fitzoneperf.com",       "storeId": 9,  "status": "active" },
-    { "code": "10#1357", "userEmail": "carlo@fitzoneperf.com",     "storeId": 10, "status": "active" }
+    { "code": "1#1234", "userEmail": "jamie@brewedawakening.com", "storeId": 1, "status": "active" },
+    { "code": "2#5678", "userEmail": "alex@brewedawakening.com",  "storeId": 2, "status": "active" },
+    { "code": "3#2468", "userEmail": "zoe@fitzoneperf.com",       "storeId": 3, "status": "active" },
+    { "code": "4#1357", "userEmail": "carlo@fitzoneperf.com",     "storeId": 4, "status": "active" }
   ]
 }
