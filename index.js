@@ -128,7 +128,7 @@ function sha256Hex(input) {
 function buildResetUrl(req, token) {
   // Point users to your Vite app route if provided
   const base = (process.env.ADMIN_WEB_BASE_URL || "").trim();
-  if (base) return `${base.replace(/\/$/, "")}/reset-password?token=${encodeURIComponent(token)}`;
+  if (base) return `${base.replace(/\/$/, "")}/#/reset-password?token=${encodeURIComponent(token)}`;
 
   // fallback: backend URL (still ok for stubbed email)
   const proto = req.headers["x-forwarded-proto"] || req.protocol;
