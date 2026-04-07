@@ -356,6 +356,72 @@ class SquareAdapter extends PVPosAdapter {
 
     return { categories, items };
   }
+
+  /**
+   * Push a PV product to the Square catalog. Creates or updates.
+   * Uses Square's idempotent upsert endpoint.
+   */
+  async pushProduct(product) {
+    const { name, description, sku, upc, priceCents, currency, categoryExternalId, externalCatalogId } = product;
+
+    // Build the variation (single default variation with price)
+    const variation = {
+      type: "ITEM_VARIATION",
+      id: externalCatalogId ? `${externalCatalogId}-var` : "#pv-var-default",
+      item_variation_data: {
+        name: "Regular",
+        pricing_type: priceCents != null ? "FIXED_PRICING" : "VARIABLE_PRICING",
+        ...(priceCents != null ? { price_money: { amount: priceCents, currency: currency || "USD" } } : {}),
+        ...(sku ? { sku } : {}),
+        ...(upc ? { upc } : {}),
+      },
+    };
+
+    const catalogObject = {
+      type: "ITEM",
+      id: externalCatalogId || `#pv-product-${Date.now()}`,
+      item_data: {
+        name,
+        ...(description ? { description } : {}),
+        variations: [variation],
+      },
+    };
+
+    const data = await this._squareFetch("/catalog/object", {
+      method: "POST",
+      body: JSON.stringify({
+        idempotency_key: `pv-push-product-${externalCatalogId || name}-${Date.now()}`,
+        object: catalogObject,
+      }),
+    });
+
+    const created = data.catalog_object;
+    return { externalId: created?.id || null };
+  }
+
+  /**
+   * Push a PV category to the Square catalog. Creates or updates.
+   */
+  async pushCategory(category) {
+    const { name, externalCatalogId } = category;
+
+    const catalogObject = {
+      type: "CATEGORY",
+      id: externalCatalogId || `#pv-category-${Date.now()}`,
+      category_data: { name },
+    };
+
+    const data = await this._squareFetch("/catalog/object", {
+      method: "POST",
+      body: JSON.stringify({
+        idempotency_key: `pv-push-category-${externalCatalogId || name}-${Date.now()}`,
+        object: catalogObject,
+      }),
+    });
+
+    const created = data.catalog_object;
+    return { externalId: created?.id || null };
+  }
 }
 
 // ─────────────────────────────────────────────────────────────

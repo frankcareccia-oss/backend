@@ -63,6 +63,24 @@ class PVPosAdapter {
   }
 
   /**
+   * Push a PV product to the POS catalog. Creates or updates.
+   * @param {{ name, description, sku, upc, priceCents, currency, categoryExternalId, externalCatalogId }} product
+   * @returns {Promise<{ externalId: string }>} — the POS-side catalog ID
+   */
+  async pushProduct(product) {
+    throw new Error(`${this.constructor.name} must implement pushProduct()`);
+  }
+
+  /**
+   * Push a PV category to the POS catalog. Creates or updates.
+   * @param {{ name, externalCatalogId }} category
+   * @returns {Promise<{ externalId: string }>} — the POS-side category ID
+   */
+  async pushCategory(category) {
+    throw new Error(`${this.constructor.name} must implement pushCategory()`);
+  }
+
+  /**
    * List catalog items from the POS, normalized to PV common format.
    * @returns {Promise<{ categories: NormalizedCategory[], items: NormalizedItem[] }>}
    *

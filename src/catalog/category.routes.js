@@ -10,6 +10,7 @@ const { sendError, handlePrismaError } = require("../utils/errors");
 const { parseIntParam } = require("../utils/helpers");
 const { requireJwt, requireAdmin, requireMerchantRole } = require("../middleware/auth");
 const { emitPvHook } = require("../utils/hooks");
+const { pushCategoryToPos } = require("../pos/pos.catalog.push");
 
 const router = express.Router();
 
@@ -78,6 +79,9 @@ router.post(
         actorUserId: req.userId, actorRole: req.merchantRole,
       });
 
+      // Push to POS catalog (fire-and-forget)
+      pushCategoryToPos(prisma, { merchantId: req.merchantId, category });
+
       return res.status(201).json({ category });
     } catch (err) {
       return handlePrismaError(err, res);
@@ -137,6 +141,9 @@ router.patch(
         merchantId: req.merchantId, categoryId: category.id, categoryName: category.name,
         changedFields: Object.keys(data), actorUserId: req.userId, actorRole: req.merchantRole,
       });
+
+      // Push to POS catalog (fire-and-forget)
+      pushCategoryToPos(prisma, { merchantId: req.merchantId, category });
 
       return res.json({ category });
     } catch (err) {

@@ -7,6 +7,7 @@ const { requireJwt, requireAdmin, requireMerchantRole } = require("../middleware
 const { emitPvHook } = require("../utils/hooks");
 const { generateSku } = require("./catalog.service");
 const { draftProductInfo } = require("../utils/aiDraft");
+const { pushProductToPos, pushCategoryToPos } = require("../pos/pos.catalog.push");
 
 const router = express.Router();
 
@@ -142,6 +143,9 @@ router.post(
         actorRole: req.merchantRole,
       });
 
+      // Push to POS catalog (fire-and-forget)
+      pushProductToPos(prisma, { merchantId: req.merchantId, product });
+
       return res.status(201).json({ product });
     } catch (err) {
       return handlePrismaError(err, res);
@@ -217,6 +221,9 @@ router.patch(
         actorUserId: req.userId,
         actorRole: req.merchantRole,
       });
+
+      // Push to POS catalog (fire-and-forget)
+      pushProductToPos(prisma, { merchantId: req.merchantId, product });
 
       return res.json({ product });
     } catch (err) {
