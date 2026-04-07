@@ -179,7 +179,11 @@ function registerSquareWebhookRoute(app) {
         `${req.headers["x-forwarded-proto"] || req.protocol}://${req.headers["x-forwarded-host"] || req.get("host")}${req.originalUrl}`;
 
       console.log("[square.webhook] notificationUrl:", notificationUrl);
-      console.log("[square.webhook] signature present:", !!signature, "key present:", !!SQUARE_WEBHOOK_SIGNATURE_KEY);
+      console.log("[square.webhook] signature:", signature);
+      console.log("[square.webhook] body isBuffer:", Buffer.isBuffer(req.body), "length:", req.body?.length);
+      const bodyStr2 = Buffer.isBuffer(req.body) ? req.body.toString("utf8") : String(req.body);
+      const expected2 = require("crypto").createHmac("sha256", SQUARE_WEBHOOK_SIGNATURE_KEY).update(notificationUrl + bodyStr2).digest("base64");
+      console.log("[square.webhook] computed:", expected2);
       if (!verifySquareSignature(notificationUrl, req.body, signature)) {
         console.warn("[square.webhook] signature verification failed");
         return res.status(403).json({ error: "Invalid signature" });
