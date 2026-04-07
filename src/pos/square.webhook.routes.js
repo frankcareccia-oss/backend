@@ -172,16 +172,8 @@ function registerSquareWebhookRoute(app) {
         return res.status(400).json({ error: "Missing signature header" });
       }
 
-      // If express.raw didn't capture the body (proxy issue), read from stream manually
-      let rawBody = req.body;
-      if (!Buffer.isBuffer(rawBody)) {
-        rawBody = await new Promise((resolve, reject) => {
-          const chunks = [];
-          req.on("data", chunk => chunks.push(chunk));
-          req.on("end", () => resolve(Buffer.concat(chunks)));
-          req.on("error", reject);
-        });
-      }
+      // Use rawBody captured by early middleware in index.js, fall back to req.body
+      const rawBody = req.rawBody || req.body || Buffer.alloc(0);
 
       // Build the notification URL Square used (must match exactly what's in Square Dashboard)
       const notificationUrl = process.env.SQUARE_WEBHOOK_URL ||
