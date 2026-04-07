@@ -97,6 +97,8 @@ model Merchant {
   consumerProgress ConsumerPromoProgress[]
 
   @@index([status])
+
+  posConnections PosConnection[]
 }
 
 model Store {
@@ -654,6 +656,7 @@ enum VisitSource {
   manual
   import
   pos_integrated
+  square_webhook
   web
 }
 
@@ -1280,4 +1283,49 @@ model PlatformConfig {
   value     String   @db.VarChar(500)
   updatedAt DateTime @updatedAt
   updatedBy Int?     // userId of the pv_admin who last changed it
+}
+
+// ============================================================================
+// POS ADAPTER LAYER — Square (Phase 1)
+// ============================================================================
+
+/// OAuth credentials + connection state for a POS integration.
+/// One row per merchant per posType.
+model PosConnection {
+  id                 Int      @id @default(autoincrement())
+  merchantId         Int
+  merchant           Merchant @relation(fields: [merchantId], references: [id])
+  posType            String   @db.VarChar(32)   // "square" | "clover" | "lightspeed" | "toast"
+  externalMerchantId String   @db.VarChar(128)  // Square merchant_id
+  accessTokenEnc     String                     // AES-256-GCM encrypted access token
+  refreshTokenEnc    String?                    // AES-256-GCM encrypted refresh token (if applicable)
+  tokenExpiresAt     DateTime?
+  status             String   @default("active") @db.VarChar(20) // "active" | "revoked" | "expired"
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  locationMaps PosLocationMap[]
+
+  @@unique([merchantId, posType])
+  @@index([merchantId])
+  @@index([posType, externalMerchantId])
+}
+
+/// Maps a POS location (e.g. Square location_id) to a PerkValet Store.
+/// A merchant may have multiple Square locations mapped to multiple PV stores.
+model PosLocationMap {
+  id                   Int           @id @default(autoincrement())
+  posConnectionId      Int
+  posConnection        PosConnection @relation(fields: [posConnectionId], references: [id])
+  externalLocationId   String        @db.VarChar(128) // Square location_id
+  externalLocationName String?       @db.VarChar(255)
+  pvStoreId            Int
+  pvStoreName          String?       @db.VarChar(255) // denormalized for quick display
+  active               Boolean       @default(true)
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  @@unique([posConnectionId, externalLocationId])
+  @@index([pvStoreId])
+  @@index([externalLocationId])
 }

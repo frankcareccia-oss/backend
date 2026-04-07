@@ -23,6 +23,8 @@ const { registerPosRoutes } = require("./src/pos/pos.routes");
 const { registerConsumersRoutes } = require("./src/consumers/consumers.routes");
 
 const { registerPosProvisioningRoutes } = require("./src/pos/pos.provisioning.routes");
+const { registerSquareOAuthRoutes } = require("./src/pos/square.oauth.routes");
+const { registerSquareWebhookRoute } = require("./src/pos/square.webhook.routes");
 const { buildDeviceRouter } = require("./src/auth/device.routes");
 
 const { buildMerchantStoreProfileRouter } = require("./src/merchant/merchant.storeProfile.routes");
@@ -389,6 +391,8 @@ app.post(
 
 app.use(paymentsReg.router);
 
+// Square webhook — must be mounted with express.raw BEFORE express.json
+registerSquareWebhookRoute(app);
 
 // POS-2: POS API (JWT-only, POS-only)
 const posReg = registerPosRoutes(app, {
@@ -451,6 +455,14 @@ const posProvisioningReg = registerPosProvisioningRoutes(app, {
 });
 
 app.use(posProvisioningReg.router);
+
+// Square OAuth + location-mapping routes (JWT-protected)
+registerSquareOAuthRoutes(app, {
+  prisma,
+  sendError,
+  requireAuth: requireJwt,
+  requireAdmin,
+});
 
 app.use(
   buildAuthRouter({
