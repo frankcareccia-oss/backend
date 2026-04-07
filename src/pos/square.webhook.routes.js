@@ -52,6 +52,60 @@ function verifySquareSignature(notificationUrl, rawBody, signature) {
   }
 }
 
+// ─── Order enrichment ────────────────────────────────────────────────────────
+
+/**
+ * Fetch order line items from Square Orders API and store in PosOrder + PosOrderItem.
+ * Runs async after visit creation — never blocks the webhook response.
+ */
+async function enrichOrderData(adapter, { visitId, merchantId, storeId, consumerId, orderId }) {
+  if (!orderId) return;
+
+  try {
+    const orderData = await adapter._squareFetch(`/orders/${orderId}`);
+    const order = orderData?.order;
+    if (!order) return;
+
+    const posOrder = await prisma.posOrder.create({
+      data: {
+        visitId,
+        merchantId,
+        storeId,
+        consumerId: consumerId || null,
+        externalOrderId: orderId,
+        posType: "square",
+        orderState: order.state || null,
+        totalAmount: order.total_money?.amount || null,
+        totalTax: order.total_tax_money?.amount || null,
+        totalDiscount: order.total_discount_money?.amount || null,
+        totalTip: order.total_tip_money?.amount || null,
+        currency: order.total_money?.currency || "USD",
+        rawJson: order,
+        items: {
+          create: (order.line_items || []).map((li) => ({
+            itemName: li.name || null,
+            itemSku: li.catalog_object_id || null,
+            variationName: li.variation_name || null,
+            variationId: li.catalog_version || null,
+            categoryName: li.category?.name || null,
+            quantity: parseInt(li.quantity, 10) || 1,
+            unitPrice: li.base_price_money?.amount || null,
+            totalPrice: li.total_money?.amount || null,
+            totalTax: li.total_tax_money?.amount || null,
+            totalDiscount: li.total_discount_money?.amount || null,
+            itemType: li.item_type || null,
+            rawJson: li,
+          })),
+        },
+      },
+    });
+
+    console.log(`[square.webhook] order enriched: orderId=${orderId} items=${order.line_items?.length || 0} posOrderId=${posOrder.id}`);
+  } catch (e) {
+    console.error(`[square.webhook] order enrichment failed: orderId=${orderId}`, e?.message || String(e));
+  }
+}
+
 // ─── Event dispatcher ─────────────────────────────────────────────────────────
 
 /**
@@ -152,6 +206,18 @@ async function dispatchSquareEvent(eventType, data) {
       console.error("[square.webhook] accumulateStamps error:", e?.message || String(e));
     }
   }
+
+  // Order enrichment — fetch line items from Square Orders API (fire-and-forget)
+  const orderId = payment.order_id || null;
+  enrichOrderData(adapter, {
+    visitId: visit.id,
+    merchantId,
+    storeId: pvStoreId,
+    consumerId: consumerId || null,
+    orderId,
+  }).catch((e) => {
+    console.error("[square.webhook] enrichOrderData error:", e?.message || String(e));
+  });
 
   return { visitId: visit.id, consumerId, identified: !!consumerId };
 }

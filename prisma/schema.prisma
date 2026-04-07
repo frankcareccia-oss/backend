@@ -99,6 +99,7 @@ model Merchant {
   @@index([status])
 
   posConnections PosConnection[]
+  posOrders      PosOrder[]
 }
 
 model Store {
@@ -152,6 +153,7 @@ model Store {
   // Promotions & Loyalty (Thread E)
   offerSetStores      OfferSetStore[]
   grantedRedemptions  PromoRedemption[] @relation("RedemptionGrantStore")
+  posOrders           PosOrder[]
 
   @@index([merchantId])
   @@index([phoneE164])
@@ -229,6 +231,8 @@ model Consumer {
 
   // Entitlements (Thread 1)
   entitlements Entitlement[]
+
+  posOrders PosOrder[]
 
   @@index([email])
   @@index([phoneE164])
@@ -345,6 +349,8 @@ model Visit {
   status          VisitStatus @default(pending_identity)
   associateUserId Int?
   sessionId       String?     @db.VarChar(128)
+
+  posOrder PosOrder?
 
   @@index([storeId, createdAt])
   @@index([consumerId, createdAt])
@@ -1328,4 +1334,57 @@ model PosLocationMap {
   @@unique([posConnectionId, externalLocationId])
   @@index([pvStoreId])
   @@index([externalLocationId])
+}
+
+model PosOrder {
+  id              Int      @id @default(autoincrement())
+  visitId         Int      @unique
+  visit           Visit    @relation(fields: [visitId], references: [id])
+  merchantId      Int
+  merchant        Merchant @relation(fields: [merchantId], references: [id])
+  storeId         Int
+  store           Store    @relation(fields: [storeId], references: [id])
+  consumerId      Int?
+  consumer        Consumer? @relation(fields: [consumerId], references: [id])
+  externalOrderId String   @db.VarChar(128)
+  posType         String   @default("square") @db.VarChar(32)
+  orderState      String?  @db.VarChar(32)   // COMPLETED, CANCELED, etc.
+  totalAmount     Int?                        // cents
+  totalTax        Int?                        // cents
+  totalDiscount   Int?                        // cents
+  totalTip        Int?                        // cents
+  currency        String   @default("USD") @db.VarChar(3)
+  rawJson         Json?                       // full Square order response
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  items           PosOrderItem[]
+
+  @@index([merchantId, createdAt])
+  @@index([storeId, createdAt])
+  @@index([consumerId])
+  @@index([externalOrderId])
+}
+
+model PosOrderItem {
+  id              Int      @id @default(autoincrement())
+  posOrderId      Int
+  posOrder        PosOrder @relation(fields: [posOrderId], references: [id], onDelete: Cascade)
+  itemName        String?  @db.VarChar(255)
+  itemSku         String?  @db.VarChar(128)   // catalog_object_id from Square
+  upc             String?  @db.VarChar(14)    // UPC-A, UPC-E, EAN-13, GTIN-14
+  variationName   String?  @db.VarChar(255)   // e.g. "Large"
+  variationId     String?  @db.VarChar(128)   // catalog variation ID
+  categoryName    String?  @db.VarChar(255)
+  quantity        Int      @default(1)
+  unitPrice       Int?                         // cents
+  totalPrice      Int?                         // cents
+  totalTax        Int?                         // cents
+  totalDiscount   Int?                         // cents
+  itemType        String?  @db.VarChar(64)     // ITEM, CUSTOM_AMOUNT, etc.
+  rawJson         Json?                        // raw line_item from Square
+  createdAt       DateTime @default(now())
+
+  @@index([posOrderId])
+  @@index([itemSku])
+  @@index([upc])
 }
