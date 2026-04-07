@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "postinstall": "prisma generate",
+    "postinstall": "prisma db push --skip-generate && prisma generate",
     "dev": "nodemon --watch index.js --watch src index.js",
     "dev:seed": "node scripts/dev_seed.js",
     "test": "jest",
