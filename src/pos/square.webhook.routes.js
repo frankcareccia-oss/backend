@@ -172,10 +172,11 @@ function registerSquareWebhookRoute(app) {
         return res.status(400).json({ error: "Missing signature header" });
       }
 
-      // Build the notification URL Square used (must match exactly)
-      const proto = req.headers["x-forwarded-proto"] || req.protocol;
-      const host = req.headers["x-forwarded-host"] || req.get("host");
-      const notificationUrl = `${proto}://${host}${req.originalUrl}`;
+      // Build the notification URL Square used (must match exactly what's in Square Dashboard)
+      // Use SQUARE_WEBHOOK_URL env var if set (avoids proxy header reconstruction issues),
+      // otherwise fall back to reconstructing from headers.
+      const notificationUrl = process.env.SQUARE_WEBHOOK_URL ||
+        `${req.headers["x-forwarded-proto"] || req.protocol}://${req.headers["x-forwarded-host"] || req.get("host")}${req.originalUrl}`;
 
       if (!verifySquareSignature(notificationUrl, req.body, signature)) {
         console.warn("[square.webhook] signature verification failed");
