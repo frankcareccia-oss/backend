@@ -178,6 +178,8 @@ function registerSquareWebhookRoute(app) {
       const notificationUrl = process.env.SQUARE_WEBHOOK_URL ||
         `${req.headers["x-forwarded-proto"] || req.protocol}://${req.headers["x-forwarded-host"] || req.get("host")}${req.originalUrl}`;
 
+      console.log("[square.webhook] notificationUrl:", notificationUrl);
+      console.log("[square.webhook] signature present:", !!signature, "key present:", !!SQUARE_WEBHOOK_SIGNATURE_KEY);
       if (!verifySquareSignature(notificationUrl, req.body, signature)) {
         console.warn("[square.webhook] signature verification failed");
         return res.status(403).json({ error: "Invalid signature" });
