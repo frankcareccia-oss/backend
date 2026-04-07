@@ -198,8 +198,11 @@ function registerSquareWebhookRoute(app) {
       res.status(200).json({ received: true });
 
       // Dispatch asynchronously so Square doesn't time out waiting
-      dispatchSquareEvent(eventType, data).catch((e) => {
-        console.error("[square.webhook] dispatch error:", e?.message || String(e));
+      console.log(`[square.webhook] dispatching ${eventType}`, JSON.stringify(data).slice(0, 200));
+      dispatchSquareEvent(eventType, data).then((result) => {
+        console.log("[square.webhook] dispatch result:", JSON.stringify(result));
+      }).catch((e) => {
+        console.error("[square.webhook] dispatch error:", e?.message || String(e), e?.stack);
       });
     }
   );

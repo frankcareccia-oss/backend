@@ -81,13 +81,12 @@ async function processRewardGrant(prisma, { consumerId, merchantId, storeId, ass
     }),
   ]);
 
-  // Mark matching Entitlement as redeemed (wallet layer — fire-and-forget)
+  // Mark matching Entitlement as redeemed and link to this redemption
   try {
     const entitlement = await prisma.entitlement.findFirst({
       where: {
         consumerId,
         merchantId,
-        sourceId: promo.id,
         type: "reward",
         status: "active",
       },
@@ -97,7 +96,7 @@ async function processRewardGrant(prisma, { consumerId, merchantId, storeId, ass
     if (entitlement) {
       await prisma.entitlement.update({
         where: { id: entitlement.id },
-        data: { status: "redeemed", redeemedAt: new Date() },
+        data: { status: "redeemed", redeemedAt: new Date(), sourceId: redemption.id },
       });
     }
   } catch (e) {

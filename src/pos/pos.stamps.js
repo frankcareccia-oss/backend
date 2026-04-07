@@ -88,13 +88,29 @@ async function accumulateStamps(prisma, { consumerId, merchantId, storeId, visit
             data: { milestonesAvailable: { increment: 1 } },
           });
 
+          // Create PromoRedemption so wallet can resolve promotion details
+          const redemption = await tx.promoRedemption.create({
+            data: {
+              progressId: upserted.id,
+              promotionId: promo.id,
+              consumerId,
+              merchantId,
+              pointsDecremented: promo.threshold,
+              balanceBefore: upserted.stampCount,
+              balanceAfter: upserted.stampCount - promo.threshold,
+              status: "granted",
+              grantedAt: now,
+              grantedByStoreId: storeId || null,
+            },
+          });
+
           await tx.entitlement.create({
             data: {
               consumerId,
               merchantId,
               storeId: storeId || null,
               type: "reward",
-              sourceId: promo.id,
+              sourceId: redemption.id,
               status: "active",
               metadataJson: {
                 displayLabel: buildDisplayLabel(promo),
