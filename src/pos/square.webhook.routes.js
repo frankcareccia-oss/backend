@@ -172,27 +172,29 @@ function registerSquareWebhookRoute(app) {
         return res.status(400).json({ error: "Missing signature header" });
       }
 
+      // If express.raw didn't capture the body (proxy issue), read from stream manually
+      let rawBody = req.body;
+      if (!Buffer.isBuffer(rawBody)) {
+        rawBody = await new Promise((resolve, reject) => {
+          const chunks = [];
+          req.on("data", chunk => chunks.push(chunk));
+          req.on("end", () => resolve(Buffer.concat(chunks)));
+          req.on("error", reject);
+        });
+      }
+
       // Build the notification URL Square used (must match exactly what's in Square Dashboard)
-      // Use SQUARE_WEBHOOK_URL env var if set (avoids proxy header reconstruction issues),
-      // otherwise fall back to reconstructing from headers.
       const notificationUrl = process.env.SQUARE_WEBHOOK_URL ||
         `${req.headers["x-forwarded-proto"] || req.protocol}://${req.headers["x-forwarded-host"] || req.get("host")}${req.originalUrl}`;
 
-      console.log("[square.webhook] notificationUrl:", notificationUrl);
-      console.log("[square.webhook] signature:", signature);
-      console.log("[square.webhook] body isBuffer:", Buffer.isBuffer(req.body), "length:", req.body?.length);
-      const bodyStr2 = Buffer.isBuffer(req.body) ? req.body.toString("utf8") : String(req.body);
-      const expected2 = require("crypto").createHmac("sha256", SQUARE_WEBHOOK_SIGNATURE_KEY).update(notificationUrl + bodyStr2).digest("base64");
-      console.log("[square.webhook] computed:", expected2);
-      if (!verifySquareSignature(notificationUrl, req.body, signature)) {
+      if (!verifySquareSignature(notificationUrl, rawBody, signature)) {
         console.warn("[square.webhook] signature verification failed");
         return res.status(403).json({ error: "Invalid signature" });
       }
 
       let event;
       try {
-        const bodyStr = Buffer.isBuffer(req.body) ? req.body.toString("utf8") : (typeof req.body === "string" ? req.body : JSON.stringify(req.body));
-        event = JSON.parse(bodyStr);
+        event = JSON.parse(rawBody.toString("utf8"));
       } catch (e) {
         console.error("[square.webhook] JSON parse failed:", e?.message);
         return res.status(400).json({ error: "Invalid JSON body" });
