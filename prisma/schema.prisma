@@ -739,6 +739,14 @@ model Product {
   complianceText String?    @db.Text
   status      ProductStatus @default(draft)
 
+  // POS catalog sync
+  catalogSource     String?  @default("native") @db.VarChar(16) // native | pos
+  externalCatalogId String?  @db.VarChar(128)  // POS-specific item ID
+  posConnectionId   Int?
+  posConnection     PosConnection? @relation(fields: [posConnectionId], references: [id])
+  upc               String?  @db.VarChar(14)   // UPC-A, UPC-E, EAN-13, GTIN-14
+  priceCents        Int?                        // base price in cents
+
   // Category (v3.5 model — required for reward qualification)
   categoryId  Int?
   category    ProductCategory? @relation(fields: [categoryId], references: [id])
@@ -757,6 +765,8 @@ model Product {
   @@unique([merchantId, sku])
   @@index([merchantId, status])
   @@index([categoryId])
+  @@index([externalCatalogId])
+  @@index([posConnectionId])
 }
 
 enum ProductStatus {
@@ -785,6 +795,10 @@ model ProductCategory {
   /// Each merchant has exactly one visit-type category (auto-created, protected from deletion).
   categoryType ProductCategoryType @default(standard)
 
+  // POS catalog sync
+  catalogSource     String?  @default("native") @db.VarChar(16) // native | pos
+  externalCatalogId String?  @db.VarChar(128)  // POS-specific category ID
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -793,6 +807,7 @@ model ProductCategory {
 
   @@index([merchantId, status])
   @@index([merchantId, categoryType])
+  @@index([externalCatalogId])
 }
 
 enum ProductCategoryType {
@@ -1311,6 +1326,7 @@ model PosConnection {
   updatedAt          DateTime @updatedAt
 
   locationMaps PosLocationMap[]
+  products     Product[]
 
   @@unique([merchantId, posType])
   @@index([merchantId])

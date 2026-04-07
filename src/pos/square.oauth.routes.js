@@ -17,6 +17,7 @@ const express = require("express");
 const crypto = require("crypto");
 const { encrypt, decrypt } = require("../utils/encrypt");
 const { SquareAdapter } = require("./adapters/square.adapter");
+const { syncCatalogFromPos } = require("./pos.catalog.sync");
 
 const SQUARE_APP_ID = process.env.SQUARE_APP_ID || "";
 const SQUARE_APP_SECRET = process.env.SQUARE_APP_SECRET || "";
@@ -65,7 +66,7 @@ function registerSquareOAuthRoutes(app, { prisma, sendError, requireAuth, requir
 
       const params = new URLSearchParams({
         client_id: SQUARE_APP_ID,
-        scope: "MERCHANT_PROFILE_READ PAYMENTS_READ CUSTOMERS_READ ORDERS_READ",
+        scope: "MERCHANT_PROFILE_READ PAYMENTS_READ CUSTOMERS_READ ORDERS_READ ITEMS_READ",
         state,
       });
 
@@ -147,6 +148,17 @@ function registerSquareOAuthRoutes(app, { prisma, sendError, requireAuth, requir
           status: "active",
         },
       });
+
+      // Auto-sync catalog from Square (fire-and-forget)
+      const conn = await prisma.posConnection.findUnique({
+        where: { merchantId_posType: { merchantId, posType: "square" } },
+      });
+      if (conn) {
+        const adapter = new SquareAdapter(conn);
+        syncCatalogFromPos(prisma, adapter, { merchantId, posConnectionId: conn.id }).catch((e) => {
+          console.error("[square.oauth] catalog sync failed:", e?.message || String(e));
+        });
+      }
 
       // Redirect back to admin UI — adjust URL as needed
       const adminBase = process.env.ADMIN_APP_URL || "https://admin.perksvalet.com";
@@ -255,6 +267,29 @@ function registerSquareOAuthRoutes(app, { prisma, sendError, requireAuth, requir
       });
 
       res.json({ ok: true, map });
+    } catch (e) {
+      sendError(res, 500, "SERVER_ERROR", e?.message);
+    }
+  });
+
+  // ─── POST /pos/connect/square/sync-catalog ──────────────────────────────────
+
+  app.post("/pos/connect/square/sync-catalog", requireAuth, async (req, res) => {
+    try {
+      const merchantId = await resolveMerchantId(req, res);
+      if (!merchantId) return;
+
+      const conn = await prisma.posConnection.findUnique({
+        where: { merchantId_posType: { merchantId, posType: "square" } },
+      });
+      if (!conn || conn.status !== "active") {
+        return sendError(res, 404, "NOT_FOUND", "No active Square connection");
+      }
+
+      const adapter = new SquareAdapter(conn);
+      const summary = await syncCatalogFromPos(prisma, adapter, { merchantId, posConnectionId: conn.id });
+
+      res.json({ ok: true, summary });
     } catch (e) {
       sendError(res, 500, "SERVER_ERROR", e?.message);
     }

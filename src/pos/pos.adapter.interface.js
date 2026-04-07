@@ -61,6 +61,19 @@ class PVPosAdapter {
   async recordRedemption(payload) {
     throw new Error(`${this.constructor.name} must implement recordRedemption()`);
   }
+
+  /**
+   * List catalog items from the POS, normalized to PV common format.
+   * @returns {Promise<{ categories: NormalizedCategory[], items: NormalizedItem[] }>}
+   *
+   * NormalizedCategory: { externalId, name }
+   * NormalizedItem: { externalId, name, description, sku, upc, priceCents, currency,
+   *                   categoryExternalId, categoryName, imageUrl, variations: NormalizedVariation[] }
+   * NormalizedVariation: { externalId, name, sku, upc, priceCents }
+   */
+  async listCatalog() {
+    throw new Error(`${this.constructor.name} must implement listCatalog()`);
+  }
 }
 
 module.exports = { PVPosAdapter };

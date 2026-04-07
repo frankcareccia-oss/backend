@@ -260,6 +260,102 @@ class SquareAdapter extends PVPosAdapter {
 
     return null;
   }
+
+  /**
+   * List all catalog items and categories from Square, normalized to PV format.
+   * Handles pagination via cursor. Fetches ITEM and CATEGORY types.
+   */
+  async listCatalog() {
+    const categories = [];
+    const items = [];
+
+    // Fetch all catalog objects (paginated)
+    let cursor = null;
+    do {
+      const params = new URLSearchParams({ types: "ITEM,CATEGORY" });
+      if (cursor) params.set("cursor", cursor);
+
+      const data = await this._squareFetch(`/catalog/list?${params}`);
+      const objects = data.objects || [];
+
+      for (const obj of objects) {
+        if (obj.type === "CATEGORY") {
+          categories.push({
+            externalId: obj.id,
+            name: obj.category_data?.name || "Unnamed Category",
+          });
+        } else if (obj.type === "ITEM") {
+          const item = obj.item_data || {};
+          const variations = (item.variations || []).map((v) => {
+            const vd = v.item_variation_data || {};
+            return {
+              externalId: v.id,
+              name: vd.name || null,
+              sku: vd.sku || null,
+              upc: vd.upc || null,
+              priceCents: vd.price_money?.amount || null,
+            };
+          });
+
+          // Use first variation for primary price/sku/upc if item-level not available
+          const primaryVar = variations[0] || {};
+
+          items.push({
+            externalId: obj.id,
+            name: item.name || "Unnamed Item",
+            description: item.description || null,
+            sku: primaryVar.sku || null,
+            upc: primaryVar.upc || null,
+            priceCents: primaryVar.priceCents || null,
+            currency: primaryVar.priceCents != null
+              ? (item.variations?.[0]?.item_variation_data?.price_money?.currency || "USD")
+              : null,
+            categoryExternalId: item.category_id || null,
+            categoryName: null, // resolved after all categories are collected
+            imageUrl: item.image_ids?.length
+              ? `__image_pending:${item.image_ids[0]}` // resolved below
+              : null,
+            variations,
+          });
+        }
+      }
+
+      cursor = data.cursor || null;
+    } while (cursor);
+
+    // Resolve category names on items
+    const catMap = Object.fromEntries(categories.map((c) => [c.externalId, c.name]));
+    for (const item of items) {
+      if (item.categoryExternalId) {
+        item.categoryName = catMap[item.categoryExternalId] || null;
+      }
+    }
+
+    // Resolve image URLs (batch — max 1 call per image, but typically few unique images)
+    const imageIds = new Set();
+    for (const item of items) {
+      if (item.imageUrl?.startsWith("__image_pending:")) {
+        imageIds.add(item.imageUrl.replace("__image_pending:", ""));
+      }
+    }
+    const imageMap = {};
+    for (const imgId of imageIds) {
+      try {
+        const imgData = await this._squareFetch(`/catalog/object/${imgId}`);
+        imageMap[imgId] = imgData.object?.image_data?.url || null;
+      } catch {
+        imageMap[imgId] = null;
+      }
+    }
+    for (const item of items) {
+      if (item.imageUrl?.startsWith("__image_pending:")) {
+        const imgId = item.imageUrl.replace("__image_pending:", "");
+        item.imageUrl = imageMap[imgId] || null;
+      }
+    }
+
+    return { categories, items };
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
