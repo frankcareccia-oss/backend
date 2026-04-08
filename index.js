@@ -580,6 +580,8 @@ app.use(consumerPromosRouter);
 
 const growthRouter = require("./src/growth/growth.routes");
 app.use(growthRouter);
+const promotionOutcomeRouter = require("./src/growth/promotionOutcome.routes");
+app.use(promotionOutcomeRouter);
 
 const buildAdminRouter = require("./src/admin/admin.routes");
 
