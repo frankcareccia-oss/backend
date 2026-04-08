@@ -166,4 +166,45 @@ Write the two lines now:`;
   return msg.content?.[0]?.text?.trim() || "";
 }
 
-module.exports = { draftPromoTerms, draftBundleTerms, draftProductInfo };
+/**
+ * Generate a Growth Advisor AI summary from metrics and recommendations.
+ * Falls back to null if API key is missing (caller uses deterministic summary).
+ */
+async function draftGrowthSummary({ metrics, insights, recommendations }) {
+  if (!process.env.ANTHROPIC_API_KEY) return null;
+
+  const recText = recommendations
+    .map((r) => `- ${r.headline}: ${r.recommendation}`)
+    .join("\n");
+
+  const prompt = `You are a concise business advisor for a small retail merchant. Based on these 30-day metrics, write a 2-3 sentence plain-language summary. Be direct, specific, and actionable. No filler.
+
+Metrics:
+- Orders: ${metrics.totalOrders}
+- Average ticket: $${((metrics.aov || 0) / 100).toFixed(2)}
+- Repeat rate: ${metrics.repeatRate != null ? Math.round(metrics.repeatRate * 100) + "%" : "unknown"}
+- Return rate (first→second visit): ${metrics.firstToSecondVisitRate != null ? Math.round(metrics.firstToSecondVisitRate * 100) + "%" : "unknown"}
+- Unique customers: ${metrics.uniqueConsumers}
+
+Insights:
+${insights.length ? insights.map((i) => `- ${i}`).join("\n") : "- None detected"}
+
+Recommendations:
+${recText || "- None"}
+
+Write the summary now. No greeting, no sign-off.`;
+
+  try {
+    const msg = await getClient().messages.create({
+      model: MODEL,
+      max_tokens: 150,
+      messages: [{ role: "user", content: prompt }],
+    });
+    return msg.content?.[0]?.text?.trim() || null;
+  } catch (e) {
+    console.error("[aiDraft] growth summary failed:", e?.message);
+    return null;
+  }
+}
+
+module.exports = { draftPromoTerms, draftBundleTerms, draftProductInfo, draftGrowthSummary };

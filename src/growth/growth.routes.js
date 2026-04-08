@@ -13,6 +13,7 @@ const { getMerchantGrowthMetrics } = require("./growth.metrics.service");
 const { detectGrowthPatterns } = require("./growth.patterns");
 const { selectPlaybooks } = require("./growth.playbooks");
 const { buildGrowthSummary } = require("./growth.summary");
+const { draftGrowthSummary } = require("../utils/aiDraft");
 
 const router = express.Router();
 
@@ -35,13 +36,15 @@ router.get(
       // Step 3: Select and personalize playbooks
       const recommendations = selectPlaybooks(patterns, metrics);
 
-      // Step 4: Compose summary
-      const summary = buildGrowthSummary(metrics, patterns, recommendations);
-
       // Build insights from playbook output
       const insights = recommendations
         .filter((r) => r.playbookId !== "starter_playbook")
         .map((r) => r.insight);
+
+      // Step 4: Compose summary — AI enhanced with deterministic fallback
+      const deterministicSummary = buildGrowthSummary(metrics, patterns, recommendations);
+      const aiSummary = await draftGrowthSummary({ metrics, insights, recommendations });
+      const summary = aiSummary || deterministicSummary;
 
       return res.json({
         summary,

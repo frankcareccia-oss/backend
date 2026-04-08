@@ -686,4 +686,14 @@ app.listen(PORT, () => {
   console.log(`ADMIN_API_KEY ${ADMIN_API_KEY ? "ENABLED" : "DISABLED (set ADMIN_API_KEY to protect admin routes)"}`);
   console.log(`CORS_ORIGIN=${process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN : "(open/dev)"}`);
   console.log(`BILLING_POLICY_FILE=${BILLING_POLICY_FILE}`);
+
+  // Growth Advisor — recompute promotion outcomes every 6 hours
+  const { computeAllPromotionOutcomes } = require("./src/growth/promotionOutcome.aggregate");
+  const SIX_HOURS = 6 * 60 * 60 * 1000;
+  setInterval(() => {
+    console.log("[cron] recomputing promotion outcomes...");
+    computeAllPromotionOutcomes(prisma).catch((e) => {
+      console.error("[cron] outcome recompute failed:", e?.message || String(e));
+    });
+  }, SIX_HOURS);
 });

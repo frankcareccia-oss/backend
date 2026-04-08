@@ -25,26 +25,25 @@ const PLAYBOOKS = [
     id: "loyalty_repeat_visits",
     name: "Drive Repeat Visits",
     triggers: ["low_repeat"],
-    cta: { label: "Create Loyalty Program", route: "/merchant/promotions/new" },
+    cta: { label: "Create Loyalty Program", route: "/merchant/promotions" },
   },
   {
     id: "first_return_incentive",
     name: "Bring First-Timers Back",
     triggers: ["low_first_to_second"],
-    cta: { label: "Create Welcome Reward", route: "/merchant/promotions/new" },
+    cta: { label: "Create Welcome Reward", route: "/merchant/promotions" },
   },
   {
     id: "best_seller_promo",
     name: "Reward Best Sellers",
     triggers: ["high_concentration"],
-    cta: { label: "Create Loyalty Program", route: "/merchant/promotions/new" },
+    cta: { label: "Create Loyalty Program", route: "/merchant/promotions" },
   },
   {
     id: "starter_playbook",
     name: "Get Started",
     triggers: ["insufficient_data"],
     cta: { label: "View Reports", route: "/merchant/reports" },
-
   },
 ];
 
