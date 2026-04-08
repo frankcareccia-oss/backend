@@ -985,6 +985,10 @@ model Promotion {
   /// AI-generated (and merchant-editable) terms & conditions shown to consumers in the detail view.
   legalText   String? @db.Text
 
+  /// If true, stamp card resets after each reward and consumer keeps earning.
+  /// If false, consumer earns one reward and stamps stop accumulating.
+  repeatable       Boolean @default(true)
+
   // Lifecycle
   status           PromotionStatus @default(draft)
   startAt          DateTime?

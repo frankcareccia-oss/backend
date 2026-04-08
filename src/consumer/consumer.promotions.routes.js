@@ -28,7 +28,7 @@ function rewardLabel(p) {
 function progressSummary(progress, threshold) {
   if (!progress) return null;
   const stamps = progress.stampCount;
-  const needed = threshold - (stamps % threshold || threshold);
+  const needed = threshold > 0 ? threshold - stamps : 0;
   return {
     stampCount: stamps,
     lifetimeEarned: progress.lifetimeEarned,

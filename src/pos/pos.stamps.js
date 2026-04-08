@@ -48,6 +48,7 @@ async function accumulateStamps(prisma, { consumerId, merchantId, storeId, visit
       id: true,
       name: true,
       threshold: true,
+      repeatable: true,
       rewardType: true,
       rewardValue: true,
       rewardNote: true,
@@ -62,6 +63,17 @@ async function accumulateStamps(prisma, { consumerId, merchantId, storeId, visit
   for (const promo of promotions) {
     try {
       const result = await prisma.$transaction(async (tx) => {
+        // Check if non-repeatable promo already earned a reward
+        if (!promo.repeatable) {
+          const existing = await tx.consumerPromoProgress.findUnique({
+            where: { consumerId_promotionId: { consumerId, promotionId: promo.id } },
+            select: { lifetimeEarned: true },
+          });
+          if (existing && existing.lifetimeEarned >= promo.threshold) {
+            return { progressId: null, promotionId: promo.id, stampCount: 0, milestoneEarned: false, skipped: true };
+          }
+        }
+
         // Upsert: create on first visit, increment on subsequent visits
         const upserted = await tx.consumerPromoProgress.upsert({
           where: { consumerId_promotionId: { consumerId, promotionId: promo.id } },
@@ -84,9 +96,10 @@ async function accumulateStamps(prisma, { consumerId, merchantId, storeId, visit
         const milestoneEarned = upserted.stampCount % promo.threshold === 0;
 
         if (milestoneEarned) {
+          // Reset stampCount to 0 (new card) and increment milestonesAvailable
           await tx.consumerPromoProgress.update({
             where: { id: upserted.id },
-            data: { milestonesAvailable: { increment: 1 } },
+            data: { stampCount: 0, milestonesAvailable: { increment: 1 } },
           });
 
           // Create PromoRedemption so wallet can resolve promotion details
@@ -97,8 +110,8 @@ async function accumulateStamps(prisma, { consumerId, merchantId, storeId, visit
               consumerId,
               merchantId,
               pointsDecremented: promo.threshold,
-              balanceBefore: upserted.stampCount,
-              balanceAfter: upserted.stampCount - promo.threshold,
+              balanceBefore: promo.threshold,
+              balanceAfter: 0,
               status: "granted",
               grantedAt: now,
               grantedByStoreId: storeId || null,
@@ -125,7 +138,7 @@ async function accumulateStamps(prisma, { consumerId, merchantId, storeId, visit
         return {
           progressId: upserted.id,
           promotionId: promo.id,
-          stampCount: upserted.stampCount,
+          stampCount: milestoneEarned ? 0 : upserted.stampCount,
           milestoneEarned,
         };
       });
