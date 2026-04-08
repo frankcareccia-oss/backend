@@ -11,7 +11,7 @@ const { sendError, handlePrismaError } = require("../utils/errors");
 const { requireJwt, requireMerchantRole } = require("../middleware/auth");
 const { getMerchantGrowthMetrics } = require("./growth.metrics.service");
 const { detectGrowthPatterns } = require("./growth.patterns");
-const { buildGrowthRecommendations } = require("./growth.recommendations");
+const { selectPlaybooks } = require("./growth.playbooks");
 const { buildGrowthSummary } = require("./growth.summary");
 
 const router = express.Router();
@@ -32,16 +32,16 @@ router.get(
       // Step 2: Detect patterns
       const patterns = detectGrowthPatterns(metrics);
 
-      // Step 3: Build recommendations
-      const recommendations = buildGrowthRecommendations(metrics, patterns);
+      // Step 3: Select and personalize playbooks
+      const recommendations = selectPlaybooks(patterns, metrics);
 
       // Step 4: Compose summary
       const summary = buildGrowthSummary(metrics, patterns, recommendations);
 
-      // Build insights from patterns (human-readable)
-      const insights = patterns
-        .filter((p) => p.type !== "insufficient_data")
-        .map((p) => patternToInsight(p, metrics));
+      // Build insights from playbook output
+      const insights = recommendations
+        .filter((r) => r.playbookId !== "starter_playbook")
+        .map((r) => r.insight);
 
       return res.json({
         summary,
@@ -64,32 +64,5 @@ router.get(
     }
   }
 );
-
-/**
- * Convert a pattern object to a human-readable insight string.
- */
-function patternToInsight(pattern, metrics) {
-  switch (pattern.type) {
-    case "low_repeat":
-      return `Repeat rate is ${Math.round(pattern.detail.repeatRate * 100)}% — below the ${Math.round(pattern.detail.threshold * 100)}% target.`;
-
-    case "slow_afternoon":
-      return `Afternoon revenue is only ${pattern.detail.ratio}% of morning revenue — a significant gap.`;
-
-    case "low_aov":
-      return `Average order value is $${(metrics.aov / 100).toFixed(2)} — below the $${(pattern.detail.threshold / 100).toFixed(2)} target.`;
-
-    case "high_concentration": {
-      const names = pattern.detail.topProducts?.join(", ");
-      return `Top 3 products (${names}) generate ${pattern.detail.top3Pct}% of revenue.`;
-    }
-
-    case "low_first_to_second":
-      return `Only ${Math.round(pattern.detail.rate * 100)}% of first-time visitors return — below the ${Math.round(pattern.detail.threshold * 100)}% target.`;
-
-    default:
-      return null;
-  }
-}
 
 module.exports = router;
