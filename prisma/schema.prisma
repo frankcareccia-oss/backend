@@ -1339,12 +1339,32 @@ model PosConnection {
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 
-  locationMaps PosLocationMap[]
-  products     Product[]
+  // Catalog sync tracking
+  lastCatalogSyncAt      DateTime?
+  lastCatalogSyncSummary Json?     // { categoriesCreated, categoriesUpdated, productsCreated, productsUpdated }
+
+  locationMaps   PosLocationMap[]
+  products       Product[]
+  catalogSyncLog CatalogSyncLog[]
 
   @@unique([merchantId, posType])
   @@index([merchantId])
   @@index([posType, externalMerchantId])
+}
+
+/// Log of catalog sync events — tracks what changed and when.
+model CatalogSyncLog {
+  id              Int           @id @default(autoincrement())
+  posConnectionId Int
+  posConnection   PosConnection @relation(fields: [posConnectionId], references: [id])
+  merchantId      Int
+  trigger         String        @db.VarChar(32) // webhook | manual | onboard
+  summary         Json?         // { categoriesCreated, categoriesUpdated, productsCreated, productsUpdated }
+  changes         Json?         // [{ action: "created"|"updated", type: "product"|"category", name, field? }]
+  createdAt       DateTime      @default(now())
+
+  @@index([posConnectionId])
+  @@index([merchantId, createdAt])
 }
 
 /// Maps a POS location (e.g. Square location_id) to a PerkValet Store.

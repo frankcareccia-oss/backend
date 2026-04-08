@@ -18,6 +18,7 @@ const { prisma } = require("../db/prisma");
 const { accumulateStamps } = require("./pos.stamps");
 const { writeEventLog } = require("../eventlog/eventlog");
 const { SquareAdapter } = require("./adapters/square.adapter");
+const { syncCatalogFromPos } = require("./pos.catalog.sync");
 
 const SQUARE_WEBHOOK_SIGNATURE_KEY = process.env.SQUARE_WEBHOOK_SIGNATURE_KEY || "";
 
@@ -106,14 +107,47 @@ async function enrichOrderData(adapter, { visitId, merchantId, storeId, consumer
   }
 }
 
+// ─── Catalog sync handler ────────────────────────────────────────────────────
+
+/**
+ * Handle catalog.version.updated — trigger a full catalog re-sync.
+ * Finds the PosConnection by externalMerchantId and re-syncs.
+ */
+async function handleCatalogUpdate(squareMerchantId) {
+  if (!squareMerchantId) return { skipped: true, reason: "no merchant_id in event" };
+
+  const conn = await prisma.posConnection.findFirst({
+    where: { externalMerchantId: squareMerchantId, posType: "square", status: "active" },
+  });
+
+  if (!conn) {
+    console.warn(`[square.webhook] catalog update for unknown merchant: ${squareMerchantId}`);
+    return { skipped: true, reason: "no PosConnection for merchant" };
+  }
+
+  const adapter = new SquareAdapter(conn);
+  const result = await syncCatalogFromPos(prisma, adapter, {
+    merchantId: conn.merchantId,
+    posConnectionId: conn.id,
+    trigger: "webhook",
+  });
+
+  return { catalogSync: true, ...result.summary };
+}
+
 // ─── Event dispatcher ─────────────────────────────────────────────────────────
 
 /**
  * Process a verified Square webhook event.
- * Currently handles: payment.completed (maps to a PerkValet visit + stamps).
+ * Handles: payment.created/updated, catalog.version.updated
  */
-async function dispatchSquareEvent(eventType, data) {
-  // Square fires payment.updated when a payment reaches COMPLETED status
+async function dispatchSquareEvent(eventType, data, merchantIdFromEvent) {
+  // ── Catalog sync ───────────────────────────────────────────
+  if (eventType === "catalog.version.updated") {
+    return handleCatalogUpdate(merchantIdFromEvent);
+  }
+
+  // ── Payment processing ─────────────────────────────────────
   if (eventType !== "payment.updated" && eventType !== "payment.created") {
     console.log(`[square.webhook] unhandled event type: ${eventType}`);
     return { skipped: true };
@@ -258,14 +292,14 @@ function registerSquareWebhookRoute(app) {
         return res.status(400).json({ error: "Invalid JSON body" });
       }
 
-      const { type: eventType, data } = event;
+      const { type: eventType, data, merchant_id: eventMerchantId } = event;
 
       // Respond 200 immediately — Square requires fast ACK
       res.status(200).json({ received: true });
 
       // Dispatch asynchronously so Square doesn't time out waiting
       console.log(`[square.webhook] dispatching ${eventType}`, JSON.stringify(data).slice(0, 200));
-      dispatchSquareEvent(eventType, data).then((result) => {
+      dispatchSquareEvent(eventType, data, eventMerchantId).then((result) => {
         console.log("[square.webhook] dispatch result:", JSON.stringify(result));
       }).catch((e) => {
         console.error("[square.webhook] dispatch error:", e?.message || String(e), e?.stack);

@@ -155,7 +155,7 @@ function registerSquareOAuthRoutes(app, { prisma, sendError, requireAuth, requir
       });
       if (conn) {
         const adapter = new SquareAdapter(conn);
-        syncCatalogFromPos(prisma, adapter, { merchantId, posConnectionId: conn.id }).catch((e) => {
+        syncCatalogFromPos(prisma, adapter, { merchantId, posConnectionId: conn.id, trigger: "onboard" }).catch((e) => {
           console.error("[square.oauth] catalog sync failed:", e?.message || String(e));
         });
       }
@@ -178,7 +178,11 @@ function registerSquareOAuthRoutes(app, { prisma, sendError, requireAuth, requir
 
       const conn = await prisma.posConnection.findUnique({
         where: { merchantId_posType: { merchantId, posType: "square" } },
-        select: { id: true, status: true, externalMerchantId: true, tokenExpiresAt: true, createdAt: true, updatedAt: true },
+        select: {
+          id: true, status: true, externalMerchantId: true, tokenExpiresAt: true,
+          createdAt: true, updatedAt: true,
+          lastCatalogSyncAt: true, lastCatalogSyncSummary: true,
+        },
       });
 
       const locationCount = conn
@@ -290,6 +294,25 @@ function registerSquareOAuthRoutes(app, { prisma, sendError, requireAuth, requir
       const summary = await syncCatalogFromPos(prisma, adapter, { merchantId, posConnectionId: conn.id });
 
       res.json({ ok: true, summary });
+    } catch (e) {
+      sendError(res, 500, "SERVER_ERROR", e?.message);
+    }
+  });
+
+  // ─── GET /pos/connect/square/sync-log ────────────────────────────────────────
+
+  app.get("/pos/connect/square/sync-log", requireAuth, async (req, res) => {
+    try {
+      const merchantId = await resolveMerchantId(req, res);
+      if (!merchantId) return;
+
+      const logs = await prisma.catalogSyncLog.findMany({
+        where: { merchantId },
+        orderBy: { createdAt: "desc" },
+        take: 20,
+      });
+
+      res.json({ logs });
     } catch (e) {
       sendError(res, 500, "SERVER_ERROR", e?.message);
     }
