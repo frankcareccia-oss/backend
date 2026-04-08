@@ -12,6 +12,7 @@
 // never blocked by stamp accumulation failures.
 
 const { writeEventLog } = require("../eventlog/eventlog");
+const { recordPromotionEvent } = require("../growth/promotionOutcome.events");
 
 /**
  * Build the human-readable reward label for Entitlement metadata.
@@ -146,6 +147,26 @@ async function accumulateStamps(prisma, { consumerId, merchantId, storeId, visit
           milestoneEarned: result.milestoneEarned,
         },
       });
+
+      // Growth Advisor — Promotion Outcomes events (fire-and-forget)
+      recordPromotionEvent(prisma, {
+        promotionId: promo.id,
+        merchantId,
+        storeId,
+        consumerId,
+        eventType: "clip",
+        visitId,
+      });
+      if (result.milestoneEarned) {
+        recordPromotionEvent(prisma, {
+          promotionId: promo.id,
+          merchantId,
+          storeId,
+          consumerId,
+          eventType: "grant",
+          visitId,
+        });
+      }
     } catch (e) {
       console.error(
         `[stamps] accumulate failed — consumerId=${consumerId} promotionId=${promo.id}:`,

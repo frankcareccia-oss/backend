@@ -17,6 +17,7 @@ const { parseIntParam } = require("../utils/helpers");
 const { requireJwt, requireAdmin, requireMerchantRole } = require("../middleware/auth");
 const { emitPvHook } = require("../utils/hooks");
 const { draftPromoTerms } = require("../utils/aiDraft");
+const { capturePromotionBaseline } = require("../growth/promotionOutcome.baseline");
 
 const router = express.Router();
 
@@ -668,6 +669,14 @@ router.patch(
         actorUserId: req.userId, actorRole: req.merchantRole,
       });
       await logPromoAudit(promotionId, req.userId, data.status && data.status !== existing.status ? `status_changed:${existing.status}→${data.status}` : "updated", Object.keys(data).length ? Object.keys(data) : null);
+
+      // Growth Advisor — capture baseline when promotion activates
+      if (data.status === "active" && existing.status !== "active") {
+        capturePromotionBaseline(prisma, {
+          promotionId,
+          merchantId: req.merchantId,
+        });
+      }
 
       return res.json({ promotion });
     } catch (err) {
@@ -1341,6 +1350,12 @@ router.patch("/admin/merchants/:merchantId/promotions/:promotionId", requireJwt,
     });
     emitPvHook("promo.promotion.updated", { tc: "TC-PROMO-PROMO-UPDATE-ADMIN-01", sev: "info", stable: "promo:promotion:updated", merchantId, promotionId: promotion.id, promotionName: promotion.name, changedFields: [...Object.keys(data), ...(itemOps ? ["items"] : [])], actorUserId: req.userId, actorRole: "pv_admin" });
     await logPromoAudit(promotionId, req.userId, data.status && data.status !== existing.status ? `status_changed:${existing.status}→${data.status}` : "updated", Object.keys(data).length ? Object.keys(data) : null);
+
+    // Growth Advisor — capture baseline when promotion activates
+    if (data.status === "active" && existing.status !== "active") {
+      capturePromotionBaseline(prisma, { promotionId, merchantId });
+    }
+
     return res.json({ promotion });
   } catch (err) { return handlePrismaError(err, res); }
 });

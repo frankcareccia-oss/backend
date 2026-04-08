@@ -100,6 +100,11 @@ model Merchant {
 
   posConnections PosConnection[]
   posOrders      PosOrder[]
+
+  // Growth Advisor — Promotion Outcomes
+  promotionEvents    PromotionEvent[]
+  baselineSnapshots  PromotionBaselineSnapshot[]
+  promotionOutcomes  PromotionOutcome[]
 }
 
 model Store {
@@ -996,6 +1001,11 @@ model Promotion {
   redemptions PromoRedemption[]
   auditLogs   PromoAuditLog[]
 
+  // Growth Advisor — Promotion Outcomes
+  promotionEvents    PromotionEvent[]
+  baselineSnapshots  PromotionBaselineSnapshot[]
+  outcomes           PromotionOutcome[]
+
   @@index([merchantId, status])
 }
 
@@ -1403,4 +1413,89 @@ model PosOrderItem {
   @@index([posOrderId])
   @@index([itemSku])
   @@index([upc])
+}
+
+// ============================================================================
+// GROWTH ADVISOR — Promotion Outcomes (analytical layer)
+// ============================================================================
+
+/// Event-level activity feeding aggregate calculations.
+/// Fire-and-forget from transactional flows — never blocks POS.
+model PromotionEvent {
+  id            Int      @id @default(autoincrement())
+  promotionId   Int
+  promotion     Promotion @relation(fields: [promotionId], references: [id])
+  merchantId    Int
+  merchant      Merchant  @relation(fields: [merchantId], references: [id])
+  storeId       Int?
+  consumerId    Int?
+  eventType     String   @db.VarChar(32) // clip | qualify | grant | redeem
+  posOrderId    Int?
+  visitId       Int?
+  valueCents    Int?
+  payloadJson   Json?
+  createdAt     DateTime @default(now())
+
+  @@index([promotionId])
+  @@index([merchantId])
+  @@index([consumerId])
+  @@index([eventType])
+  @@index([createdAt])
+}
+
+/// Baseline snapshot captured when a promotion activates.
+/// Used for lift calculations in PromotionOutcome.
+model PromotionBaselineSnapshot {
+  id                 Int      @id @default(autoincrement())
+  promotionId        Int
+  promotion          Promotion @relation(fields: [promotionId], references: [id])
+  merchantId         Int
+  merchant           Merchant  @relation(fields: [merchantId], references: [id])
+  storeId            Int?
+  capturedAt         DateTime @default(now())
+  avgOrderValueCents Int?
+  dailyRevenueCents  Int?
+  visitFrequencyDays Float?
+  repeatRate         Float?
+
+  @@index([promotionId])
+  @@index([merchantId])
+}
+
+/// Aggregated promotion effectiveness metrics.
+/// Computed async from PromotionEvent + PromotionBaselineSnapshot.
+model PromotionOutcome {
+  id                 Int       @id @default(autoincrement())
+  promotionId        Int
+  promotion          Promotion @relation(fields: [promotionId], references: [id])
+  merchantId         Int
+  merchant           Merchant  @relation(fields: [merchantId], references: [id])
+  storeId            Int?
+  startDate          DateTime
+  endDate            DateTime?
+
+  // Activity counts
+  clips              Int       @default(0)
+  qualifiedPurchases Int       @default(0)
+  rewardsGranted     Int       @default(0)
+  rewardsRedeemed    Int       @default(0)
+
+  // Lift metrics (decimal fractions, e.g. 0.14 = +14%)
+  redemptionRate     Float?
+  repeatVisitLift    Float?
+  aovLift            Float?
+  revenueLift        Float?
+  timeSlotLift       Float?
+
+  // Baseline reference values
+  baselineAovCents     Int?
+  baselineVisits       Float?
+  baselineRevenueCents Int?
+
+  computedAt         DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@index([promotionId])
+  @@index([merchantId])
+  @@index([storeId])
 }

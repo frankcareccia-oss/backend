@@ -10,6 +10,7 @@ const express = require("express");
 const { prisma } = require("../db/prisma");
 const { sendError, handlePrismaError } = require("../utils/errors");
 const { writeEventLog } = require("../eventlog/eventlog");
+const { recordPromotionEvent } = require("../growth/promotionOutcome.events");
 
 const router = express.Router();
 
@@ -137,6 +138,15 @@ router.post("/pos/loyalty/grant-by-token", async (req, res) => {
       source: "pos_app",
       outcome: "redeemed",
       payloadJson: { token: token.toUpperCase().trim(), redeemedAt: updatedEntitlement.redeemedAt },
+    });
+
+    // Growth Advisor — record redemption event
+    recordPromotionEvent(prisma, {
+      promotionId: redemption.promotionId,
+      merchantId: redemption.merchantId,
+      storeId: redemption.grantedByStoreId || null,
+      consumerId: redemption.consumerId,
+      eventType: "redeem",
     });
 
     return res.json({
