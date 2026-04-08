@@ -578,6 +578,9 @@ app.use(consumerWalletRouter);
 const consumerPromosRouter = require("./src/consumer/consumer.promotions.routes");
 app.use(consumerPromosRouter);
 
+const growthRouter = require("./src/growth/growth.routes");
+app.use(growthRouter);
+
 const buildAdminRouter = require("./src/admin/admin.routes");
 
 app.use(
