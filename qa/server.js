@@ -409,9 +409,9 @@ const HTML = `<!DOCTYPE html>
         <div class="run-dropdown">
           <button class="run-btn" id="runBtn" onclick="toggleRunMenu()">Run Tests <span class="arrow">&#9662;</span></button>
           <div class="run-menu" id="runMenu">
-            <button onclick="runTests('all')">
-              Run All Tests
-              <span class="hint">Execute the full test suite</span>
+            <button onclick="syncResults()">
+              Sync Results
+              <span class="hint">Run suite &amp; update tracker</span>
             </button>
             <button onclick="runTests('fixed')">
               Run Fixed Only
@@ -696,6 +696,34 @@ async function runCase(id) {
     statusText.textContent = "Error starting run";
     if (icon) { icon.classList.remove("running"); }
     runningCaseId = null;
+    setTimeout(() => { status.classList.remove("show"); document.getElementById("runBtn").disabled = false; }, 3000);
+  }
+}
+
+
+async function syncResults() {
+  document.getElementById("runMenu").classList.remove("show");
+  document.getElementById("runBtn").disabled = true;
+  const status = document.getElementById("runStatus");
+  const statusText = document.getElementById("runStatusText");
+  status.classList.add("show");
+  statusText.textContent = "Syncing results...";
+
+  try {
+    const res = await fetch("/api/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope: "all" }),
+    });
+    const data = await res.json();
+    if (data.skipped) {
+      statusText.textContent = data.message;
+      setTimeout(() => { status.classList.remove("show"); document.getElementById("runBtn").disabled = false; }, 3000);
+      return;
+    }
+    pollRunStatus();
+  } catch (err) {
+    statusText.textContent = "Error syncing";
     setTimeout(() => { status.classList.remove("show"); document.getElementById("runBtn").disabled = false; }, 3000);
   }
 }
