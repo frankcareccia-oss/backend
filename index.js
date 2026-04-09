@@ -680,7 +680,7 @@ registerConsumersRoutes(app, {
    Server
 -------------------------------- */
 
-app.listen(PORT, () => {
+if (require.main === module) app.listen(PORT, () => {
   console.log(`PerkValet backend listening on http://localhost:${PORT}`);
   console.log(`NODE_ENV=${NODE_ENV}`);
   console.log(`ADMIN_API_KEY ${ADMIN_API_KEY ? "ENABLED" : "DISABLED (set ADMIN_API_KEY to protect admin routes)"}`);
@@ -697,3 +697,5 @@ app.listen(PORT, () => {
     });
   }, SIX_HOURS);
 });
+
+module.exports = app;

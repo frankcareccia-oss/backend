@@ -9,7 +9,10 @@
     "dev": "nodemon --watch index.js --watch src index.js",
     "dev:seed": "node scripts/dev_seed.js",
     "test": "jest",
-    "test:payments": "jest payments --runInBand"
+    "test:payments": "jest payments --runInBand",
+    "test:track": "node qa/track.js",
+    "qa": "node qa/server.js",
+    "qa:setup": "node qa/setup-db.js"
   },
   "keywords": [],
   "author": "",
