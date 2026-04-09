@@ -606,6 +606,23 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
       if (!inv) return sendError(res, 404, "not_found", "Invoice not found");
       if (!isInvoicePayable(inv)) return sendError(res, 409, "not_payable", "Invoice is not payable");
 
+      // Verify caller belongs to the invoice's merchant
+      const mu = await prisma.merchantUser.findFirst({
+        where: { userId: req.userId, merchantId: inv.merchantId, status: "active" },
+      });
+      if (!mu) {
+        pvHook("billing.intent.denied", {
+          tc: "TC-S-ROLE-01",
+          sev: "warn",
+          stable: `invoice:${invoiceId}`,
+          invoiceId,
+          userId: req.userId,
+          merchantId: inv.merchantId,
+          reason: "user_not_in_merchant",
+        });
+        return sendError(res, 403, "forbidden", "Not a member of this merchant");
+      }
+
       const due = amountDueCents(inv);
       if (amountCents > due) return sendError(res, 400, "bad_request", "amountCents exceeds amount due");
 
@@ -727,7 +744,18 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
             data: { status: "succeeded", statusUpdatedAt: now() },
           });
 
-          if (updated.count === 0) return res.status(200).json({ received: true });
+          if (updated.count === 0) {
+            pvHook("billing.webhook.idempotent_hit", {
+              tc: "TC-S-WH-01",
+              sev: "info",
+              stable: `stripe_pi:${intentId}`,
+              intentId,
+              paymentId: payment.id,
+              invoiceId: payment.invoiceId,
+              reason: "already_succeeded",
+            });
+            return res.status(200).json({ received: true });
+          }
 
           await prisma.$transaction(async (tx) => {
             const inv = await tx.invoice.findUnique({

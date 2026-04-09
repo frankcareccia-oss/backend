@@ -8,7 +8,7 @@
     "postinstall": "prisma db push --skip-generate && prisma generate",
     "dev": "nodemon --watch index.js --watch src index.js",
     "dev:seed": "node scripts/dev_seed.js",
-    "test": "jest",
+    "test": "jest --runInBand",
     "test:payments": "jest payments --runInBand",
     "test:track": "node qa/track.js",
     "qa": "node qa/server.js",
@@ -46,6 +46,7 @@
   },
   "jest": {
     "testEnvironment": "node",
+    "testTimeout": 15000,
     "testMatch": [
       "**/test/**/*.test.js"
     ],

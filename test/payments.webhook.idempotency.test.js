@@ -24,7 +24,7 @@ describe("Stripe webhook idempotency (payment_intent.succeeded)", () => {
   const WEBHOOK_PATH = process.env.PV_TEST_WEBHOOK_PATH || "/webhooks/stripe";
 
   beforeAll(() => {
-    ({ app } = require("../index"));
+    app = require("../index");
   });
 
   beforeEach(async () => {

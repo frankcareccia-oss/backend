@@ -35,7 +35,7 @@ function detectFeature(filePath) {
 
 async function run() {
   const filter = process.argv[2] || "";
-  const jestArgs = ["--json", "--verbose"];
+  const jestArgs = ["--json", "--verbose", "--runInBand"];
   if (filter) jestArgs.push("--testPathPatterns", filter);
 
   const cmdDisplay = "npx jest " + jestArgs.join(" ");

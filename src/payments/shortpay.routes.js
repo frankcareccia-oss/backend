@@ -164,6 +164,19 @@ function buildShortPayRouter(deps) {
   }
 
   router.get("/p/:code", async (req, res) => {
+    // Public route — reject if caller sends an auth header
+    const authHeader = req.headers.authorization || "";
+    if (authHeader) {
+      emitPvHook?.("billing.public_route.auth_rejected", {
+        tc: "TC-BE-PUB-01",
+        sev: "warn",
+        stable: `shortpay:${req.params.code}`,
+        code: req.params.code,
+        reason: "auth_header_present",
+      });
+      return sendError(res, 400, "PUBLIC_ROUTE_AUTH_PRESENT", "Public pay links must not include authentication.");
+    }
+
     emitPvHook?.("shortpay.loaded", { code: req.params.code });
 
     let tokenId;
@@ -176,6 +189,14 @@ function buildShortPayRouter(deps) {
     try {
       const token = await loadGuestPayTokenByIdOrRespond(res, tokenId);
       if (!token) return;
+
+      emitPvHook?.("billing.public_route.ok", {
+        tc: "TC-S-PUB-01",
+        sev: "info",
+        stable: `shortpay:${req.params.code}`,
+        code: req.params.code,
+        invoiceId: token.invoiceId,
+      });
 
       return res.json(buildShortPaySummary(token));
     } catch (e) {

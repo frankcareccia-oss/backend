@@ -2,11 +2,26 @@
 
 const request = require("supertest");
 const { getApp, merchantToken, authHeader } = require("./helpers/setup");
+const { prisma, resetDb, createMerchant, createUser, addMerchantUser } = require("./helpers/seed");
 
 let app;
-beforeAll(() => { app = getApp(); });
+let auth;
 
-const auth = authHeader(merchantToken());
+beforeAll(async () => {
+  app = getApp();
+  await resetDb();
+
+  const merchant = await createMerchant({ name: "Growth Test Shop" });
+  const user = await createUser({ email: "growth-test@perkvalet.org" });
+  await addMerchantUser({ merchantId: merchant.id, userId: user.id, role: "merchant_admin" });
+
+  const token = merchantToken({ userId: user.id, merchantId: merchant.id });
+  auth = authHeader(token);
+});
+
+afterAll(async () => {
+  await prisma.$disconnect();
+});
 
 describe("Growth Advisor", () => {
   describe("GET /merchant/growth-advisor", () => {

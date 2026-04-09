@@ -2,11 +2,23 @@
 
 const request = require("supertest");
 const { getApp, consumerToken, authHeader } = require("./helpers/setup");
+const { prisma, resetDb, createConsumer } = require("./helpers/seed");
 
 let app;
-beforeAll(() => { app = getApp(); });
+let auth;
 
-const auth = authHeader(consumerToken());
+beforeAll(async () => {
+  app = getApp();
+  await resetDb();
+
+  const consumer = await createConsumer({ phoneE164: "+14085551212" });
+  const token = consumerToken({ consumerId: consumer.id, phone: consumer.phoneE164 });
+  auth = authHeader(token);
+}, 15000);
+
+afterAll(async () => {
+  await prisma.$disconnect();
+});
 
 describe("Consumer Wallet", () => {
   describe("GET /me/summary", () => {

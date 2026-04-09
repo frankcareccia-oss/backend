@@ -11,33 +11,19 @@ const {
 } = require("./helpers/seed");
 const { signUserJwt } = require("./helpers/jwt");
 
+const { captureStdout } = require("./helpers/captureStdout");
+
 // Mock Stripe so /payments/intent doesn't depend on real Stripe env
 jest.mock("../src/payments/stripe", () => ({
   createPaymentIntent: jest.fn(),
   retrievePaymentIntent: jest.fn(),
 }));
 
-function captureStdoutLocal() {
-  const original = process.stdout.write;
-  const output = [];
-  // eslint-disable-next-line no-param-reassign
-  process.stdout.write = (chunk, encoding, cb) => {
-    output.push(String(chunk));
-    return original.call(process.stdout, chunk, encoding, cb);
-  };
-  return {
-    output,
-    restore: () => {
-      process.stdout.write = original;
-    },
-  };
-}
-
 describe("Merchant-auth payments intent access control", () => {
   let app;
 
   beforeAll(() => {
-    ({ app } = require("../index"));
+    app = require("../index");
   });
 
   beforeEach(async () => {
@@ -66,7 +52,7 @@ describe("Merchant-auth payments intent access control", () => {
     const outsider = await createUser({ email: "outsider@example.com" });
     const token = signUserJwt(outsider.id);
 
-    const { output, restore } = captureStdoutLocal();
+    const { output, restore } = captureStdout();
     try {
       const res = await request(app)
         .post("/payments/intent")

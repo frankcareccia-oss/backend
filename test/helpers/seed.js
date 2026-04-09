@@ -101,6 +101,17 @@ async function createGuestPayToken({ invoiceId, tokenHash = "test_token_hash", e
   });
 }
 
+async function createConsumer({
+  phoneE164 = "+14085551212",
+  email = "consumer@example.com",
+  firstName = "Test",
+  lastName = "Consumer",
+} = {}) {
+  return prisma.consumer.create({
+    data: { phoneE164, email, firstName, lastName, status: "active" },
+  });
+}
+
 module.exports = {
   prisma,
   resetDb,
@@ -112,4 +123,5 @@ module.exports = {
   createIssuedInvoice,
   createInvoice,
   createGuestPayToken,
+  createConsumer,
 };
