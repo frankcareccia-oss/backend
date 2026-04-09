@@ -447,8 +447,8 @@ const HTML = `<!DOCTYPE html>
       </select>
       <span style="color:#30363d;margin:0 16px"></span>
       <span style="color:#8b949e;font-size:13px">Status:</span>
-      <button class="active" data-filter="all">All</button>
-      <button data-filter="open">Open</button>
+      <button data-filter="all">All</button>
+      <button class="active" data-filter="open">Open</button>
       <button data-filter="fixed">Fixed</button>
       <button data-filter="verified">Verified</button>
       <button data-filter="regressed">Regressed</button>
@@ -480,7 +480,7 @@ const HTML = `<!DOCTYPE html>
 
 <script>
 let allCases = [];
-let currentFilter = "all";
+let currentFilter = "open";
 let currentFeature = "all";
 let currentRepo = "all";
 
