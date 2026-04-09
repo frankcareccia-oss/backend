@@ -3,6 +3,7 @@
 const request = require("supertest");
 const { getApp, merchantToken, authHeader } = require("./helpers/setup");
 const { prisma, resetDb, createMerchant, createUser, addMerchantUser } = require("./helpers/seed");
+const { captureStdout } = require("./helpers/captureStdout");
 
 let app;
 let auth;
@@ -90,13 +91,22 @@ describe("Merchant Stores", () => {
 
 describe("Merchant Store Profile", () => {
   describe("GET /merchant/stores/:storeId", () => {
-    it("returns store profile", async () => {
-      const res = await request(app)
-        .get(`/merchant/stores/${storeId}`)
-        .set(auth);
-      expect(res.status).toBe(200);
-      expect(res.body.name).toBe("Downtown Location");
-      expect(res.body.merchantId).toBe(merchant.id);
+    it("returns store profile and emits viewed hook", async () => {
+      const { output, restore } = captureStdout();
+      try {
+        const res = await request(app)
+          .get(`/merchant/stores/${storeId}`)
+          .set(auth);
+        expect(res.status).toBe(200);
+        expect(res.body.name).toBe("Downtown Location");
+        expect(res.body.merchantId).toBe(merchant.id);
+
+        const joined = output.join("\n");
+        expect(joined).toContain("merchant.store.profile.viewed");
+        expect(joined).toContain("TC-STORE-PROF-01");
+      } finally {
+        restore();
+      }
     });
 
     it("rejects non-existent store", async () => {
@@ -108,21 +118,30 @@ describe("Merchant Store Profile", () => {
   });
 
   describe("PATCH /merchant/stores/:storeId/profile", () => {
-    it("updates store name and address", async () => {
-      const res = await request(app)
-        .patch(`/merchant/stores/${storeId}/profile`)
-        .set(auth)
-        .send({
-          name: "Uptown Location",
-          address1: "456 Elm St",
-          city: "San Francisco",
-          state: "CA",
-          postal: "94102",
-        });
-      expect(res.status).toBe(200);
-      expect(res.body.name).toBe("Uptown Location");
-      expect(res.body.address1).toBe("456 Elm St");
-      expect(res.body.city).toBe("San Francisco");
+    it("updates store name and address and emits updated hook", async () => {
+      const { output, restore } = captureStdout();
+      try {
+        const res = await request(app)
+          .patch(`/merchant/stores/${storeId}/profile`)
+          .set(auth)
+          .send({
+            name: "Uptown Location",
+            address1: "456 Elm St",
+            city: "San Francisco",
+            state: "CA",
+            postal: "94102",
+          });
+        expect(res.status).toBe(200);
+        expect(res.body.name).toBe("Uptown Location");
+        expect(res.body.address1).toBe("456 Elm St");
+        expect(res.body.city).toBe("San Francisco");
+
+        const joined = output.join("\n");
+        expect(joined).toContain("merchant.store.profile.updated");
+        expect(joined).toContain("TC-STORE-PROF-02");
+      } finally {
+        restore();
+      }
     });
 
     it("updates store phone", async () => {

@@ -3,6 +3,7 @@
 const request = require("supertest");
 const { getApp, merchantToken, authHeader } = require("./helpers/setup");
 const { prisma, resetDb, createMerchant, createUser, addMerchantUser } = require("./helpers/seed");
+const { captureStdout } = require("./helpers/captureStdout");
 
 let app;
 let auth;
@@ -46,15 +47,24 @@ afterAll(async () => {
 
 describe("Merchant Store Team", () => {
   describe("GET /merchant/stores/:storeId/team", () => {
-    it("returns team with employees list", async () => {
-      const res = await request(app)
-        .get(`/merchant/stores/${storeId}/team`)
-        .set(auth);
-      expect(res.status).toBe(200);
-      expect(res.body).toHaveProperty("storeId", storeId);
-      expect(res.body).toHaveProperty("merchantId", merchant.id);
-      expect(Array.isArray(res.body.employees)).toBe(true);
-      expect(res.body.employees.length).toBeGreaterThanOrEqual(2); // owner + employee
+    it("returns team with employees list and emits viewed hook", async () => {
+      const { output, restore } = captureStdout();
+      try {
+        const res = await request(app)
+          .get(`/merchant/stores/${storeId}/team`)
+          .set(auth);
+        expect(res.status).toBe(200);
+        expect(res.body).toHaveProperty("storeId", storeId);
+        expect(res.body).toHaveProperty("merchantId", merchant.id);
+        expect(Array.isArray(res.body.employees)).toBe(true);
+        expect(res.body.employees.length).toBeGreaterThanOrEqual(2);
+
+        const joined = output.join("\n");
+        expect(joined).toContain("merchant.store.team.viewed");
+        expect(joined).toContain("TC-TEAM-01");
+      } finally {
+        restore();
+      }
     });
 
     it("rejects non-existent store", async () => {
@@ -72,19 +82,28 @@ describe("Merchant Store Team", () => {
   });
 
   describe("POST /merchant/stores/:storeId/team/assign", () => {
-    it("assigns employee to store", async () => {
-      const res = await request(app)
-        .post(`/merchant/stores/${storeId}/team/assign`)
-        .set(auth)
-        .send({
-          merchantUserId: employeeMuId,
-          permissionLevel: "pos_access",
-        });
-      expect(res.status).toBe(200);
-      expect(res.body.ok).toBe(true);
-      expect(res.body.storeUser).toHaveProperty("id");
-      expect(res.body.storeUser.permissionLevel).toBe("pos_access");
-      storeUserId = res.body.storeUser.id;
+    it("assigns employee to store and emits assigned hook", async () => {
+      const { output, restore } = captureStdout();
+      try {
+        const res = await request(app)
+          .post(`/merchant/stores/${storeId}/team/assign`)
+          .set(auth)
+          .send({
+            merchantUserId: employeeMuId,
+            permissionLevel: "pos_access",
+          });
+        expect(res.status).toBe(200);
+        expect(res.body.ok).toBe(true);
+        expect(res.body.storeUser).toHaveProperty("id");
+        expect(res.body.storeUser.permissionLevel).toBe("pos_access");
+        storeUserId = res.body.storeUser.id;
+
+        const joined = output.join("\n");
+        expect(joined).toContain("merchant.store.team.assigned");
+        expect(joined).toContain("TC-TEAM-02");
+      } finally {
+        restore();
+      }
     });
 
     it("updates permission on re-assign", async () => {
@@ -131,14 +150,23 @@ describe("Merchant Store Team", () => {
   });
 
   describe("PATCH /merchant/stores/:storeId/team/primary-contact", () => {
-    it("sets primary contact", async () => {
-      const res = await request(app)
-        .patch(`/merchant/stores/${storeId}/team/primary-contact`)
-        .set(auth)
-        .send({ primaryContactStoreUserId: storeUserId });
-      expect(res.status).toBe(200);
-      expect(res.body.ok).toBe(true);
-      expect(res.body.primaryContactStoreUserId).toBe(storeUserId);
+    it("sets primary contact and emits hook", async () => {
+      const { output, restore } = captureStdout();
+      try {
+        const res = await request(app)
+          .patch(`/merchant/stores/${storeId}/team/primary-contact`)
+          .set(auth)
+          .send({ primaryContactStoreUserId: storeUserId });
+        expect(res.status).toBe(200);
+        expect(res.body.ok).toBe(true);
+        expect(res.body.primaryContactStoreUserId).toBe(storeUserId);
+
+        const joined = output.join("\n");
+        expect(joined).toContain("merchant.store.team.primary_contact_set");
+        expect(joined).toContain("TC-TEAM-03");
+      } finally {
+        restore();
+      }
     });
 
     it("clears primary contact", async () => {
@@ -160,13 +188,22 @@ describe("Merchant Store Team", () => {
   });
 
   describe("DELETE /merchant/stores/team/:storeUserId", () => {
-    it("removes team member", async () => {
-      const res = await request(app)
-        .delete(`/merchant/stores/team/${storeUserId}`)
-        .set(auth);
-      expect(res.status).toBe(200);
-      expect(res.body.ok).toBe(true);
-      expect(res.body.storeUserId).toBe(storeUserId);
+    it("removes team member and emits removed hook", async () => {
+      const { output, restore } = captureStdout();
+      try {
+        const res = await request(app)
+          .delete(`/merchant/stores/team/${storeUserId}`)
+          .set(auth);
+        expect(res.status).toBe(200);
+        expect(res.body.ok).toBe(true);
+        expect(res.body.storeUserId).toBe(storeUserId);
+
+        const joined = output.join("\n");
+        expect(joined).toContain("merchant.store.team.removed");
+        expect(joined).toContain("TC-TEAM-04");
+      } finally {
+        restore();
+      }
     });
 
     it("rejects non-existent storeUser", async () => {
