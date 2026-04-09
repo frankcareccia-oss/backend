@@ -537,6 +537,7 @@ app.use(
     handlePrismaError,
     requireMerchantUserManager,
     parseIntParam,
+    emitPvHook,
   })
 );
 
@@ -546,6 +547,7 @@ app.use(
     requireJwt,
     sendError,
     handlePrismaError,
+    emitPvHook,
   })
 );
 

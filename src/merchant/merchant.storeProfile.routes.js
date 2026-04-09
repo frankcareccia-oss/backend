@@ -42,7 +42,7 @@ async function resolveMerchantIdsForUser(prisma, userId) {
 function buildMerchantStoreProfileRouter(deps) {
   if (!deps) throw new Error("buildMerchantStoreProfileRouter: deps is required");
 
-  const { prisma, requireJwt, sendError, handlePrismaError } = deps;
+  const { prisma, requireJwt, sendError, handlePrismaError, emitPvHook } = deps;
 
   if (!prisma) throw new Error("buildMerchantStoreProfileRouter: prisma is required");
   if (typeof requireJwt !== "function") throw new Error("buildMerchantStoreProfileRouter: requireJwt is required");
@@ -78,6 +78,16 @@ function buildMerchantStoreProfileRouter(deps) {
       });
 
       if (!store) return sendError(res, 404, "NOT_FOUND", "Store not found");
+
+      emitPvHook?.("merchant.store.profile.viewed", {
+        tc: "TC-STORE-PROF-01",
+        sev: "info",
+        stable: "store:" + storeId,
+        storeId,
+        merchantId: store.merchantId,
+        userId: req.userId,
+      });
+
       return res.json(store);
     } catch (e) {
       return handlePrismaError(res, e);
@@ -163,6 +173,16 @@ function buildMerchantStoreProfileRouter(deps) {
       const updated = await prisma.store.update({
         where: { id: storeId },
         data,
+      });
+
+      emitPvHook?.("merchant.store.profile.updated", {
+        tc: "TC-STORE-PROF-02",
+        sev: "info",
+        stable: "store:" + storeId,
+        storeId,
+        merchantId: updated.merchantId,
+        userId: req.userId,
+        fields: Object.keys(data),
       });
 
       return res.json(updated);

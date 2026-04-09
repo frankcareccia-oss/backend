@@ -116,6 +116,7 @@ function buildMerchantStoreTeamRouter(deps) {
     sendError,
     handlePrismaError,
     requireMerchantUserManager,
+    emitPvHook,
   } = deps;
 
   if (!prisma) throw new Error("buildMerchantStoreTeamRouter: prisma is required");
@@ -202,6 +203,17 @@ function buildMerchantStoreTeamRouter(deps) {
       );
 
       const assigned = storeUsers.map(mapStoreUser);
+
+      emitPvHook?.("merchant.store.team.viewed", {
+        tc: "TC-TEAM-01",
+        sev: "info",
+        stable: "store:" + storeId,
+        storeId,
+        merchantId: store.merchantId,
+        userId: req.userId,
+        employeeCount: employees.length,
+        assignedCount: assigned.length,
+      });
 
       return res.json({
         storeId: store.id,
@@ -303,6 +315,18 @@ function buildMerchantStoreTeamRouter(deps) {
         },
       });
 
+      emitPvHook?.("merchant.store.team.assigned", {
+        tc: "TC-TEAM-02",
+        sev: "info",
+        stable: "store:" + storeId,
+        storeId,
+        merchantId: store.merchantId,
+        merchantUserId,
+        permissionLevel,
+        storeUserId: upserted.id,
+        userId: req.userId,
+      });
+
       return res.json({
         ok: true,
         storeUser: upserted,
@@ -374,6 +398,15 @@ function buildMerchantStoreTeamRouter(deps) {
         select: { id: true, primaryContactStoreUserId: true },
       });
 
+      emitPvHook?.("merchant.store.team.primary_contact_set", {
+        tc: "TC-TEAM-03",
+        sev: "info",
+        stable: "store:" + storeId,
+        storeId,
+        primaryContactStoreUserId: updated.primaryContactStoreUserId || null,
+        userId: req.userId,
+      });
+
       return res.json({
         ok: true,
         storeId: updated.id,
@@ -434,6 +467,16 @@ function buildMerchantStoreTeamRouter(deps) {
         await tx.storeUser.delete({
           where: { id: storeUserId },
         });
+      });
+
+      emitPvHook?.("merchant.store.team.removed", {
+        tc: "TC-TEAM-04",
+        sev: "info",
+        stable: "store:" + store.id,
+        storeId: store.id,
+        merchantId: store.merchantId,
+        storeUserId,
+        userId: req.userId,
       });
 
       return res.json({
