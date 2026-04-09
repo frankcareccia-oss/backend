@@ -436,7 +436,7 @@ function buildMerchantRouter(deps) {
         select: {
           id: true,
           systemRole: true,
-          merchantUsers: { where: { status: "active" }, select: { merchantId: true, role: true } },
+          merchantUsers: { where: { status: "active" }, select: { merchantId: true, role: true, status: true } },
         },
       });
 
@@ -493,7 +493,7 @@ function buildMerchantRouter(deps) {
         select: {
           id: true,
           systemRole: true,
-          merchantUsers: { where: { status: "active" }, select: { merchantId: true, role: true } },
+          merchantUsers: { where: { status: "active" }, select: { merchantId: true, role: true, status: true } },
         },
       });
 
