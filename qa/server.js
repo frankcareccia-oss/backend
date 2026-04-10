@@ -365,6 +365,43 @@ const HTML = `<!DOCTYPE html>
   .filter-select { background: #21262d; border: 1px solid #30363d; color: #c9d1d9; padding: 6px 10px; border-radius: 6px; font-size: 13px; cursor: pointer; }
   .filter-select:focus { outline: none; border-color: #388bfd; }
 
+  .tree { padding: 0 24px 24px; }
+  .tree-repo { margin-bottom: 8px; }
+  .tree-repo-header { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: #161b22; border: 1px solid #30363d; border-radius: 8px; margin-bottom: 4px; cursor: pointer; }
+  .tree-repo-header:hover { background: #1c2128; }
+  .tree-repo-name { font-size: 15px; font-weight: 700; color: #c9d1d9; }
+  .tree-repo-stats { font-size: 12px; color: #8b949e; margin-left: auto; }
+  .tree-repo-run { background: #238636; border: 1px solid #2ea043; color: #fff; padding: 3px 10px; border-radius: 5px; font-size: 11px; font-weight: 600; cursor: pointer; }
+  .tree-repo-run:hover { background: #2ea043; }
+  .tree-repo-run.running { background: #d29922; border-color: #d29922; animation: pulse 0.8s ease-in-out infinite; }
+
+  .tree-cat { margin-left: 16px; margin-bottom: 2px; }
+  .tree-cat-header { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 6px; cursor: pointer; }
+  .tree-cat-header:hover { background: #161b22; }
+  .tree-arrow { color: #484f58; font-size: 10px; width: 14px; text-align: center; transition: transform 0.15s; }
+  .tree-arrow.open { transform: rotate(90deg); }
+  .tree-cat-name { font-size: 13px; font-weight: 600; color: #c9d1d9; }
+  .tree-cat-badge { font-size: 11px; padding: 1px 7px; border-radius: 10px; font-weight: 600; }
+  .tree-cat-badge.all-pass { background: #3fb95026; color: #3fb950; }
+  .tree-cat-badge.has-fail { background: #f8514926; color: #f85149; }
+  .tree-cat-stats { font-size: 11px; color: #8b949e; margin-left: auto; }
+  .tree-cat-run { background: #21262d; border: 1px solid #30363d; color: #3fb950; padding: 2px 8px; border-radius: 5px; font-size: 11px; cursor: pointer; }
+  .tree-cat-run:hover { background: #30363d; }
+  .tree-cat-run.running { color: #d29922; border-color: #d29922; animation: pulse 0.8s ease-in-out infinite; }
+
+  .tree-cases { margin-left: 38px; display: none; }
+  .tree-cases.open { display: block; }
+  .tree-case { display: flex; align-items: center; gap: 8px; padding: 4px 8px; font-size: 12px; border-bottom: 1px solid #21262d; }
+  .tree-case:hover { background: #161b22; }
+  .tree-case-num { color: #58a6ff; font-weight: 600; cursor: pointer; min-width: 70px; }
+  .tree-case-num:hover { text-decoration: underline; }
+  .tree-case-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .tree-case-dot.pass { background: #3fb950; }
+  .tree-case-dot.fail { background: #f85149; }
+  .tree-case-dot.fixed { background: #d29922; }
+  .tree-case-name { color: #c9d1d9; flex: 1; }
+  .tree-case-file { color: #484f58; font-size: 11px; }
+
   .case-num { color: #58a6ff; font-weight: 600; cursor: pointer; }
   .case-num:hover { text-decoration: underline; }
   .run-icon { color: #3fb950; cursor: pointer; font-size: 15px; opacity: 0.6; transition: all 0.3s; }
@@ -447,32 +484,15 @@ const HTML = `<!DOCTYPE html>
       </select>
       <span style="color:#30363d;margin:0 16px"></span>
       <span style="color:#8b949e;font-size:13px">Status:</span>
-      <button data-filter="all">All</button>
-      <button class="active" data-filter="open">Open</button>
+      <button class="active" data-filter="all">All</button>
+      <button data-filter="open">Open</button>
       <button data-filter="fixed">Fixed</button>
       <button data-filter="verified">Verified</button>
       <button data-filter="regressed">Regressed</button>
     </div>
   </div>
 
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th></th>
-          <th>Case</th>
-          <th>Status</th>
-          <th>Feature</th>
-          <th>File</th>
-          <th>Test</th>
-          <th>Error</th>
-          <th>First Seen</th>
-          <th>Last Seen</th>
-        </tr>
-      </thead>
-      <tbody id="cases"></tbody>
-    </table>
-  </div>
+  <div class="tree" id="treeContainer"></div>
 
   <div class="modal-bg" id="modalBg" onclick="if(event.target===this)closeModal()">
     <div class="modal" id="modal"></div>
@@ -480,9 +500,11 @@ const HTML = `<!DOCTYPE html>
 
 <script>
 let allCases = [];
-let currentFilter = "open";
+let currentFilter = "all";
 let currentFeature = "all";
 let currentRepo = "all";
+let currentView = "flat";
+let expandedNodes = new Set();
 
 async function refreshDashboard() {
   const [sumRes, casesRes] = await Promise.all([
@@ -543,18 +565,154 @@ function renderCases() {
   if (currentFilter !== "all") filtered = filtered.filter(c => c.status === currentFilter);
   if (currentFeature !== "all") filtered = filtered.filter(c => c.feature === currentFeature);
   if (currentRepo !== "all") filtered = filtered.filter(c => c.repo === currentRepo);
-  const tbody = document.getElementById("cases");
-  tbody.innerHTML = filtered.map(c => '<tr>' +
-    '<td><span class="run-icon" id="run-icon-' + c.id + '" onclick="runCase(' + c.id + ')" title="Run this test">&#9654;</span></td>' +
-    '<td><span class="case-num" onclick="showDetail(' + c.id + ')">' + c.case_number + '</span></td>' +
-    '<td><span class="badge ' + c.status + '">' + c.status + '</span></td>' +
-    '<td><span class="tag ' + (c.feature || '') + '">' + (c.feature || '-') + '</span></td>' +
-    '<td class="file">' + c.test_file + '</td>' +
-    '<td>' + c.test_name + '</td>' +
-    '<td class="error-preview">' + esc(firstLine(c.error_message)) + '</td>' +
-    '<td class="time">' + shortDate(c.first_seen_at) + '</td>' +
-    '<td class="time">' + shortDate(c.last_seen_at) + '</td>' +
-  '</tr>').join("");
+
+  renderTree(filtered);
+}
+
+function renderTree(cases) {
+  // Build structure: repo → feature → cases
+  const repos = {};
+  cases.forEach(c => {
+    const r = c.repo || "unknown";
+    const f = c.feature || "other";
+    if (!repos[r]) repos[r] = {};
+    if (!repos[r][f]) repos[r][f] = [];
+    repos[r][f].push(c);
+  });
+
+  const container = document.getElementById("treeContainer");
+  let html = "";
+
+  const repoOrder = Object.keys(repos).sort();
+  for (const repo of repoOrder) {
+    const features = repos[repo];
+    const featureOrder = Object.keys(features).sort();
+
+    const repoTotal = featureOrder.reduce((s, f) => s + features[f].length, 0);
+    const repoPass = featureOrder.reduce((s, f) => s + features[f].filter(c => c.status === "verified").length, 0);
+    const repoAllPass = repoPass === repoTotal;
+    const repoId = "repo-" + repo.replace(/[^a-z0-9]/gi, "_");
+
+    html += '<div class="tree-repo">';
+    html += '<div class="tree-repo-header" onclick="toggleRepo(&apos;' + repoId + '&apos;)">';
+    html += '<span class="tree-arrow" id="arrow-' + repoId + '">&#9654;</span>';
+    html += '<span class="tree-repo-name">' + esc(repo) + '</span>';
+    html += '<span class="tree-cat-badge ' + (repoAllPass ? "all-pass" : "has-fail") + '">' + repoPass + '/' + repoTotal + '</span>';
+    html += '<span class="tree-repo-stats">' + featureOrder.length + ' features</span>';
+    html += '<button class="tree-repo-run" onclick="event.stopPropagation(); runRepo(&apos;' + esc(repo) + '&apos;)" title="Run all ' + repo + ' tests">&#9654; Run</button>';
+    html += '</div>';
+    html += '<div id="' + repoId + '" style="display:none">';
+
+    for (const feature of featureOrder) {
+      const fCases = features[feature];
+      const fPass = fCases.filter(c => c.status === "verified").length;
+      const fTotal = fCases.length;
+      const fAllPass = fPass === fTotal;
+      const catId = repoId + "-" + feature.replace(/[^a-z0-9]/gi, "_");
+
+      html += '<div class="tree-cat">';
+      html += '<div class="tree-cat-header" onclick="toggleCat(&apos;' + catId + '&apos;)">';
+      html += '<span class="tree-arrow" id="arrow-' + catId + '">&#9654;</span>';
+      html += '<span class="tag ' + feature + '">' + feature + '</span>';
+      html += '<span class="tree-cat-badge ' + (fAllPass ? "all-pass" : "has-fail") + '">' + fPass + '/' + fTotal + '</span>';
+      html += '<button class="tree-cat-run" onclick="event.stopPropagation(); runCategory(&apos;' + esc(repo) + '&apos;,&apos;' + esc(feature) + '&apos;)" title="Run ' + feature + ' tests">&#9654;</button>';
+      html += '</div>';
+      html += '<div class="tree-cases" id="' + catId + '">';
+
+      for (const c of fCases) {
+        const dotClass = c.status === "verified" ? "pass" : c.status === "fixed" ? "fixed" : "fail";
+        html += '<div class="tree-case">';
+        html += '<span class="tree-case-dot ' + dotClass + '"></span>';
+        html += '<span class="tree-case-num" onclick="showDetail(' + c.id + ')">' + c.case_number + '</span>';
+        html += '<span class="tree-case-name">' + esc(c.test_name) + '</span>';
+        html += '<span class="tree-case-file">' + esc(c.test_file) + '</span>';
+        html += '</div>';
+      }
+
+      html += '</div></div>';
+    }
+
+    html += '</div></div>';
+  }
+
+  container.innerHTML = html;
+
+  // Restore expanded state
+  for (const id of expandedNodes) {
+    const el = document.getElementById(id);
+    const arrow = document.getElementById("arrow-" + id);
+    if (el && arrow) {
+      if (el.classList.contains("tree-cases")) {
+        el.classList.add("open");
+      } else {
+        el.style.display = "block";
+      }
+      arrow.classList.add("open");
+    }
+  }
+}
+
+function toggleRepo(id) {
+  const el = document.getElementById(id);
+  const arrow = document.getElementById("arrow-" + id);
+  if (el.style.display === "none") {
+    el.style.display = "block";
+    arrow.classList.add("open");
+    expandedNodes.add(id);
+  } else {
+    el.style.display = "none";
+    arrow.classList.remove("open");
+    expandedNodes.delete(id);
+  }
+}
+
+function toggleCat(id) {
+  const el = document.getElementById(id);
+  const arrow = document.getElementById("arrow-" + id);
+  el.classList.toggle("open");
+  arrow.classList.toggle("open");
+  if (el.classList.contains("open")) expandedNodes.add(id);
+  else expandedNodes.delete(id);
+}
+
+function runRepo(repo) {
+  // Collect all case IDs for this repo
+  const ids = allCases.filter(c => c.repo === repo).map(c => c.id);
+  if (!ids.length) return;
+  runCaseBatch(ids, "repo-" + repo.replace(/[^a-z0-9]/gi, "_"));
+}
+
+function runCategory(repo, feature) {
+  const ids = allCases.filter(c => c.repo === repo && c.feature === feature).map(c => c.id);
+  if (!ids.length) return;
+  const catId = "repo-" + repo.replace(/[^a-z0-9]/gi, "_") + "-" + feature.replace(/[^a-z0-9]/gi, "_");
+  runCaseBatch(ids, catId);
+}
+
+async function runCaseBatch(caseIds, uiId) {
+  const runBtn = document.querySelector("#" + uiId + " .tree-cat-run") || document.querySelector("[onclick*='" + uiId + "'] .tree-repo-run");
+  document.getElementById("runBtn").disabled = true;
+  const status = document.getElementById("runStatus");
+  const statusText = document.getElementById("runStatusText");
+  status.classList.add("show");
+  const startTime = Date.now();
+  statusText.textContent = "Running " + caseIds.length + " tests... 0s";
+  syncTimer = setInterval(() => {
+    statusText.textContent = "Running " + caseIds.length + " tests... " + Math.round((Date.now() - startTime) / 1000) + "s";
+  }, 1000);
+
+  try {
+    await fetch("/api/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope: "cases", caseIds }),
+    });
+    pollRunStatus();
+  } catch (err) {
+    clearInterval(syncTimer);
+    statusText.textContent = "Error";
+    setTimeout(() => { status.classList.remove("show"); document.getElementById("runBtn").disabled = false; }, 3000);
+  }
 }
 
 function firstLine(s) { return (s || "").split("\\n")[0].slice(0, 120); }
@@ -605,9 +763,9 @@ function closeModal() {
 }
 
 // Filter buttons
-document.querySelectorAll(".controls button").forEach(btn => {
+document.querySelectorAll(".controls button[data-filter]").forEach(btn => {
   btn.addEventListener("click", () => {
-    document.querySelectorAll(".controls button").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(".controls button[data-filter]").forEach(b => b.classList.remove("active"));
     btn.classList.add("active");
     currentFilter = btn.dataset.filter;
     renderCases();
@@ -701,13 +859,21 @@ async function runCase(id) {
 }
 
 
+let syncTimer = null;
+
 async function syncResults() {
   document.getElementById("runMenu").classList.remove("show");
   document.getElementById("runBtn").disabled = true;
   const status = document.getElementById("runStatus");
   const statusText = document.getElementById("runStatusText");
   status.classList.add("show");
-  statusText.textContent = "Syncing results...";
+
+  const startTime = Date.now();
+  statusText.textContent = "Syncing... 0s";
+  syncTimer = setInterval(() => {
+    const elapsed = Math.round((Date.now() - startTime) / 1000);
+    statusText.textContent = "Syncing... " + elapsed + "s";
+  }, 1000);
 
   try {
     const res = await fetch("/api/run", {
@@ -717,12 +883,14 @@ async function syncResults() {
     });
     const data = await res.json();
     if (data.skipped) {
+      clearInterval(syncTimer);
       statusText.textContent = data.message;
       setTimeout(() => { status.classList.remove("show"); document.getElementById("runBtn").disabled = false; }, 3000);
       return;
     }
     pollRunStatus();
   } catch (err) {
+    clearInterval(syncTimer);
     statusText.textContent = "Error syncing";
     setTimeout(() => { status.classList.remove("show"); document.getElementById("runBtn").disabled = false; }, 3000);
   }
@@ -771,6 +939,7 @@ function pollRunStatus(caseId) {
     const res = await fetch("/api/run/status").then(r => r.json());
     if (!res.running) {
       clearInterval(iv);
+      if (syncTimer) { clearInterval(syncTimer); syncTimer = null; }
       document.getElementById("runStatus").classList.remove("show");
       document.getElementById("runBtn").disabled = false;
 

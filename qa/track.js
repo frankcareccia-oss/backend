@@ -189,6 +189,18 @@ async function run() {
         verified++;
         console.log(`  PASS ${c.case_number}  ${r.file} > ${r.name}`);
       }
+    } else if (r.status === "passed" && existing.rows.length === 0) {
+      // New passing test — create case as verified (full inventory)
+      const caseNumber = `${repoPrefix}-${String(nextNum++).padStart(4, "0")}`;
+      const repoName = process.env.QA_REPO_NAME || "backend";
+      const feature = detectFeature(r.file);
+      const ins = await pool.query(
+        `INSERT INTO qa_cases (case_number, test_file, test_name, suite_name, error_message, status, repo, feature, verified_at)
+         VALUES ($1, $2, $3, $4, NULL, 'verified', $5, $6, NOW()) RETURNING id`,
+        [caseNumber, r.file, r.name, r.suite, repoName, feature]
+      );
+      caseId = ins.rows[0].id;
+      newCases++;
     }
 
     // 5. Record the run result
