@@ -719,24 +719,36 @@ function firstLine(s) { return (s || "").split("\\n")[0].slice(0, 120); }
 function esc(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
 function shortDate(s) { return s ? new Date(s).toLocaleDateString() + " " + new Date(s).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"}) : "-"; }
 
+let modalCaseId = null;
+
 async function showDetail(id) {
+  modalCaseId = id;
   const data = await fetch("/api/cases/" + id).then(r => r.json());
+  renderModal(data);
+  document.getElementById("modalBg").classList.add("show");
+}
+
+function renderModal(data) {
+  const id = data.id;
   const m = document.getElementById("modal");
   m.innerHTML =
     '<h2>' + data.case_number + ' — ' + data.test_name + '</h2>' +
     '<div class="meta">' +
       '<span>File: ' + data.test_file + '</span>' +
       '<span>Suite: ' + (data.suite_name || '-') + '</span>' +
-      '<span>Status: <span class="badge ' + data.status + '">' + data.status + '</span></span>' +
+      '<span>Status: <span class="badge ' + data.status + '" id="modalBadge">' + data.status + '</span></span>' +
     '</div>' +
     '<pre>' + esc(data.error_message || "No error") + '</pre>' +
-    '<div class="actions">' +
-      '<button style="background:#238636;color:#fff;border-color:#2ea043" onclick="runCase(' + id + ');closeModal()">Run This Test</button>' +
+    '<div class="actions" id="modalActions">' +
+      '<button style="background:#238636;color:#fff;border-color:#2ea043" id="modalRunBtn" onclick="runCaseInModal(' + id + ')">Run This Test</button>' +
       (data.status === "open" || data.status === "regressed"
-        ? '<button class="btn-fixed" onclick="markFixed(' + id + ')">Mark Fixed</button>' : '') +
+        ? '<button class="btn-fixed" onclick="markFixedInModal(' + id + ')">Mark Fixed</button>' : '') +
       '<button class="btn-close" onclick="closeModal()">Close</button>' +
     '</div>' +
-    '<div class="history"><h3>Run History</h3>' +
+    '<div id="modalProgress" style="display:none;padding:12px 0;color:#d29922;font-size:13px;align-items:center;gap:8px">' +
+      '<div class="spinner"></div><span id="modalProgressText">Running...</span>' +
+    '</div>' +
+    '<div class="history" id="modalHistory"><h3>Run History</h3>' +
       (data.history || []).map(h =>
         '<div class="history-item">' +
           '<span class="h-status ' + h.status + '">' + h.status + '</span>' +
@@ -745,21 +757,76 @@ async function showDetail(id) {
         '</div>'
       ).join("") +
     '</div>';
-  document.getElementById("modalBg").classList.add("show");
 }
 
-async function markFixed(id) {
+async function runCaseInModal(id) {
+  // Show progress inside modal
+  const runBtn = document.getElementById("modalRunBtn");
+  const progress = document.getElementById("modalProgress");
+  const progressText = document.getElementById("modalProgressText");
+  if (runBtn) runBtn.style.display = "none";
+  if (progress) progress.style.display = "flex";
+
+  const startTime = Date.now();
+  const timer = setInterval(() => {
+    if (progressText) progressText.textContent = "Running... " + Math.round((Date.now() - startTime) / 1000) + "s";
+  }, 1000);
+
+  try {
+    await fetch("/api/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope: "cases", caseIds: [id] }),
+    });
+
+    // Poll until done
+    await new Promise((resolve) => {
+      const iv = setInterval(async () => {
+        const res = await fetch("/api/run/status").then(r => r.json());
+        if (!res.running) {
+          clearInterval(iv);
+          resolve();
+        }
+      }, 1500);
+    });
+  } catch (err) {
+    // ignore
+  }
+
+  clearInterval(timer);
+
+  // Refresh modal content with updated data
+  const data = await fetch("/api/cases/" + id).then(r => r.json());
+  renderModal(data);
+
+  // Background refresh of case data (no tree re-render)
+  const casesRes = await fetch("/api/cases").then(r => r.json());
+  allCases = casesRes;
+  const sumRes = await fetch("/api/summary").then(r => r.json());
+  renderSummary(sumRes);
+}
+
+async function markFixedInModal(id) {
   await fetch("/api/cases/" + id, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ status: "fixed" }),
   });
-  closeModal();
-  refreshDashboard();
+  // Refresh modal
+  const data = await fetch("/api/cases/" + id).then(r => r.json());
+  renderModal(data);
+  // Background data refresh
+  const casesRes = await fetch("/api/cases").then(r => r.json());
+  allCases = casesRes;
+  const sumRes = await fetch("/api/summary").then(r => r.json());
+  renderSummary(sumRes);
 }
 
 function closeModal() {
   document.getElementById("modalBg").classList.remove("show");
+  modalCaseId = null;
+  // Re-render tree with latest data but preserve expanded state
+  renderCases();
 }
 
 // Filter buttons
@@ -822,42 +889,7 @@ async function serverAction(action) {
 checkServerStatus();
 setInterval(checkServerStatus, 5000);
 
-// Run a single case
 let runningCaseId = null;
-
-async function runCase(id) {
-  const icon = document.getElementById("run-icon-" + id);
-  if (icon) { icon.classList.add("running"); icon.classList.remove("done"); }
-  runningCaseId = id;
-
-  document.getElementById("runBtn").disabled = true;
-  const status = document.getElementById("runStatus");
-  const statusText = document.getElementById("runStatusText");
-  status.classList.add("show");
-  statusText.textContent = "Running test...";
-  try {
-    const res = await fetch("/api/run", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ scope: "cases", caseIds: [id] }),
-    });
-    const data = await res.json();
-    if (data.skipped) {
-      statusText.textContent = data.message;
-      if (icon) { icon.classList.remove("running"); }
-      runningCaseId = null;
-      setTimeout(() => { status.classList.remove("show"); document.getElementById("runBtn").disabled = false; }, 3000);
-      return;
-    }
-    pollRunStatus(id);
-  } catch (err) {
-    statusText.textContent = "Error starting run";
-    if (icon) { icon.classList.remove("running"); }
-    runningCaseId = null;
-    setTimeout(() => { status.classList.remove("show"); document.getElementById("runBtn").disabled = false; }, 3000);
-  }
-}
-
 
 let syncTimer = null;
 
@@ -942,19 +974,17 @@ function pollRunStatus(caseId) {
       if (syncTimer) { clearInterval(syncTimer); syncTimer = null; }
       document.getElementById("runStatus").classList.remove("show");
       document.getElementById("runBtn").disabled = false;
-
-      // Flash the icon green on completion
-      const doneId = caseId || runningCaseId;
-      if (doneId) {
-        const icon = document.getElementById("run-icon-" + doneId);
-        if (icon) { icon.classList.remove("running"); icon.classList.add("done"); }
-        setTimeout(() => {
-          if (icon) icon.classList.remove("done");
-        }, 2000);
-      }
       runningCaseId = null;
 
-      refreshDashboard();
+      // Background data refresh + re-render tree preserving state
+      const [sumRes, casesRes] = await Promise.all([
+        fetch("/api/summary").then(r => r.json()),
+        fetch("/api/cases").then(r => r.json()),
+      ]);
+      allCases = casesRes;
+      renderSummary(sumRes);
+      populateFilterDropdowns();
+      renderCases();
     }
   }, 2000);
 }
