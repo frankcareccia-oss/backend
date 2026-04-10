@@ -116,13 +116,15 @@ async function run() {
     }
   }
 
-  // 3. Get next case number
+  // 3. Get next case number per repo prefix
+  const repoPrefix = process.env.QA_REPO_PREFIX || "BE";
   const maxCase = await pool.query(
-    "SELECT case_number FROM qa_cases ORDER BY id DESC LIMIT 1"
+    "SELECT case_number FROM qa_cases WHERE case_number LIKE $1 ORDER BY id DESC LIMIT 1",
+    [repoPrefix + "-%"]
   );
   let nextNum = 1;
   if (maxCase.rows.length) {
-    const m = maxCase.rows[0].case_number.match(/QA-(\d+)/);
+    const m = maxCase.rows[0].case_number.match(/-(\d+)$/);
     if (m) nextNum = parseInt(m[1], 10) + 1;
   }
 
@@ -143,12 +145,13 @@ async function run() {
     if (r.status === "failed") {
       if (existing.rows.length === 0) {
         // New failure — create case
-        const caseNumber = `QA-${String(nextNum++).padStart(3, "0")}`;
+        const caseNumber = `${repoPrefix}-${String(nextNum++).padStart(4, "0")}`;
+        const repoName = process.env.QA_REPO_NAME || "backend";
         const feature = detectFeature(r.file);
         const ins = await pool.query(
           `INSERT INTO qa_cases (case_number, test_file, test_name, suite_name, error_message, status, repo, feature)
-           VALUES ($1, $2, $3, $4, $5, 'open', 'backend', $6) RETURNING id`,
-          [caseNumber, r.file, r.name, r.suite, r.error, feature]
+           VALUES ($1, $2, $3, $4, $5, 'open', $6, $7) RETURNING id`,
+          [caseNumber, r.file, r.name, r.suite, r.error, repoName, feature]
         );
         caseId = ins.rows[0].id;
         newCases++;
