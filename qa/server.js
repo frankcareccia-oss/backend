@@ -738,7 +738,7 @@ function renderModal(data) {
       '<span>Suite: ' + (data.suite_name || '-') + '</span>' +
       '<span>Status: <span class="badge ' + data.status + '" id="modalBadge">' + data.status + '</span></span>' +
     '</div>' +
-    '<pre>' + esc(data.error_message || "No error") + '</pre>' +
+    (data.error_message ? '<pre>' + esc(data.error_message) + '</pre>' : '') +
     '<div class="actions" id="modalActions">' +
       '<button style="background:#238636;color:#fff;border-color:#2ea043" id="modalRunBtn" onclick="runCaseInModal(' + id + ')">Run This Test</button>' +
       (data.status === "open" || data.status === "regressed"
