@@ -16,6 +16,7 @@ const { createNotificationConsumer } = require("../consumers/notification.consum
 const { createWalletRefreshConsumer } = require("../consumers/walletRefresh.consumer");
 const { createPromotionOutcomeConsumer } = require("../consumers/promotionOutcome.consumer");
 const { createGrowthMetricsConsumer } = require("../consumers/growthMetrics.consumer");
+const { createSettlementAccrualConsumer } = require("../consumers/settlementAccrual.consumer");
 
 function bootstrapEventPublisher(prisma, emitPvHook) {
   const publisher = createPublisher(prisma, emitPvHook);
@@ -40,12 +41,16 @@ function bootstrapEventPublisher(prisma, emitPvHook) {
   // promotion_outcome_refresh_requested → growth metrics
   publisher.register("promotion_outcome_refresh_requested", "growthMetrics", createGrowthMetricsConsumer(deps));
 
+  // subsidy_applied → settlement accrual (financial obligation)
+  publisher.register("subsidy_applied", "settlementAccrual", createSettlementAccrualConsumer(deps));
+
   console.log("[event.bootstrap] registered consumers:", [
     "reward_granted → walletRefresh, promotionOutcome, notification",
     "stamp_recorded → promotionOutcome",
     "notification_requested → notification",
     "wallet_refresh_requested → walletRefresh",
     "promotion_outcome_refresh_requested → growthMetrics",
+    "subsidy_applied → settlementAccrual",
   ].join("; "));
 
   return publisher;

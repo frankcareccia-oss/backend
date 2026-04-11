@@ -108,6 +108,10 @@ model Merchant {
 
   // Payment Event Ledger
   paymentEvents      PaymentEvent[]
+
+  // CPG & Settlement
+  cpgParticipations  CpgParticipation[]
+  settlementAccruals SettlementAccrual[]
 }
 
 model Store {
@@ -1708,4 +1712,135 @@ model EventDelivery {
   @@index([consumerName, status])
   @@index([eventId])
   @@index([createdAt])
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CPG Entity — Consumer Packaged Goods company (General Mills, P&G, etc.)
+// Sets settlement rules that all their promotions inherit.
+// ═══════════════════════════════════════════════════════════════
+
+enum CpgStatus {
+  active
+  inactive
+}
+
+enum FeeHandling {
+  cpg_pays
+  shared
+  merchant_pays
+}
+
+model CpgEntity {
+  id                    Int          @id @default(autoincrement())
+  name                  String       @unique
+  status                CpgStatus    @default(active)
+
+  /// Settlement policy
+  settlementCadence     String       @default("weekly") @db.VarChar(30)  // weekly, net_15, net_30, monthly
+  payoutDelayDays       Int          @default(7)
+  disputeWindowDays     Int          @default(14)
+  minimumPayoutCents    Int          @default(5000)    // $50.00 default
+  feeHandling           FeeHandling  @default(cpg_pays)
+  platformFeeCents      Int          @default(0)       // per-transaction fee PV charges
+
+  /// Future: brand-level overrides
+  brandOverridesJson    Json?
+
+  /// Opt-in policy
+  merchantOptInRequired Boolean      @default(true)
+
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
+
+  participations        CpgParticipation[]
+  accruals              SettlementAccrual[]
+
+  @@index([status])
+}
+
+// ═══════════════════════════════════════════════════════════════
+// CPG Participation — merchant opt-in/decline/pause per CPG
+// ═══════════════════════════════════════════════════════════════
+
+enum CpgParticipationStatus {
+  active
+  declined
+  paused
+}
+
+model CpgParticipation {
+  id            Int                      @id @default(autoincrement())
+  cpgId         Int
+  cpg           CpgEntity                @relation(fields: [cpgId], references: [id])
+  merchantId    Int
+  merchant      Merchant                 @relation(fields: [merchantId], references: [id])
+  status        CpgParticipationStatus   @default(active)
+  agreedAt      DateTime?
+  declinedAt    DateTime?
+  pausedAt      DateTime?
+  reason        String?
+
+  createdAt     DateTime                 @default(now())
+  updatedAt     DateTime                 @updatedAt
+
+  @@unique([cpgId, merchantId])
+  @@index([merchantId])
+  @@index([cpgId, status])
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Settlement Accrual — durable financial obligation entries
+// CPG owes merchant for subsidies applied. Linked to source events.
+// ═══════════════════════════════════════════════════════════════
+
+enum AccrualStatus {
+  open          // accrued, not yet batched
+  batched       // included in a settlement batch
+  paid          // settlement paid out
+  disputed      // merchant or CPG raised a dispute
+  reversed      // accrual reversed (e.g. fraud)
+}
+
+model SettlementAccrual {
+  id                Int            @id @default(autoincrement())
+
+  /// Source event linkage (idempotency)
+  sourceEventId     String         @unique @db.VarChar(36)  // eventId from outbox
+  correlationId     String?        @db.VarChar(36)
+
+  /// Parties
+  cpgId             Int
+  cpg               CpgEntity      @relation(fields: [cpgId], references: [id])
+  merchantId        Int
+  merchant          Merchant       @relation(fields: [merchantId], references: [id])
+  storeId           Int?
+  consumerId        Int?
+  promotionId       Int?
+
+  /// Financial
+  grossAmountCents  Int            @default(0)   // subsidy amount
+  feeAmountCents    Int            @default(0)   // PV platform fee
+  netAmountCents    Int            @default(0)   // gross - fee = what merchant gets
+  currency          String         @default("usd") @db.VarChar(3)
+
+  /// State
+  status            AccrualStatus  @default(open)
+  effectiveAt       DateTime       @default(now())  // when the subsidy was applied
+
+  /// Batch linkage (filled when batched)
+  batchId           Int?
+
+  /// Product reference (for grocery)
+  upc               String?        @db.VarChar(50)
+  transactionId     String?        @db.VarChar(100)
+
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  @@index([cpgId, status])
+  @@index([merchantId, status])
+  @@index([status])
+  @@index([batchId])
+  @@index([transactionId])
+  @@index([effectiveAt])
 }

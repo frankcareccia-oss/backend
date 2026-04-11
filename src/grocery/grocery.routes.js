@@ -13,6 +13,8 @@ const express = require("express");
 const crypto = require("crypto");
 const { lookupUpc, getAllPromos } = require("./grocery.config");
 const { recordPaymentEvent } = require("../payments/paymentEvent.service");
+const { writeOutboxEventDirect } = require("../events/event.outbox.service");
+const { prisma } = require("../db/prisma");
 
 function buildGroceryRouter({ sendError, emitPvHook }) {
   const router = express.Router();
@@ -166,6 +168,30 @@ function buildGroceryRouter({ sendError, emitPvHook }) {
             metadata: { quantity: qty, priceCents },
             emitHook: emitPvHook,
           });
+
+          // Write outbox event for settlement accrual consumer
+          try {
+            await writeOutboxEventDirect(prisma, {
+              eventType: "subsidy_applied",
+              aggregateType: "subsidy",
+              aggregateId: transactionId + ":" + (item.upc || eventCount),
+              idempotencyKey: "subsidy:" + transactionId + ":" + (item.upc || eventCount),
+              merchantId: Number(merchantId),
+              storeId: Number(storeId),
+              payload: {
+                subsidyCents,
+                upc: item.upc,
+                productName: item.productName || null,
+                transactionId,
+                phone: phoneDigits,
+                quantity: qty,
+                priceCents,
+              },
+            });
+          } catch (outboxErr) {
+            console.error("[grocery] outbox write error:", outboxErr?.message);
+          }
+
           eventCount++;
         }
       }
