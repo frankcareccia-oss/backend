@@ -613,6 +613,9 @@ app.use(
 const { buildPaymentEventRouter } = require("./src/payments/paymentEvent.routes");
 app.use(buildPaymentEventRouter({ requireJwt, requireAdmin, sendError, emitPvHook }));
 
+const { buildEventOpsRouter } = require("./src/events/event.ops.routes");
+app.use(buildEventOpsRouter({ prisma, requireJwt, requireAdmin, sendError, emitPvHook }));
+
 app.get("/whoami", requireAdmin, async (req, res) => {
   try {
     await prisma.$queryRaw`SELECT 1`;
