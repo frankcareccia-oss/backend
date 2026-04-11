@@ -1645,6 +1645,9 @@ model EventOutbox {
   publishedAt      DateTime?
   lastError        String?
 
+  /// Deliveries
+  deliveries       EventDelivery[]
+
   /// Timestamps
   createdAt        DateTime           @default(now())
   updatedAt        DateTime           @updatedAt
@@ -1654,5 +1657,55 @@ model EventOutbox {
   @@index([aggregateType, aggregateId])
   @@index([correlationId])
   @@index([merchantId])
+  @@index([createdAt])
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Event Delivery — per-consumer processing accounting
+// Tracks which consumers received, processed, or failed each event.
+// Enables: posted vs processed auditing, retry visibility, dead-letter recovery.
+// ═══════════════════════════════════════════════════════════════
+
+enum EventDeliveryStatus {
+  pending
+  processing
+  processed
+  failed
+  dead_lettered
+}
+
+model EventDelivery {
+  id               Int                   @id @default(autoincrement())
+
+  /// Link to the outbox event
+  outboxEventId    Int
+  outbox           EventOutbox           @relation(fields: [outboxEventId], references: [id])
+  eventId          String                @db.VarChar(36)   // denormalized from outbox for query convenience
+
+  /// Consumer identity
+  consumerName     String                @db.VarChar(100)  // e.g. "notification", "walletRefresh", "settlementAccrual"
+
+  /// Processing state
+  status           EventDeliveryStatus   @default(pending)
+  attempts         Int                   @default(0)
+  maxAttempts      Int                   @default(3)
+
+  /// Timing
+  startedAt        DateTime?
+  completedAt      DateTime?
+  nextRetryAt      DateTime?
+  lastError        String?
+
+  /// Result metadata (optional — consumer can store output)
+  resultJson       Json?
+
+  /// Timestamps
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+
+  @@unique([outboxEventId, consumerName])
+  @@index([status])
+  @@index([consumerName, status])
+  @@index([eventId])
   @@index([createdAt])
 }

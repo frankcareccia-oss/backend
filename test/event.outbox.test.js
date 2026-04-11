@@ -219,7 +219,15 @@ describe("Event Publisher", () => {
     const updated = await prisma.eventOutbox.findUnique({ where: { id: event.id } });
     expect(updated.status).toBe("failed");
     expect(updated.publishAttempts).toBe(1);
-    expect(updated.lastError).toContain("Consumer exploded");
+    // Specific error is in the delivery record, outbox gets summary
+    expect(updated.lastError).toBeTruthy();
+
+    // Verify the delivery record has the specific error
+    const delivery = await prisma.eventDelivery.findFirst({
+      where: { outboxEventId: event.id },
+    });
+    expect(delivery).toBeTruthy();
+    expect(delivery.lastError).toContain("Consumer exploded");
   });
 
   it("marks events with no consumers as published", async () => {

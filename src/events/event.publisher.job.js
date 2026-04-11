@@ -18,21 +18,37 @@
 "use strict";
 
 const { fetchPendingEvents, markPublished, markFailed } = require("./event.outbox.service");
+const {
+  createDelivery,
+  isAlreadyProcessed,
+  markProcessing,
+  markProcessed,
+  markDeliveryFailed,
+} = require("./event.delivery.service");
 
 function createPublisher(prisma, emitPvHook) {
-  const consumers = new Map(); // eventType → [handler, handler, ...]
+  const consumers = new Map(); // eventType → [{ name, handler }, ...]
   let interval = null;
   let running = false;
 
   /**
-   * Register a consumer function for an event type.
+   * Register a named consumer function for an event type.
    * Multiple consumers can be registered per event type.
+   *
+   * @param {string} eventType
+   * @param {string} name — unique consumer name (e.g. "notification", "settlementAccrual")
+   * @param {function} handler — async (event) => result
    */
-  function register(eventType, handler) {
+  function register(eventType, name, handler) {
+    // Backward compat: if name is a function, treat as (eventType, handler)
+    if (typeof name === "function") {
+      handler = name;
+      name = eventType + "_default";
+    }
     if (!consumers.has(eventType)) {
       consumers.set(eventType, []);
     }
-    consumers.get(eventType).push(handler);
+    consumers.get(eventType).push({ name, handler });
   }
 
   /**
@@ -68,12 +84,51 @@ function createPublisher(prisma, emitPvHook) {
           continue;
         }
 
-        try {
-          // Run all consumers for this event type
-          for (const handler of handlers) {
-            await handler(event);
-          }
+        let allSucceeded = true;
 
+        for (const consumer of handlers) {
+          // Create delivery record (idempotent — skips if exists)
+          const delivery = await createDelivery(prisma, event, consumer.name);
+
+          // Skip if already processed by this consumer
+          if (delivery && delivery.status === "processed") continue;
+
+          try {
+            await markProcessing(prisma, delivery.id);
+            const result = await consumer.handler(event);
+            await markProcessed(prisma, delivery.id, result || null);
+
+            if (typeof emitPvHook === "function") {
+              emitPvHook("event.delivery.processed", {
+                tc: "TC-EV-04",
+                sev: "info",
+                stable: "delivery:" + delivery.id,
+                eventId: event.eventId,
+                eventType: event.eventType,
+                consumerName: consumer.name,
+              });
+            }
+          } catch (err) {
+            allSucceeded = false;
+            await markDeliveryFailed(prisma, delivery.id, err);
+
+            if (typeof emitPvHook === "function") {
+              emitPvHook("event.delivery.failed", {
+                tc: "TC-EV-05",
+                sev: "warn",
+                stable: "delivery:" + delivery.id,
+                eventId: event.eventId,
+                eventType: event.eventType,
+                consumerName: consumer.name,
+                attempt: (delivery.attempts || 0) + 1,
+                error: (err?.message || "").slice(0, 200),
+              });
+            }
+          }
+        }
+
+        // Mark outbox event published if all consumers succeeded
+        if (allSucceeded) {
           await markPublished(prisma, event.id);
 
           if (typeof emitPvHook === "function") {
@@ -88,25 +143,23 @@ function createPublisher(prisma, emitPvHook) {
               consumerCount: handlers.length,
             });
           }
-        } catch (err) {
+        } else {
           await markFailed(
             prisma,
             event.id,
-            err?.message || String(err),
+            "one or more consumers failed",
             event.publishAttempts,
             event.maxAttempts
           );
 
           if (typeof emitPvHook === "function") {
-            emitPvHook("event.publish.failed", {
+            emitPvHook("event.publish.partial_failure", {
               tc: "TC-EV-03",
               sev: "warn",
               stable: "outbox:" + event.id,
               eventId: event.eventId,
               eventType: event.eventType,
               attempt: event.publishAttempts + 1,
-              maxAttempts: event.maxAttempts,
-              error: (err?.message || "").slice(0, 200),
             });
           }
         }
