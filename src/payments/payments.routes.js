@@ -712,7 +712,7 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
       try {
         const payment = await prisma.payment.findFirst({
           where: { providerChargeId: intentId },
-          select: { id: true, status: true, invoiceId: true, amountCents: true },
+          select: { id: true, status: true, invoiceId: true, amountCents: true, invoice: { select: { merchantId: true } } },
         });
 
         if (!payment) {
@@ -844,6 +844,27 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
               });
             }
           });
+
+          // Record immutable payment event in audit ledger
+          try {
+            const { recordPaymentEvent } = require("./paymentEvent.service");
+            await recordPaymentEvent({
+              eventType: "payment_completed",
+              source: "stripe",
+              merchantId: payment.invoice?.merchantId || null,
+              amountCents: payment.amountCents || 0,
+              providerEventId: intentId,
+              providerOrderId: String(payment.invoiceId || ""),
+              metadata: {
+                paymentId: payment.id,
+                invoiceId: payment.invoiceId,
+                chargeId: event.data?.object?.latest_charge || null,
+              },
+              emitHook: pvHook,
+            });
+          } catch (e) {
+            console.error("[stripe.webhook] PaymentEvent recording error:", e?.message || String(e));
+          }
 
           return res.status(200).json({ received: true });
         }
