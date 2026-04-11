@@ -400,6 +400,10 @@ app.use(paymentsReg.router);
 // Square webhook — must be mounted with express.raw BEFORE express.json
 registerSquareWebhookRoute(app);
 
+// Clover webhook — must be mounted with express.raw BEFORE express.json
+const { registerCloverWebhookRoute } = require("./src/pos/clover.webhook.routes");
+registerCloverWebhookRoute(app);
+
 // POS-2: POS API (JWT-only, POS-only)
 const posReg = registerPosRoutes(app, {
   prisma,
