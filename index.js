@@ -703,6 +703,11 @@ if (require.main === module) app.listen(PORT, () => {
       console.error("[cron] outcome recompute failed:", e?.message || String(e));
     });
   }, SIX_HOURS);
+
+  // Event Publisher — poll outbox and dispatch to consumers
+  const { bootstrapEventPublisher } = require("./src/events/event.bootstrap");
+  const eventPublisher = bootstrapEventPublisher(prisma, emitPvHook);
+  eventPublisher.start(5000); // poll every 5 seconds
 });
 
 module.exports = app;
