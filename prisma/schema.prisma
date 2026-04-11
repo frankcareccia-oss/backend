@@ -1754,6 +1754,7 @@ model CpgEntity {
 
   participations        CpgParticipation[]
   accruals              SettlementAccrual[]
+  batches               SettlementBatch[]
 
   @@index([status])
 }
@@ -1843,4 +1844,68 @@ model SettlementAccrual {
   @@index([batchId])
   @@index([transactionId])
   @@index([effectiveAt])
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Settlement Batch — groups open accruals into payable batches
+// One batch per CPG per settlement window.
+// ═══════════════════════════════════════════════════════════════
+
+enum SettlementBatchStatus {
+  open        // accumulating accruals
+  finalized   // locked, ready for payout
+  paid        // funds disbursed
+  failed      // payout failed
+}
+
+model SettlementBatch {
+  id                  Int                    @id @default(autoincrement())
+  cpgId               Int
+  cpg                 CpgEntity              @relation(fields: [cpgId], references: [id])
+
+  /// Window
+  periodStart         DateTime
+  periodEnd           DateTime
+  cadence             String                 @db.VarChar(30)  // weekly, net_15, etc.
+
+  /// Totals (computed from items)
+  totalGrossCents     Int                    @default(0)
+  totalFeeCents       Int                    @default(0)
+  totalNetCents       Int                    @default(0)
+  itemCount           Int                    @default(0)
+
+  /// State
+  status              SettlementBatchStatus  @default(open)
+  finalizedAt         DateTime?
+  paidAt              DateTime?
+  paymentReference    String?                @db.VarChar(255)  // external payment ref
+  lastError           String?
+
+  /// Audit
+  createdBy           Int?                   // pv_admin userId who triggered
+  createdAt           DateTime               @default(now())
+  updatedAt           DateTime               @updatedAt
+
+  items               SettlementBatchItem[]
+
+  @@index([cpgId, status])
+  @@index([status])
+  @@index([periodStart, periodEnd])
+}
+
+model SettlementBatchItem {
+  id              Int               @id @default(autoincrement())
+  batchId         Int
+  batch           SettlementBatch   @relation(fields: [batchId], references: [id])
+  accrualId       Int
+  merchantId      Int
+  grossAmountCents Int
+  feeAmountCents  Int
+  netAmountCents  Int
+
+  createdAt       DateTime          @default(now())
+
+  @@index([batchId])
+  @@index([merchantId])
+  @@index([accrualId])
 }
