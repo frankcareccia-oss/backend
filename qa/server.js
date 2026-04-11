@@ -237,6 +237,85 @@ app.get("/api/run/status", (_req, res) => {
   res.json({ running: runInProgress });
 });
 
+// Sync All — runs backend + consumer + admin sequentially
+app.post("/api/run/all", async (_req, res) => {
+  if (runInProgress) return res.status(409).json({ error: "A test run is already in progress" });
+  runInProgress = true;
+
+  res.json({ started: true, scope: "all-repos" });
+
+  const CONSUMER_DIR = path.resolve(BACKEND_DIR, "..", "consumer-app");
+  const ADMIN_DIR = path.resolve(BACKEND_DIR, "..", "admin");
+
+  const steps = [];
+
+  // Step 1: Backend (Jest)
+  try {
+    addLog("[sync-all] Step 1/3: Backend tests...");
+    await new Promise((resolve, reject) => {
+      execFile("node", [path.join(__dirname, "track.js")], { cwd: BACKEND_DIR, timeout: 300000 }, (err, stdout) => {
+        if (stdout) console.log(stdout);
+        steps.push({ repo: "backend", ok: true });
+        resolve();
+      });
+    });
+  } catch (e) {
+    steps.push({ repo: "backend", ok: false, error: e?.message });
+  }
+
+  // Step 2: Consumer App (Playwright)
+  try {
+    addLog("[sync-all] Step 2/3: Consumer app E2E...");
+    await new Promise((resolve, reject) => {
+      execFile("npx", ["playwright", "test"], { cwd: CONSUMER_DIR, timeout: 300000, shell: true }, (err, stdout) => {
+        if (stdout) console.log(stdout);
+        // Feed results into tracker
+        execFile("node", [
+          path.join(__dirname, "track-playwright.js"),
+          path.join(CONSUMER_DIR, "e2e-results.json"),
+        ], {
+          cwd: BACKEND_DIR,
+          timeout: 30000,
+          env: { ...process.env, QA_REPO_PREFIX: "CA", QA_REPO_NAME: "consumer-app" },
+        }, (err2, stdout2) => {
+          if (stdout2) console.log(stdout2);
+          steps.push({ repo: "consumer-app", ok: true });
+          resolve();
+        });
+      });
+    });
+  } catch (e) {
+    steps.push({ repo: "consumer-app", ok: false, error: e?.message });
+  }
+
+  // Step 3: Admin App (Playwright)
+  try {
+    addLog("[sync-all] Step 3/3: Admin app E2E...");
+    await new Promise((resolve, reject) => {
+      execFile("npx", ["playwright", "test"], { cwd: ADMIN_DIR, timeout: 300000, shell: true }, (err, stdout) => {
+        if (stdout) console.log(stdout);
+        execFile("node", [
+          path.join(__dirname, "track-playwright.js"),
+          path.join(ADMIN_DIR, "e2e-results.json"),
+        ], {
+          cwd: BACKEND_DIR,
+          timeout: 30000,
+          env: { ...process.env, QA_REPO_PREFIX: "AD", QA_REPO_NAME: "admin" },
+        }, (err2, stdout2) => {
+          if (stdout2) console.log(stdout2);
+          steps.push({ repo: "admin", ok: true });
+          resolve();
+        });
+      });
+    });
+  } catch (e) {
+    steps.push({ repo: "admin", ok: false, error: e?.message });
+  }
+
+  addLog("[sync-all] Complete: " + JSON.stringify(steps));
+  runInProgress = false;
+});
+
 // ── Server management API ────────────────────────────
 
 app.get("/api/server/status", async (_req, res) => {
@@ -446,9 +525,13 @@ const HTML = `<!DOCTYPE html>
         <div class="run-dropdown">
           <button class="run-btn" id="runBtn" onclick="toggleRunMenu()">Run Tests <span class="arrow">&#9662;</span></button>
           <div class="run-menu" id="runMenu">
+            <button onclick="syncAll()">
+              Sync All Repos
+              <span class="hint">Backend + Consumer + Admin (full system)</span>
+            </button>
             <button onclick="syncResults()">
-              Sync Results
-              <span class="hint">Run suite &amp; update tracker</span>
+              Sync Backend Only
+              <span class="hint">Run backend test suite only</span>
             </button>
             <button onclick="runTests('fixed')">
               Run Fixed Only
@@ -892,6 +975,37 @@ setInterval(checkServerStatus, 5000);
 let runningCaseId = null;
 
 let syncTimer = null;
+
+async function syncAll() {
+  document.getElementById("runMenu").classList.remove("show");
+  document.getElementById("runBtn").disabled = true;
+  const status = document.getElementById("runStatus");
+  const statusText = document.getElementById("runStatusText");
+  status.classList.add("show");
+
+  const startTime = Date.now();
+  statusText.textContent = "Syncing all repos... 0s";
+  syncTimer = setInterval(() => {
+    const elapsed = Math.round((Date.now() - startTime) / 1000);
+    statusText.textContent = "Syncing all repos... " + elapsed + "s";
+  }, 1000);
+
+  try {
+    const res = await fetch("/api/run/all", { method: "POST" });
+    const data = await res.json();
+    if (data.error) {
+      clearInterval(syncTimer);
+      statusText.textContent = data.error;
+      setTimeout(() => { status.classList.remove("show"); document.getElementById("runBtn").disabled = false; }, 3000);
+      return;
+    }
+    pollRunStatus();
+  } catch (err) {
+    clearInterval(syncTimer);
+    statusText.textContent = "Error syncing";
+    setTimeout(() => { status.classList.remove("show"); document.getElementById("runBtn").disabled = false; }, 3000);
+  }
+}
 
 async function syncResults() {
   document.getElementById("runMenu").classList.remove("show");
