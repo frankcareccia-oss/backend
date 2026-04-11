@@ -19,6 +19,7 @@ const { accumulateStamps } = require("./pos.stamps");
 const { writeEventLog } = require("../eventlog/eventlog");
 const { SquareAdapter } = require("./adapters/square.adapter");
 const { syncCatalogFromPos } = require("./pos.catalog.sync");
+const { recordPaymentEvent } = require("../payments/paymentEvent.service");
 
 const SQUARE_WEBHOOK_SIGNATURE_KEY = process.env.SQUARE_WEBHOOK_SIGNATURE_KEY || "";
 
@@ -176,6 +177,7 @@ async function dispatchSquareEvent(eventType, data, merchantIdFromEvent) {
     select: { id: true },
   });
   if (existing) {
+    console.log(`[square.webhook] duplicate payment: ${squarePaymentId} → visit ${existing.id}`);
     return { duplicate: true, visitId: existing.id };
   }
 
@@ -226,6 +228,32 @@ async function dispatchSquareEvent(eventType, data, merchantIdFromEvent) {
     outcome: "success",
     payloadJson: { squarePaymentId, locationId },
   });
+
+  // Record immutable payment event in audit ledger
+  try {
+    await recordPaymentEvent({
+      eventType: "payment_completed",
+      source: "square",
+      merchantId,
+      storeId: pvStoreId,
+      consumerId: consumerId || null,
+      amountCents: amountMoney?.amount || 0,
+      currency: (amountMoney?.currency || "USD").toLowerCase(),
+      providerEventId: squarePaymentId,
+      providerOrderId: payment.order_id || null,
+      metadata: {
+        locationId,
+        eventType,
+        visitId: visit.id,
+        squareStatus: payment.status,
+      },
+      emitHook: (name, data) => {
+        console.log(JSON.stringify({ pvHook: name, ts: new Date().toISOString(), ...data }));
+      },
+    });
+  } catch (e) {
+    console.error("[square.webhook] PaymentEvent recording error:", e?.message || String(e));
+  }
 
   // Stamp accumulation for identified consumers
   if (consumerId) {
