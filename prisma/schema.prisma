@@ -1597,3 +1597,62 @@ model PaymentEvent {
   @@index([phone])
   @@index([storeId])
 }
+
+// ═══════════════════════════════════════════════════════════════
+// Event Outbox — transactional event staging for durable delivery
+// Written in the same DB transaction as business truth.
+// Publisher reads pending rows and dispatches to consumers.
+// ═══════════════════════════════════════════════════════════════
+
+enum EventOutboxStatus {
+  pending
+  published
+  failed
+  dead_lettered
+}
+
+model EventOutbox {
+  id               Int                @id @default(autoincrement())
+
+  /// Event identity (UUID, generated at write time)
+  eventId          String             @unique @db.VarChar(36)
+
+  /// Event classification
+  eventType        String             @db.VarChar(100)
+  aggregateType    String             @db.VarChar(50)    // e.g. "reward", "visit", "promotion", "subsidy"
+  aggregateId      String             @db.VarChar(100)   // e.g. reward ID, visit ID
+
+  /// Lineage — trace cause-and-effect chains
+  correlationId    String?            @db.VarChar(36)    // groups related events (e.g. one scan → visit + reward + notification)
+  causationId      String?            @db.VarChar(36)    // the eventId that caused this event
+
+  /// Idempotency — prevents duplicate event creation
+  idempotencyKey   String             @unique @db.VarChar(200)
+
+  /// Business context
+  merchantId       Int?
+  storeId          Int?
+  consumerId       Int?
+
+  /// Event data
+  payloadJson      Json
+
+  /// Publish state
+  status           EventOutboxStatus  @default(pending)
+  publishAttempts  Int                @default(0)
+  maxAttempts      Int                @default(5)
+  nextAttemptAt    DateTime           @default(now())
+  publishedAt      DateTime?
+  lastError        String?
+
+  /// Timestamps
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  @@index([status, nextAttemptAt])
+  @@index([eventType])
+  @@index([aggregateType, aggregateId])
+  @@index([correlationId])
+  @@index([merchantId])
+  @@index([createdAt])
+}

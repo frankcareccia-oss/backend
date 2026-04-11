@@ -13,6 +13,7 @@
 
 const { writeEventLog } = require("../eventlog/eventlog");
 const { recordPromotionEvent } = require("../growth/promotionOutcome.events");
+const { writeOutboxEvent } = require("../events/event.outbox.service");
 
 /**
  * Build the human-readable reward label for Entitlement metadata.
@@ -133,6 +134,32 @@ async function accumulateStamps(prisma, { consumerId, merchantId, storeId, visit
               },
             },
           });
+        }
+
+        // Write outbox event in same transaction as business truth
+        try {
+          await writeOutboxEvent(tx, {
+            eventType: milestoneEarned ? "reward_granted" : "stamp_recorded",
+            aggregateType: "reward",
+            aggregateId: String(upserted.id),
+            idempotencyKey: milestoneEarned
+              ? `reward_granted:${consumerId}:${promo.id}:${upserted.stampCount}:${visitId || Date.now()}`
+              : `stamp_recorded:${consumerId}:${promo.id}:${upserted.stampCount}:${visitId || Date.now()}`,
+            merchantId,
+            storeId: storeId || null,
+            consumerId,
+            payload: {
+              promotionId: promo.id,
+              promotionName: promo.name,
+              stampCount: milestoneEarned ? 0 : upserted.stampCount,
+              threshold: promo.threshold,
+              milestoneEarned,
+              visitId: visitId || null,
+            },
+          });
+        } catch (outboxErr) {
+          // Never block the reward flow — log and continue
+          console.error("[pos.stamps] outbox write error:", outboxErr?.message || String(outboxErr));
         }
 
         return {
