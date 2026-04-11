@@ -1,19 +1,24 @@
 // tests/grocery.test.js — Grocery MVP: validate, complete, promos list + hardening
 
 const request = require("supertest");
-const { getApp } = require("./helpers/setup");
-const { prisma, resetDb, createMerchant } = require("./helpers/seed");
+const { getApp, merchantToken, authHeader } = require("./helpers/setup");
+const { prisma, resetDb, createMerchant, createUser, addMerchantUser } = require("./helpers/seed");
 const { captureStdout } = require("./helpers/captureStdout");
 
 let app;
 let merchant;
 let storeId;
+let auth;
 
 beforeAll(async () => {
   app = getApp();
   await resetDb();
 
   merchant = await createMerchant({ name: "Grocery Test Market" });
+  const user = await createUser({ email: "grocery-test@perkvalet.org" });
+  await addMerchantUser({ merchantId: merchant.id, userId: user.id, role: "owner" });
+  auth = authHeader(merchantToken({ userId: user.id, merchantId: merchant.id }));
+
   const store = await prisma.store.create({
     data: { merchantId: merchant.id, name: "Grocery Store #1", phoneRaw: "", phoneCountry: "US" },
   });
@@ -29,7 +34,7 @@ describe("Grocery Validate", () => {
     it("returns eligible for known UPC + valid phone", async () => {
       const { output, restore } = captureStdout();
       try {
-        const res = await request(app).post("/grocery/validate")
+        const res = await request(app).post("/grocery/validate").set(auth)
           .send({ upc: "012345678901", quantity: 1, phone: "4085551234", storeId });
         expect(res.status).toBe(200);
         expect(res.body.eligible).toBe(true);
@@ -49,7 +54,7 @@ describe("Grocery Validate", () => {
     it("returns ineligible for invalid phone", async () => {
       const { output, restore } = captureStdout();
       try {
-        const res = await request(app).post("/grocery/validate")
+        const res = await request(app).post("/grocery/validate").set(auth)
           .send({ upc: "012345678901", phone: "123", storeId });
         expect(res.status).toBe(200);
         expect(res.body.eligible).toBe(false);
@@ -66,7 +71,7 @@ describe("Grocery Validate", () => {
     it("returns ineligible for unknown UPC", async () => {
       const { output, restore } = captureStdout();
       try {
-        const res = await request(app).post("/grocery/validate")
+        const res = await request(app).post("/grocery/validate").set(auth)
           .send({ upc: "999999999999", phone: "4085551234", storeId });
         expect(res.status).toBe(200);
         expect(res.body.eligible).toBe(false);
@@ -81,7 +86,7 @@ describe("Grocery Validate", () => {
     });
 
     it("multiplies subsidy by quantity", async () => {
-      const res = await request(app).post("/grocery/validate")
+      const res = await request(app).post("/grocery/validate").set(auth)
         .send({ upc: "012345678901", quantity: 3, phone: "4085551234", storeId });
       expect(res.body.eligible).toBe(true);
       expect(res.body.subsidyAmountCents).toBe(750); // 250 * 3
@@ -89,19 +94,19 @@ describe("Grocery Validate", () => {
     });
 
     it("rejects missing upc", async () => {
-      const res = await request(app).post("/grocery/validate")
+      const res = await request(app).post("/grocery/validate").set(auth)
         .send({ phone: "4085551234", storeId });
       expect(res.status).toBe(400);
     });
 
     it("rejects missing phone", async () => {
-      const res = await request(app).post("/grocery/validate")
+      const res = await request(app).post("/grocery/validate").set(auth)
         .send({ upc: "012345678901", storeId });
       expect(res.status).toBe(400);
     });
 
     it("rejects missing storeId", async () => {
-      const res = await request(app).post("/grocery/validate")
+      const res = await request(app).post("/grocery/validate").set(auth)
         .send({ upc: "012345678901", phone: "4085551234" });
       expect(res.status).toBe(400);
     });
@@ -113,7 +118,7 @@ describe("Grocery Transaction Completion", () => {
     it("completes transaction and records events", async () => {
       const { output, restore } = captureStdout();
       try {
-        const res = await request(app).post("/grocery/complete")
+        const res = await request(app).post("/grocery/complete").set(auth)
           .send({
             phone: "4085551234",
             storeId,
@@ -142,7 +147,7 @@ describe("Grocery Transaction Completion", () => {
 
     it("records events in PaymentEvent ledger", async () => {
       // Complete another transaction
-      const res = await request(app).post("/grocery/complete")
+      const res = await request(app).post("/grocery/complete").set(auth)
         .send({
           phone: "4085559999",
           storeId,
@@ -170,25 +175,25 @@ describe("Grocery Transaction Completion", () => {
     });
 
     it("rejects missing phone", async () => {
-      const res = await request(app).post("/grocery/complete")
+      const res = await request(app).post("/grocery/complete").set(auth)
         .send({ storeId, merchantId: merchant.id, items: [{ upc: "x", priceCents: 100 }] });
       expect(res.status).toBe(400);
     });
 
     it("rejects missing items", async () => {
-      const res = await request(app).post("/grocery/complete")
+      const res = await request(app).post("/grocery/complete").set(auth)
         .send({ phone: "4085551234", storeId, merchantId: merchant.id });
       expect(res.status).toBe(400);
     });
 
     it("rejects empty items array", async () => {
-      const res = await request(app).post("/grocery/complete")
+      const res = await request(app).post("/grocery/complete").set(auth)
         .send({ phone: "4085551234", storeId, merchantId: merchant.id, items: [] });
       expect(res.status).toBe(400);
     });
 
     it("rejects invalid phone", async () => {
-      const res = await request(app).post("/grocery/complete")
+      const res = await request(app).post("/grocery/complete").set(auth)
         .send({ phone: "123", storeId, merchantId: merchant.id, items: [{ upc: "x", priceCents: 100 }] });
       expect(res.status).toBe(400);
     });
@@ -198,7 +203,7 @@ describe("Grocery Transaction Completion", () => {
 describe("Grocery Promos List", () => {
   describe("GET /grocery/promos", () => {
     it("returns all configured UPC promotions", async () => {
-      const res = await request(app).get("/grocery/promos");
+      const res = await request(app).get("/grocery/promos").set(auth);
       expect(res.status).toBe(200);
       expect(res.body).toHaveProperty("promos");
       expect(Array.isArray(res.body.promos)).toBe(true);
@@ -212,41 +217,41 @@ describe("Grocery Promos List", () => {
 
 describe("Grocery Hardening", () => {
   it("fails closed: SQL injection in UPC", async () => {
-    const res = await request(app).post("/grocery/validate")
+    const res = await request(app).post("/grocery/validate").set(auth)
       .send({ upc: "'; DROP TABLE products; --", phone: "4085551234", storeId });
     expect(res.status).toBe(200);
     expect(res.body.eligible).toBe(false);
   });
 
   it("fails closed: XSS in UPC", async () => {
-    const res = await request(app).post("/grocery/validate")
+    const res = await request(app).post("/grocery/validate").set(auth)
       .send({ upc: '<script>alert(1)</script>', phone: "4085551234", storeId });
     expect(res.status).toBe(200);
     expect(res.body.eligible).toBe(false);
   });
 
   it("fails closed: extremely long UPC", async () => {
-    const res = await request(app).post("/grocery/validate")
+    const res = await request(app).post("/grocery/validate").set(auth)
       .send({ upc: "1".repeat(10000), phone: "4085551234", storeId });
     expect(res.status).toBe(200);
     expect(res.body.eligible).toBe(false);
   });
 
   it("fails closed: UPC as number type", async () => {
-    const res = await request(app).post("/grocery/validate")
+    const res = await request(app).post("/grocery/validate").set(auth)
       .send({ upc: 12345678901, phone: "4085551234", storeId });
     expect(res.status).not.toBe(500);
   });
 
   it("fails closed: phone with letters", async () => {
-    const res = await request(app).post("/grocery/validate")
+    const res = await request(app).post("/grocery/validate").set(auth)
       .send({ upc: "012345678901", phone: "408-555-ABCD", storeId });
     expect(res.status).toBe(200);
     expect(res.body.eligible).toBe(false);
   });
 
   it("no duplicate subsidy: same UPC in one transaction", async () => {
-    const res = await request(app).post("/grocery/complete")
+    const res = await request(app).post("/grocery/complete").set(auth)
       .send({
         phone: "4085551234",
         storeId,

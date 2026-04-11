@@ -16,7 +16,7 @@ const { recordPaymentEvent } = require("../payments/paymentEvent.service");
 const { writeOutboxEventDirect } = require("../events/event.outbox.service");
 const { prisma } = require("../db/prisma");
 
-function buildGroceryRouter({ sendError, emitPvHook }) {
+function buildGroceryRouter({ sendError, emitPvHook, requireJwt }) {
   const router = express.Router();
 
   // In-memory basket store (demo only — not for production)
@@ -35,7 +35,7 @@ function buildGroceryRouter({ sendError, emitPvHook }) {
    * Input: { upc, quantity, phone, storeId }
    * Output: { eligible, subsidyAmount, promotionId, productName }
    */
-  router.post("/grocery/validate", (req, res) => {
+  router.post("/grocery/validate", requireJwt, (req, res) => {
     try {
       const { upc, quantity, phone, storeId } = req.body || {};
 
@@ -123,7 +123,7 @@ function buildGroceryRouter({ sendError, emitPvHook }) {
    * Input: { phone, storeId, merchantId, items: [{ upc, quantity, priceCents, subsidyCents }] }
    * Output: { transactionId, totalCents, totalSubsidyCents, finalCents, eventCount }
    */
-  router.post("/grocery/complete", async (req, res) => {
+  router.post("/grocery/complete", requireJwt, async (req, res) => {
     try {
       const { phone, storeId, merchantId, items } = req.body || {};
 
@@ -249,7 +249,7 @@ function buildGroceryRouter({ sendError, emitPvHook }) {
    * GET /grocery/promos
    * List all configured UPC promotions (admin/debug).
    */
-  router.get("/grocery/promos", (_req, res) => {
+  router.get("/grocery/promos", requireJwt, (_req, res) => {
     return res.json({ promos: getAllPromos() });
   });
 

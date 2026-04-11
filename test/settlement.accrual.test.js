@@ -1,8 +1,8 @@
 // tests/settlement.accrual.test.js — CPG model + settlement accrual + consumer integration
 
 const request = require("supertest");
-const { getApp } = require("./helpers/setup");
-const { prisma, resetDb, createMerchant } = require("./helpers/seed");
+const { getApp, merchantToken, authHeader } = require("./helpers/setup");
+const { prisma, resetDb, createMerchant, createUser, addMerchantUser } = require("./helpers/seed");
 const { captureStdout } = require("./helpers/captureStdout");
 const { createAccrual, getOpenAccruals, getAccrualSummary } = require("../src/settlement/settlement.accrual.service");
 const { writeOutboxEventDirect, uuid } = require("../src/events/event.outbox.service");
@@ -12,12 +12,17 @@ let app;
 let merchant;
 let cpg;
 let storeId;
+let auth;
 
 beforeAll(async () => {
   app = getApp();
   await resetDb();
 
   merchant = await createMerchant({ name: "Settlement Test Market" });
+  const user = await createUser({ email: "settlement-test@perkvalet.org" });
+  await addMerchantUser({ merchantId: merchant.id, userId: user.id, role: "owner" });
+  auth = authHeader(merchantToken({ userId: user.id, merchantId: merchant.id }));
+
   const store = await prisma.store.create({
     data: { merchantId: merchant.id, name: "Settlement Store", phoneRaw: "", phoneCountry: "US" },
   });
@@ -206,7 +211,7 @@ describe("Settlement Accrual Consumer", () => {
 
 describe("Grocery → Accrual Integration", () => {
   it("grocery /complete writes outbox event for settlement", async () => {
-    const res = await request(app).post("/grocery/complete").send({
+    const res = await request(app).post("/grocery/complete").set(auth).send({
       phone: "4085551234",
       storeId,
       merchantId: merchant.id,

@@ -504,9 +504,9 @@ app.use(
 
 app.get("/", (_req, res) => res.json({ status: "PerkValet backend running ?" }));
 
-// Grocery MVP — public endpoints (no auth per spec)
+// Grocery MVP — JWT-protected
 const { buildGroceryRouter } = require("./src/grocery/grocery.routes");
-app.use(buildGroceryRouter({ sendError, emitPvHook }));
+app.use(buildGroceryRouter({ sendError, emitPvHook, requireJwt }));
 
 const requireMerchantUserManager = buildRequireMerchantUserManager({
   prisma,
