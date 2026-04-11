@@ -105,6 +105,9 @@ model Merchant {
   promotionEvents    PromotionEvent[]
   baselineSnapshots  PromotionBaselineSnapshot[]
   promotionOutcomes  PromotionOutcome[]
+
+  // Payment Event Ledger
+  paymentEvents      PaymentEvent[]
 }
 
 model Store {
@@ -159,6 +162,9 @@ model Store {
   offerSetStores      OfferSetStore[]
   grantedRedemptions  PromoRedemption[] @relation("RedemptionGrantStore")
   posOrders           PosOrder[]
+
+  // Payment Event Ledger
+  paymentEvents       PaymentEvent[] @relation("PaymentEventStore")
 
   @@index([merchantId])
   @@index([phoneE164])
@@ -1521,5 +1527,73 @@ model PromotionOutcome {
 
   @@index([promotionId])
   @@index([merchantId])
+  @@index([storeId])
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Payment Event Ledger — immutable, append-only audit trail
+// Used by: Square, Stripe, Grocery subsidy, future payment sources
+// ═══════════════════════════════════════════════════════════════
+
+enum PaymentEventSource {
+  square
+  stripe
+  grocery
+  manual
+}
+
+enum PaymentEventType {
+  payment_created
+  payment_completed
+  payment_failed
+  payment_refunded
+  subsidy_applied
+  subsidy_reversed
+  settlement_generated
+}
+
+model PaymentEvent {
+  id                Int                @id @default(autoincrement())
+
+  /// Event classification
+  eventType         PaymentEventType
+  source            PaymentEventSource
+
+  /// Business context
+  merchantId        Int
+  merchant          Merchant           @relation(fields: [merchantId], references: [id])
+  storeId           Int?
+  store             Store?             @relation("PaymentEventStore", fields: [storeId], references: [id])
+
+  /// Consumer identity (phone for grocery, consumerId for loyalty)
+  consumerId        Int?
+  phone             String?            @db.VarChar(20)
+
+  /// Financial
+  amountCents       Int                @default(0)
+  currency          String             @default("usd") @db.VarChar(3)
+
+  /// Provider references (immutable once written)
+  providerEventId   String?            @db.VarChar(255)  // Square payment ID, Stripe PI ID, transaction ID
+  providerOrderId   String?            @db.VarChar(255)  // Square order ID, invoice ID
+  promotionId       Int?                                 // Linked promotion (for subsidy/loyalty)
+  transactionId     String?            @db.VarChar(100)  // Logical transaction grouping (e.g. grocery basket)
+
+  /// Product reference (for grocery UPC events)
+  upc               String?            @db.VarChar(50)
+  productName       String?
+
+  /// Unstructured details (provider-specific payload)
+  metadataJson      Json?
+
+  /// Immutable timestamp — no updatedAt by design
+  createdAt         DateTime           @default(now())
+
+  @@index([source, merchantId])
+  @@index([merchantId, createdAt])
+  @@index([source, eventType])
+  @@index([transactionId])
+  @@index([providerEventId])
+  @@index([phone])
   @@index([storeId])
 }
