@@ -1542,6 +1542,7 @@ model PromotionOutcome {
 enum PaymentEventSource {
   square
   stripe
+  clover
   grocery
   manual
 }

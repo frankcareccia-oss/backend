@@ -172,7 +172,7 @@ async function handleCloverPayment(conn, cloverMerchantId, paymentEvent) {
   try {
     await recordPaymentEvent({
       eventType: "payment_completed",
-      source: "manual", // Use "manual" until we add "clover" to enum
+      source: "clover",
       merchantId: conn.merchantId,
       providerEventId: "clover:" + paymentId,
       metadata: {

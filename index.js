@@ -474,6 +474,10 @@ registerSquareOAuthRoutes(app, {
   requireAdmin,
 });
 
+// Clover OAuth + connection management (JWT-protected)
+const { buildCloverOAuthRouter } = require("./src/pos/clover.oauth.routes");
+app.use(buildCloverOAuthRouter({ requireJwt, sendError, emitPvHook }));
+
 app.use(
   buildAuthRouter({
     prisma,
