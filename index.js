@@ -498,6 +498,65 @@ app.use(buildCloverOAuthRouter({ requireJwt, sendError, emitPvHook }));
 const { buildToastOAuthRouter } = require("./src/pos/toast.oauth.routes");
 app.use(buildToastOAuthRouter({ requireJwt, sendError, emitPvHook }));
 
+// Generic POS connection status — returns posType + connection state for the merchant
+app.get("/pos/connect/status", requireJwt, async (req, res) => {
+  try {
+    let merchantId;
+    if (req.systemRole === "pv_admin" && req.query.merchantId) {
+      merchantId = parseInt(req.query.merchantId, 10);
+    } else {
+      const mu = await prisma.merchantUser.findFirst({
+        where: { userId: req.userId, role: { in: ["owner", "merchant_admin"] } },
+        select: { merchantId: true },
+      });
+      if (!mu) return sendError(res, 403, "FORBIDDEN", "Merchant owner or admin role required");
+      merchantId = mu.merchantId;
+    }
+
+    const conn = await prisma.posConnection.findFirst({
+      where: { merchantId },
+      select: { id: true, posType: true, status: true, externalMerchantId: true, createdAt: true, updatedAt: true, lastCatalogSyncAt: true },
+    });
+
+    if (!conn) return res.json({ posType: null, connected: false });
+
+    const locationCount = await prisma.posLocationMap.count({ where: { posConnectionId: conn.id, active: true } });
+    const totalStores = await prisma.store.count({ where: { merchantId, status: "active" } });
+
+    // Get per-store mapping details
+    const stores = await prisma.store.findMany({
+      where: { merchantId, status: "active" },
+      select: { id: true, name: true },
+      orderBy: { name: "asc" },
+    });
+    const maps = await prisma.posLocationMap.findMany({
+      where: { posConnectionId: conn.id, active: true },
+      select: { pvStoreId: true, externalLocationId: true, externalLocationName: true },
+    });
+    const mapByStore = {};
+    maps.forEach(m => { mapByStore[m.pvStoreId] = m; });
+
+    const storeStatuses = stores.map(s => ({
+      storeId: s.id,
+      storeName: s.name,
+      mapped: !!mapByStore[s.id],
+      externalLocationName: mapByStore[s.id]?.externalLocationName || null,
+    }));
+
+    res.json({
+      posType: conn.posType,
+      connected: conn.status === "active",
+      connectionId: conn.id,
+      locationCount,
+      totalStores,
+      storeStatuses,
+      lastCatalogSyncAt: conn.lastCatalogSyncAt,
+    });
+  } catch (e) {
+    sendError(res, 500, "SERVER_ERROR", e?.message);
+  }
+});
+
 app.use(
   buildAuthRouter({
     prisma,

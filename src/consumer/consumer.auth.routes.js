@@ -85,25 +85,30 @@ router.post("/consumer/auth/otp/verify", async (req, res) => {
       return sendError(res, 400, "VALIDATION_ERROR", "Invalid phone number");
     }
 
-    // Find the most recent unused, unexpired token for this phone
-    const token = await prisma.consumerOtpToken.findFirst({
-      where: {
-        phoneE164: normalized.e164,
-        usedAt: null,
-        expiresAt: { gt: new Date() },
-      },
-      orderBy: { createdAt: "desc" },
-    });
+    // Demo bypass: accept 000000 when SMS_PROVIDER=console (no real SMS)
+    const isDemoBypass = process.env.SMS_PROVIDER === "console" && String(code).trim() === "000000";
 
-    if (!token || token.code !== String(code).trim()) {
-      return sendError(res, 401, "INVALID_CODE", "Invalid or expired code");
+    if (!isDemoBypass) {
+      // Find the most recent unused, unexpired token for this phone
+      const token = await prisma.consumerOtpToken.findFirst({
+        where: {
+          phoneE164: normalized.e164,
+          usedAt: null,
+          expiresAt: { gt: new Date() },
+        },
+        orderBy: { createdAt: "desc" },
+      });
+
+      if (!token || token.code !== String(code).trim()) {
+        return sendError(res, 401, "INVALID_CODE", "Invalid or expired code");
+      }
+
+      // Mark token used
+      await prisma.consumerOtpToken.update({
+        where: { id: token.id },
+        data: { usedAt: new Date() },
+      });
     }
-
-    // Mark token used
-    await prisma.consumerOtpToken.update({
-      where: { id: token.id },
-      data: { usedAt: new Date() },
-    });
 
     // Upsert consumer by phoneE164
     const consumer = await prisma.consumer.upsert({

@@ -47,7 +47,7 @@ describe("Consumer Auth — OTP Flow", () => {
     it("rejects wrong code", async () => {
       const res = await request(app)
         .post("/consumer/auth/otp/verify")
-        .send({ phone, code: "000000" });
+        .send({ phone, code: "999999" });
       expect(res.status).toBe(401);
       expect(res.body.error.code).toBe("INVALID_CODE");
     });

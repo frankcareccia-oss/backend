@@ -23,6 +23,25 @@ const { recordPaymentEvent } = require("../payments/paymentEvent.service");
 
 const SQUARE_WEBHOOK_SIGNATURE_KEY = process.env.SQUARE_WEBHOOK_SIGNATURE_KEY || "";
 
+// ─── Webhook dedup cache ─────────────────────────────────────────────────────
+// In-memory set of recently seen event IDs. Silently drops retries at the gate.
+const DEDUP_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const recentEventIds = new Map(); // eventId → timestamp
+
+function isDuplicateEvent(eventId) {
+  if (!eventId) return false;
+  if (recentEventIds.has(eventId)) return true;
+  recentEventIds.set(eventId, Date.now());
+  // Prune old entries periodically
+  if (recentEventIds.size > 500) {
+    const cutoff = Date.now() - DEDUP_TTL_MS;
+    for (const [id, ts] of recentEventIds) {
+      if (ts < cutoff) recentEventIds.delete(id);
+    }
+  }
+  return false;
+}
+
 // ─── HMAC Verification ────────────────────────────────────────────────────────
 
 /**
@@ -320,7 +339,12 @@ function registerSquareWebhookRoute(app) {
         return res.status(400).json({ error: "Invalid JSON body" });
       }
 
-      const { type: eventType, data, merchant_id: eventMerchantId } = event;
+      const { type: eventType, data, merchant_id: eventMerchantId, event_id: squareEventId } = event;
+
+      // Dedup at the gate — silently ACK retries without processing
+      if (isDuplicateEvent(squareEventId)) {
+        return res.status(200).json({ received: true });
+      }
 
       // Respond 200 immediately — Square requires fast ACK
       res.status(200).json({ received: true });
