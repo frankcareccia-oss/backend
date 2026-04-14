@@ -248,6 +248,7 @@ model Consumer {
   entitlements Entitlement[]
 
   posOrders PosOrder[]
+  giftCards ConsumerGiftCard[]
 
   @@index([email])
   @@index([phoneE164])
@@ -1358,10 +1359,28 @@ model PosConnection {
   locationMaps   PosLocationMap[]
   products       Product[]
   catalogSyncLog CatalogSyncLog[]
+  giftCards      ConsumerGiftCard[]
 
   @@unique([merchantId, posType])
   @@index([merchantId])
   @@index([posType, externalMerchantId])
+}
+
+/// Gift card reference — links a PV consumer to their Square gift card.
+/// One card per consumer per PosConnection. Reused across multiple rewards.
+model ConsumerGiftCard {
+  id                Int           @id @default(autoincrement())
+  consumerId        Int
+  consumer          Consumer      @relation(fields: [consumerId], references: [id])
+  posConnectionId   Int
+  posConnection     PosConnection @relation(fields: [posConnectionId], references: [id])
+  squareGiftCardId  String        @db.VarChar(128)
+  squareGan         String?       @db.VarChar(32)
+  active            Boolean       @default(true)
+  createdAt         DateTime      @default(now())
+
+  @@unique([consumerId, posConnectionId])
+  @@index([consumerId])
 }
 
 /// Log of catalog sync events — tracks what changed and when.

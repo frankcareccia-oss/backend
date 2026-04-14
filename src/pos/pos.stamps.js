@@ -14,6 +14,7 @@
 const { writeEventLog } = require("../eventlog/eventlog");
 const { recordPromotionEvent } = require("../growth/promotionOutcome.events");
 const { writeOutboxEvent } = require("../events/event.outbox.service");
+const { issueGiftCardReward } = require("./pos.giftcard");
 
 /**
  * Build the human-readable reward label for Entitlement metadata.
@@ -205,6 +206,11 @@ async function accumulateStamps(prisma, { consumerId, merchantId, storeId, visit
           consumerId,
           eventType: "grant",
           visitId,
+        });
+
+        // Issue gift card reward (fire-and-forget — never blocks the pipeline)
+        issueGiftCardReward({ consumerId, merchantId, promo }).catch(e => {
+          console.error("[pos.stamps] gift card reward error:", e?.message || String(e));
         });
       }
     } catch (e) {
