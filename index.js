@@ -82,6 +82,12 @@ app.use("/webhooks/clover", (req, res, next) => {
   req.on("end", () => { req.rawBody = Buffer.concat(chunks); next(); });
   req.on("error", next);
 });
+app.use("/webhooks/toast", (req, res, next) => {
+  const chunks = [];
+  req.on("data", chunk => chunks.push(chunk));
+  req.on("end", () => { req.rawBody = Buffer.concat(chunks); next(); });
+  req.on("error", next);
+});
 
 function sendError(res, httpStatus, code, message, extras) {
   const payload = { error: { code, message } };
@@ -410,6 +416,10 @@ registerSquareWebhookRoute(app);
 const { registerCloverWebhookRoute } = require("./src/pos/clover.webhook.routes");
 registerCloverWebhookRoute(app);
 
+// Toast webhook — must be mounted with express.raw BEFORE express.json
+const { registerToastWebhookRoute } = require("./src/pos/toast.webhook.routes");
+registerToastWebhookRoute(app);
+
 // POS-2: POS API (JWT-only, POS-only)
 const posReg = registerPosRoutes(app, {
   prisma,
@@ -483,6 +493,10 @@ registerSquareOAuthRoutes(app, {
 // Clover OAuth + connection management (JWT-protected)
 const { buildCloverOAuthRouter } = require("./src/pos/clover.oauth.routes");
 app.use(buildCloverOAuthRouter({ requireJwt, sendError, emitPvHook }));
+
+// Toast connection management (JWT-protected, client-credentials)
+const { buildToastOAuthRouter } = require("./src/pos/toast.oauth.routes");
+app.use(buildToastOAuthRouter({ requireJwt, sendError, emitPvHook }));
 
 app.use(
   buildAuthRouter({

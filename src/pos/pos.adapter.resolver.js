@@ -9,6 +9,7 @@
 const { PrismaClient } = require("@prisma/client");
 const { SquareAdapter } = require("./adapters/square.adapter");
 const { CloverAdapter } = require("./adapters/clover.adapter");
+const { ToastAdapter } = require("./adapters/toast.adapter");
 
 const prisma = new PrismaClient();
 
@@ -35,6 +36,9 @@ async function getPosAdapter(merchant, posType) {
 
     case "clover":
       return new CloverAdapter(connection);
+
+    case "toast":
+      return new ToastAdapter(connection);
 
     default:
       throw new Error(`Unsupported posType: ${connection.posType}`);
