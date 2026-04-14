@@ -678,6 +678,7 @@ enum VisitSource {
   import
   pos_integrated
   square_webhook
+  clover_webhook
   web
 }
 

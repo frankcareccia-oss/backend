@@ -5,6 +5,8 @@
  *   GET  /pos/connect/clover           — initiate OAuth redirect
  *   GET  /pos/connect/clover/callback  — exchange code for tokens
  *   GET  /pos/connect/clover/status    — connection status
+ *   GET  /pos/connect/clover/locations — list Clover locations + existing maps
+ *   POST /pos/connect/clover/map-location — map a Clover location to a PV store
  *   POST /pos/connect/clover/sync-catalog — trigger catalog sync
  *   DELETE /pos/connect/clover         — revoke connection
  *
@@ -21,6 +23,7 @@ const express = require("express");
 const crypto = require("crypto");
 const { prisma } = require("../db/prisma");
 const { syncCatalogFromPos } = require("./pos.catalog.sync");
+const { encrypt } = require("../utils/encrypt");
 
 const CLOVER_APP_ID = process.env.CLOVER_APP_ID || "JBPK5P5GQE5GT";
 const CLOVER_APP_SECRET = process.env.CLOVER_APP_SECRET || "38cb52bd-a6c5-c160-fc74-357c9d8ee16f";
@@ -131,19 +134,27 @@ function buildCloverOAuthRouter({ requireJwt, sendError, emitPvHook }) {
         },
         update: {
           externalMerchantId: cloverMerchantId,
-          accessTokenEnc: tokenData.access_token, // TODO: encrypt in production
+          accessTokenEnc: encrypt(tokenData.access_token),
           status: "active",
         },
         create: {
           merchantId: pvMerchantId,
           posType: "clover",
           externalMerchantId: cloverMerchantId,
-          accessTokenEnc: tokenData.access_token,
+          accessTokenEnc: encrypt(tokenData.access_token),
           status: "active",
         },
       });
 
       // Auto-create location map (Clover merchant = location)
+      // If merchant has exactly one store, auto-map it; otherwise placeholder (0)
+      const stores = await prisma.store.findMany({
+        where: { merchantId: pvMerchantId },
+        select: { id: true, name: true },
+        take: 2,
+      });
+      const autoStore = stores.length === 1 ? stores[0] : null;
+
       await prisma.posLocationMap.upsert({
         where: {
           posConnectionId_externalLocationId: {
@@ -151,12 +162,17 @@ function buildCloverOAuthRouter({ requireJwt, sendError, emitPvHook }) {
             externalLocationId: cloverMerchantId,
           },
         },
-        update: { active: true },
+        update: {
+          active: true,
+          pvStoreId: autoStore ? autoStore.id : undefined,
+          pvStoreName: autoStore ? autoStore.name : undefined,
+        },
         create: {
           posConnectionId: conn.id,
           externalLocationId: cloverMerchantId,
           externalLocationName: "Clover Merchant " + cloverMerchantId,
-          pvStoreId: 0, // Will be mapped manually
+          pvStoreId: autoStore ? autoStore.id : 0,
+          pvStoreName: autoStore ? autoStore.name : null,
           active: true,
         },
       });
@@ -221,6 +237,90 @@ function buildCloverOAuthRouter({ requireJwt, sendError, emitPvHook }) {
       });
     } catch (err) {
       return sendError(res, 500, "SERVER_ERROR", err?.message || "Status check failed");
+    }
+  });
+
+  // ─── GET /pos/connect/clover/locations ─────────────────────────────────────
+
+  router.get("/pos/connect/clover/locations", requireJwt, async (req, res) => {
+    try {
+      const merchant = await resolveMerchant(req);
+      if (!merchant) return sendError(res, 403, "FORBIDDEN", "Merchant owner or admin role required");
+
+      const conn = await prisma.posConnection.findFirst({
+        where: { merchantId: merchant.merchantId, posType: "clover", status: "active" },
+      });
+      if (!conn) return sendError(res, 404, "NOT_FOUND", "No active Clover connection");
+
+      const { CloverAdapter } = require("./adapters/clover.adapter");
+      const adapter = new CloverAdapter(conn);
+      const locations = await adapter.listLocations();
+
+      const existingMaps = await prisma.posLocationMap.findMany({
+        where: { posConnectionId: conn.id },
+        select: { externalLocationId: true, pvStoreId: true, pvStoreName: true, active: true },
+      });
+
+      return res.json({ locations, existingMaps });
+    } catch (err) {
+      return sendError(res, 500, "SERVER_ERROR", err?.message || "Failed to list locations");
+    }
+  });
+
+  // ─── POST /pos/connect/clover/map-location ──────────────────────────────────
+
+  router.post("/pos/connect/clover/map-location", requireJwt, express.json(), async (req, res) => {
+    try {
+      const merchant = await resolveMerchant(req);
+      if (!merchant) return sendError(res, 403, "FORBIDDEN", "Merchant owner or admin role required");
+
+      const { externalLocationId, externalLocationName, pvStoreId } = req.body;
+      if (!externalLocationId || !pvStoreId) {
+        return sendError(res, 400, "BAD_REQUEST", "externalLocationId and pvStoreId required");
+      }
+
+      const conn = await prisma.posConnection.findFirst({
+        where: { merchantId: merchant.merchantId, posType: "clover", status: "active" },
+      });
+      if (!conn) return sendError(res, 404, "NOT_FOUND", "No active Clover connection");
+
+      // Verify the store belongs to this merchant
+      const store = await prisma.store.findFirst({
+        where: { id: parseInt(pvStoreId, 10), merchantId: merchant.merchantId },
+        select: { id: true, name: true },
+      });
+      if (!store) return sendError(res, 404, "NOT_FOUND", "Store not found or not owned by this merchant");
+
+      const map = await prisma.posLocationMap.upsert({
+        where: { posConnectionId_externalLocationId: { posConnectionId: conn.id, externalLocationId } },
+        create: {
+          posConnectionId: conn.id,
+          externalLocationId,
+          externalLocationName: externalLocationName || null,
+          pvStoreId: store.id,
+          pvStoreName: store.name,
+          active: true,
+        },
+        update: {
+          externalLocationName: externalLocationName || null,
+          pvStoreId: store.id,
+          pvStoreName: store.name,
+          active: true,
+        },
+      });
+
+      emitPvHook("clover.location.mapped", {
+        tc: "TC-CLO-05",
+        sev: "info",
+        stable: "clover:location:" + merchant.merchantId,
+        merchantId: merchant.merchantId,
+        externalLocationId,
+        pvStoreId: store.id,
+      });
+
+      return res.json({ ok: true, map });
+    } catch (err) {
+      return sendError(res, 500, "SERVER_ERROR", err?.message || "Failed to map location");
     }
   });
 

@@ -15,6 +15,9 @@ const express = require("express");
 const crypto = require("crypto");
 const { prisma } = require("../db/prisma");
 const { recordPaymentEvent } = require("../payments/paymentEvent.service");
+const { accumulateStamps } = require("./pos.stamps");
+const { writeEventLog } = require("../eventlog/eventlog");
+const { CloverAdapter } = require("./adapters/clover.adapter");
 
 const CLOVER_WEBHOOK_SECRET = process.env.CLOVER_WEBHOOK_SECRET || "";
 
@@ -149,6 +152,7 @@ async function dispatchCloverEvent(event) {
 
 /**
  * Handle a Clover payment event.
+ * Full pipeline: fetch payment → resolve location → resolve consumer → create visit → stamps
  */
 async function handleCloverPayment(conn, cloverMerchantId, paymentEvent) {
   const paymentId = paymentEvent.objectId || paymentEvent.id;
@@ -158,27 +162,109 @@ async function handleCloverPayment(conn, cloverMerchantId, paymentEvent) {
 
   console.log("[clover.webhook] payment:", eventAction, paymentId);
 
-  // Idempotency: check if already processed
+  const posVisitId = "clover:" + paymentId;
+
+  // Idempotency: skip if this payment was already processed
   const existing = await prisma.visit.findFirst({
-    where: { posVisitId: "clover:" + paymentId },
+    where: { posVisitId },
     select: { id: true },
   });
   if (existing) {
-    console.log("[clover.webhook] duplicate payment:", paymentId);
-    return;
+    console.log("[clover.webhook] duplicate payment:", paymentId, "→ visit", existing.id);
+    return { duplicate: true, visitId: existing.id };
   }
 
-  // Record PaymentEvent in audit ledger
+  // Resolve location → PV store
+  // Clover merchant ID IS the location (no multi-location like Square)
+  const locationMap = await prisma.posLocationMap.findFirst({
+    where: { externalLocationId: cloverMerchantId, active: true },
+    include: { posConnection: true },
+  });
+
+  if (!locationMap) {
+    console.warn("[clover.webhook] no location map for Clover merchant:", cloverMerchantId);
+    return { skipped: true, reason: "unmapped location" };
+  }
+
+  const { pvStoreId } = locationMap;
+  const merchantId = conn.merchantId;
+
+  // Fetch payment details from Clover API for amount + order info
+  const adapter = new CloverAdapter(conn);
+  let paymentDetails = null;
+  let amountCents = 0;
+  let orderId = null;
+  try {
+    paymentDetails = await adapter.getPayment(paymentId);
+    amountCents = paymentDetails?.amount || 0;
+    orderId = paymentDetails?.order?.id || null;
+  } catch (e) {
+    console.warn("[clover.webhook] could not fetch payment details:", e?.message);
+    // Continue anyway — we can still create the visit without amount details
+  }
+
+  // Resolve consumer via Clover order's customer (phone match)
+  let consumerId = null;
+  if (orderId) {
+    try {
+      const order = await adapter.getOrder(orderId);
+      consumerId = await adapter.resolveConsumer(order);
+    } catch (e) {
+      console.warn("[clover.webhook] consumer resolution error:", e?.message);
+    }
+  }
+
+  // Create the Visit
+  const visit = await prisma.visit.create({
+    data: {
+      storeId: pvStoreId,
+      merchantId,
+      consumerId: consumerId || null,
+      source: "clover_webhook",
+      status: consumerId ? "identified" : "pending_identity",
+      posVisitId,
+      metadata: {
+        cloverPaymentId: paymentId,
+        cloverMerchantId,
+        amountCents,
+        orderId,
+        eventAction,
+      },
+    },
+    select: { id: true },
+  });
+
+  console.log("[clover.webhook] visit created:", visit.id, consumerId ? "identified" : "pending_identity");
+
+  // Write event log
+  writeEventLog(prisma, {
+    eventType: "visit.registered",
+    merchantId,
+    storeId: pvStoreId,
+    consumerId: consumerId || null,
+    visitId: visit.id,
+    source: "clover_webhook",
+    outcome: "success",
+    payloadJson: { cloverPaymentId: paymentId, cloverMerchantId },
+  });
+
+  // Record immutable payment event in audit ledger
   try {
     await recordPaymentEvent({
       eventType: "payment_completed",
       source: "clover",
-      merchantId: conn.merchantId,
-      providerEventId: "clover:" + paymentId,
+      merchantId,
+      storeId: pvStoreId,
+      consumerId: consumerId || null,
+      amountCents,
+      currency: "usd",
+      providerEventId: posVisitId,
+      providerOrderId: orderId,
       metadata: {
         cloverMerchantId,
         paymentId,
         eventAction,
+        visitId: visit.id,
         posType: "clover",
       },
       emitHook: (name, data) => {
@@ -188,6 +274,22 @@ async function handleCloverPayment(conn, cloverMerchantId, paymentEvent) {
   } catch (e) {
     console.error("[clover.webhook] PaymentEvent recording error:", e?.message);
   }
+
+  // Stamp accumulation for identified consumers
+  if (consumerId) {
+    try {
+      await accumulateStamps(prisma, {
+        consumerId,
+        merchantId,
+        storeId: pvStoreId,
+        visitId: visit.id,
+      });
+    } catch (e) {
+      console.error("[clover.webhook] accumulateStamps error:", e?.message);
+    }
+  }
+
+  return { visitId: visit.id, consumerId, identified: !!consumerId };
 }
 
 module.exports = { registerCloverWebhookRoute };

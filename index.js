@@ -69,8 +69,14 @@ if (process.env.TRUST_PROXY === "1") {
   app.set("trust proxy", 1);
 }
 
-// Capture raw body for Square webhook HMAC verification — must run before any body parser
+// Capture raw body for webhook HMAC verification — must run before any body parser
 app.use("/webhooks/square", (req, res, next) => {
+  const chunks = [];
+  req.on("data", chunk => chunks.push(chunk));
+  req.on("end", () => { req.rawBody = Buffer.concat(chunks); next(); });
+  req.on("error", next);
+});
+app.use("/webhooks/clover", (req, res, next) => {
   const chunks = [];
   req.on("data", chunk => chunks.push(chunk));
   req.on("end", () => { req.rawBody = Buffer.concat(chunks); next(); });

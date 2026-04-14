@@ -11,6 +11,9 @@
 
 const { PVPosAdapter } = require("../pos.adapter.interface");
 const { prisma } = require("../../db/prisma");
+const { decrypt } = require("../../utils/encrypt");
+const { processRewardGrant } = require("../pos.reward");
+const { writeEventLog } = require("../../eventlog/eventlog");
 
 // Clover API base URLs
 const CLOVER_API_BASE = process.env.CLOVER_API_BASE || "https://apisandbox.dev.clover.com";
@@ -28,8 +31,7 @@ class CloverAdapter extends PVPosAdapter {
    * For sandbox, tokens are stored as-is. For production, decrypt.
    */
   _accessToken() {
-    // TODO: decrypt in production
-    return this.conn.accessTokenEnc;
+    return decrypt(this.conn.accessTokenEnc);
   }
 
   /**
@@ -104,10 +106,35 @@ class CloverAdapter extends PVPosAdapter {
     return { valid: true };
   }
 
-  async recordRedemption(payload) {
-    // TODO: Apply discount via Clover Discounts API
-    // For now, record in PV only
-    return { success: true, redemptionId: payload.visitId };
+  async recordRedemption({ visitId, promotionId, discountAmount, metadata }) {
+    const visit = await prisma.visit.findUnique({
+      where: { id: visitId },
+      select: { consumerId: true, storeId: true, merchantId: true },
+    });
+    if (!visit) throw new Error(`Visit not found: ${visitId}`);
+    if (!visit.consumerId) throw new Error("Cannot redeem on unidentified visit");
+
+    const result = await processRewardGrant(prisma, {
+      consumerId: visit.consumerId,
+      merchantId: visit.merchantId,
+      storeId: visit.storeId,
+      associateUserId: null,
+    });
+
+    if (result.error) throw new Error(`Redemption failed: ${result.error}`);
+
+    writeEventLog(prisma, {
+      eventType: "redemption.recorded",
+      merchantId: visit.merchantId,
+      storeId: visit.storeId,
+      consumerId: visit.consumerId,
+      visitId,
+      source: "clover_webhook",
+      outcome: "success",
+      payloadJson: { redemptionId: result.redemptionId, discountAmount, metadata },
+    });
+
+    return { success: true, redemptionId: result.redemptionId };
   }
 
   // ── Catalog ──────────────────────────────────────────
