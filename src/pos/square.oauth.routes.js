@@ -64,9 +64,11 @@ function registerSquareOAuthRoutes(app, { prisma, sendError, requireAuth, requir
       const nonce = crypto.randomBytes(16).toString("hex");
       const state = Buffer.from(JSON.stringify({ merchantId, nonce })).toString("base64url");
 
+      const callbackBase = process.env.RENDER_EXTERNAL_URL || `${req.protocol}://${req.get("host")}`;
       const params = new URLSearchParams({
         client_id: SQUARE_APP_ID,
         scope: "MERCHANT_PROFILE_READ PAYMENTS_READ CUSTOMERS_READ ORDERS_READ ITEMS_READ",
+        redirect_uri: `${callbackBase}/pos/connect/square/callback`,
         state,
       });
 
@@ -101,6 +103,7 @@ function registerSquareOAuthRoutes(app, { prisma, sendError, requireAuth, requir
 
     try {
       // Exchange code for tokens
+      const callbackBase = process.env.RENDER_EXTERNAL_URL || `${req.protocol}://${req.get("host")}`;
       const tokenRes = await fetch(`${SQUARE_API_BASE}/oauth2/token`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Square-Version": "2024-01-18" },
@@ -109,6 +112,7 @@ function registerSquareOAuthRoutes(app, { prisma, sendError, requireAuth, requir
           client_secret: SQUARE_APP_SECRET,
           code,
           grant_type: "authorization_code",
+          redirect_uri: `${callbackBase}/pos/connect/square/callback`,
         }),
       });
 
