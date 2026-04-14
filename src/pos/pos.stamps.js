@@ -53,6 +53,7 @@ async function accumulateStamps(prisma, { consumerId, merchantId, storeId, visit
       repeatable: true,
       rewardType: true,
       rewardValue: true,
+      rewardSku: true,
       rewardNote: true,
     },
   });
