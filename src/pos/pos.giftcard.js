@@ -117,6 +117,7 @@ async function findOrCreateGiftCard(accessToken, squareCustomerId, locationId, c
       location_id: locationId,
       activate_activity_details: {
         amount_money: { amount: amountCents, currency: "USD" },
+        buyer_payment_instrument_ids: ["CASH"],
       },
     },
   });
