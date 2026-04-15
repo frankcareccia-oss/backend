@@ -65,6 +65,16 @@ router.get("/me/wallet", requireConsumerJwt, async (req, res) => {
       : [];
     const merchantMap = Object.fromEntries(merchants.map(m => [m.id, m.name]));
 
+    // Resolve store names for entitlements with storeId
+    const storeIds = [...new Set(entitlements.filter(e => e.storeId).map(e => e.storeId))];
+    const stores = storeIds.length
+      ? await prisma.store.findMany({
+          where: { id: { in: storeIds } },
+          select: { id: true, name: true },
+        })
+      : [];
+    const storeMap = Object.fromEntries(stores.map(st => [st.id, st.name]));
+
     // Resolve promotion details for reward-type entitlements
     const rewardSourceIds = entitlements
       .filter(e => e.type === "reward")
@@ -99,6 +109,7 @@ router.get("/me/wallet", requireConsumerJwt, async (req, res) => {
         status: e.status,
         merchantId: e.merchantId,
         merchantName: merchantMap[e.merchantId] || "Unknown merchant",
+        storeName: e.storeId ? (storeMap[e.storeId] || null) : null,
         validFrom: e.validFrom,
         expiresAt: e.expiresAt,
         redeemedAt: e.redeemedAt,

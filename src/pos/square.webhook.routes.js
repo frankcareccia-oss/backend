@@ -155,16 +155,121 @@ async function handleCatalogUpdate(squareMerchantId) {
   return { catalogSync: true, ...result.summary };
 }
 
+// ─── Duplicate customer detection ───────────────────────────────────────────
+
+/**
+ * Normalize a phone string to E.164 format.
+ * Handles: 7735550001, 17735550001, +17735550001, 773-555-0001, etc.
+ */
+function normalizePhone(raw) {
+  if (!raw) return null;
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  return null;
+}
+
+/**
+ * Check for duplicate Square customers sharing the same phone number.
+ * If duplicates found, creates or updates a DuplicateCustomerAlert.
+ *
+ * @param {SquareAdapter} adapter — adapter with auth for this merchant
+ * @param {string} phoneE164 — normalized phone number
+ * @param {number} merchantId
+ * @param {number} posConnectionId
+ * @returns {Promise<{ duplicates: number } | null>}
+ */
+async function checkDuplicateCustomers(adapter, phoneE164, merchantId, posConnectionId) {
+  if (!phoneE164) return null;
+
+  try {
+    const searchRes = await adapter._squareFetch("/customers/search", {
+      method: "POST",
+      body: JSON.stringify({
+        query: { filter: { phone_number: { exact: phoneE164 } } },
+      }),
+    });
+
+    const customers = searchRes.customers || [];
+    if (customers.length <= 1) return null; // no duplicates
+
+    const squareCustomerIds = customers.map(c => ({
+      id: c.id,
+      name: [c.given_name, c.family_name].filter(Boolean).join(" ") || "(no name)",
+      phone: c.phone_number,
+    }));
+
+    // Upsert alert — update existing pending alert if one exists for this phone
+    const existing = await prisma.duplicateCustomerAlert.findFirst({
+      where: { posConnectionId, phoneE164, status: "pending" },
+    });
+
+    if (existing) {
+      await prisma.duplicateCustomerAlert.update({
+        where: { id: existing.id },
+        data: { squareCustomerIds, updatedAt: new Date() },
+      });
+    } else {
+      await prisma.duplicateCustomerAlert.create({
+        data: {
+          merchantId,
+          posConnectionId,
+          phoneE164,
+          squareCustomerIds,
+          status: "pending",
+        },
+      });
+    }
+
+    console.warn(
+      `[square.webhook] duplicate customers detected: phone=${phoneE164} count=${customers.length} merchant=${merchantId}`
+    );
+    return { duplicates: customers.length };
+  } catch (e) {
+    console.error("[square.webhook] duplicate customer check error:", e?.message || String(e));
+    return null;
+  }
+}
+
+// ─── Customer created handler ───────────────────────────────────────────────
+
+/**
+ * Handle customer.created — check if this phone already exists in Square's directory.
+ * If so, create a DuplicateCustomerAlert for the merchant to resolve.
+ */
+async function handleCustomerCreated(data, squareMerchantId) {
+  const customer = data?.object?.customer;
+  if (!customer?.phone_number) return { skipped: true, reason: "no phone on customer" };
+
+  const phoneE164 = normalizePhone(customer.phone_number);
+  if (!phoneE164) return { skipped: true, reason: "could not normalize phone" };
+
+  const conn = await prisma.posConnection.findFirst({
+    where: { externalMerchantId: squareMerchantId, posType: "square", status: "active" },
+  });
+  if (!conn) return { skipped: true, reason: "no PosConnection for merchant" };
+
+  const adapter = new SquareAdapter(conn);
+  const result = await checkDuplicateCustomers(adapter, phoneE164, conn.merchantId, conn.id);
+
+  return result ? { customerDuplicate: true, ...result } : { skipped: true, reason: "no duplicates" };
+}
+
 // ─── Event dispatcher ─────────────────────────────────────────────────────────
 
 /**
  * Process a verified Square webhook event.
- * Handles: payment.created/updated, catalog.version.updated
+ * Handles: payment.created/updated, catalog.version.updated, customer.created
  */
 async function dispatchSquareEvent(eventType, data, merchantIdFromEvent) {
   // ── Catalog sync ───────────────────────────────────────────
   if (eventType === "catalog.version.updated") {
     return handleCatalogUpdate(merchantIdFromEvent);
+  }
+
+  // ── Customer created — duplicate detection ─────────────────
+  if (eventType === "customer.created") {
+    return handleCustomerCreated(data, merchantIdFromEvent);
   }
 
   // ── Payment processing ─────────────────────────────────────
@@ -217,6 +322,19 @@ async function dispatchSquareEvent(eventType, data, merchantIdFromEvent) {
   // Resolve consumer via Square customer / email
   const adapter = new SquareAdapter(posConnection);
   const consumerId = await adapter.resolveConsumer(payment);
+
+  // Duplicate customer safety net — check on payment if customer_id present
+  if (payment.customer_id) {
+    try {
+      const sqCustomer = await adapter.getSquareCustomer(payment.customer_id);
+      const phone = sqCustomer?.phone_number ? normalizePhone(sqCustomer.phone_number) : null;
+      if (phone) {
+        checkDuplicateCustomers(adapter, phone, merchantId, posConnection.id).catch((e) => {
+          console.error("[square.webhook] duplicate check on payment error:", e?.message || String(e));
+        });
+      }
+    } catch { /* non-blocking */ }
+  }
 
   // Create the Visit
   const visit = await prisma.visit.create({

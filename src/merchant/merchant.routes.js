@@ -749,6 +749,44 @@ function buildMerchantRouter(deps) {
     }
   });
 
+  // ─── Duplicate Customer Alerts ────────────────────────────────────────────
+  // GET /merchants/me/alerts/duplicate-customers — pending alerts for this merchant
+  router.get("/merchants/me/alerts/duplicate-customers", requireJwt, requireMerchantRole("merchant_admin", "store_admin", "cashier"), async (req, res) => {
+    try {
+      const alerts = await prisma.duplicateCustomerAlert.findMany({
+        where: { merchantId: req.merchantId, status: "pending" },
+        orderBy: { createdAt: "desc" },
+      });
+      return res.json({ alerts });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
+  // PATCH /merchants/me/alerts/duplicate-customers/:id — resolve or dismiss
+  router.patch("/merchants/me/alerts/duplicate-customers/:id", requireJwt, requireMerchantRole("merchant_admin", "store_admin"), async (req, res) => {
+    try {
+      const alertId = parseInt(req.params.id, 10);
+      const { status } = req.body; // "resolved" or "dismissed"
+      if (!["resolved", "dismissed"].includes(status)) {
+        return sendError(res, 400, "VALIDATION_ERROR", 'status must be "resolved" or "dismissed"');
+      }
+
+      const alert = await prisma.duplicateCustomerAlert.findFirst({
+        where: { id: alertId, merchantId: req.merchantId },
+      });
+      if (!alert) return sendError(res, 404, "NOT_FOUND", "Alert not found");
+
+      const updated = await prisma.duplicateCustomerAlert.update({
+        where: { id: alertId },
+        data: { status, resolvedAt: new Date() },
+      });
+      return res.json({ alert: updated });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
   return router;
 }
 

@@ -302,4 +302,107 @@ async function getGiftCardBalance(accessToken, squareGiftCardId) {
   };
 }
 
-module.exports = { issueGiftCardReward, resolveRewardAmountCents, getGiftCardBalance };
+/**
+ * EOD Reconciliation — compare Square balances against GiftCardEvent ledger.
+ *
+ * For each active ConsumerGiftCard:
+ *   1. Query Square for the live balance
+ *   2. Compute the expected balance from the ledger (sum LOADs − sum REDEEMs − sum ADJUSTs)
+ *   3. If they match → log RECONCILED; if mismatch → log ADJUST with the delta
+ *
+ * Designed to run once daily via setInterval in index.js.
+ */
+async function reconcileGiftCardBalances() {
+  const cards = await prisma.consumerGiftCard.findMany({
+    where: { active: true },
+    include: {
+      posConnection: {
+        select: { id: true, merchantId: true, accessTokenEnc: true, status: true },
+      },
+    },
+  });
+
+  if (!cards.length) {
+    console.log("[gc-reconcile] no active gift cards — nothing to do");
+    return { reconciled: 0, adjusted: 0, errors: 0 };
+  }
+
+  let reconciled = 0;
+  let adjusted = 0;
+  let errors = 0;
+
+  for (const card of cards) {
+    try {
+      if (card.posConnection.status !== "active") continue;
+
+      const accessToken = decrypt(card.posConnection.accessTokenEnc);
+      const balance = await getGiftCardBalance(accessToken, card.squareGiftCardId);
+      if (!balance) {
+        console.warn(`[gc-reconcile] could not fetch balance for card ${card.id} (${card.squareGiftCardId})`);
+        errors++;
+        continue;
+      }
+
+      const squareBalanceCents = balance.balanceCents;
+
+      // Compute expected balance from ledger
+      const ledger = await prisma.giftCardEvent.groupBy({
+        by: ["eventType"],
+        where: { giftCardId: card.id },
+        _sum: { amountCents: true },
+      });
+
+      const sumByType = (type) =>
+        ledger.find((r) => r.eventType === type)?._sum?.amountCents || 0;
+
+      const expectedCents =
+        sumByType("LOAD") - sumByType("REDEEMED") - sumByType("ADJUST");
+
+      const ganLast4 = (card.squareGan || "").slice(-4);
+
+      if (squareBalanceCents === expectedCents) {
+        await prisma.giftCardEvent.create({
+          data: {
+            giftCardId: card.id,
+            consumerId: card.consumerId,
+            merchantId: card.posConnection.merchantId,
+            eventType: "RECONCILED",
+            amountCents: squareBalanceCents,
+            ganLast4,
+            payloadJson: { squareBalanceCents, ledgerExpectedCents: expectedCents },
+          },
+        });
+        reconciled++;
+      } else {
+        const deltaCents = squareBalanceCents - expectedCents;
+        await prisma.giftCardEvent.create({
+          data: {
+            giftCardId: card.id,
+            consumerId: card.consumerId,
+            merchantId: card.posConnection.merchantId,
+            eventType: "ADJUST",
+            amountCents: deltaCents,
+            ganLast4,
+            payloadJson: {
+              squareBalanceCents,
+              ledgerExpectedCents: expectedCents,
+              deltaCents,
+            },
+          },
+        });
+        console.warn(
+          `[gc-reconcile] ADJUST card ${card.id}: Square=${squareBalanceCents}¢ ledger=${expectedCents}¢ delta=${deltaCents}¢`
+        );
+        adjusted++;
+      }
+    } catch (e) {
+      console.error(`[gc-reconcile] error on card ${card.id}:`, e?.message || String(e));
+      errors++;
+    }
+  }
+
+  console.log(`[gc-reconcile] done: ${reconciled} reconciled, ${adjusted} adjusted, ${errors} errors`);
+  return { reconciled, adjusted, errors };
+}
+
+module.exports = { issueGiftCardReward, resolveRewardAmountCents, getGiftCardBalance, reconcileGiftCardBalances };

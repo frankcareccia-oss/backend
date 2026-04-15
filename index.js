@@ -794,6 +794,16 @@ if (require.main === module) app.listen(PORT, () => {
     });
   }, SIX_HOURS);
 
+  // Gift Card Reconciliation — compare Square balances against ledger every 24h
+  const { reconcileGiftCardBalances } = require("./src/pos/pos.giftcard");
+  const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
+  setInterval(() => {
+    console.log("[cron] reconciling gift card balances...");
+    reconcileGiftCardBalances().catch((e) => {
+      console.error("[cron] gift card reconciliation failed:", e?.message || String(e));
+    });
+  }, TWENTY_FOUR_HOURS);
+
   // Event Publisher — poll outbox and dispatch to consumers
   const { bootstrapEventPublisher } = require("./src/events/event.bootstrap");
   const eventPublisher = bootstrapEventPublisher(prisma, emitPvHook);

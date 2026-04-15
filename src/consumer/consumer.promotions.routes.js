@@ -85,7 +85,15 @@ router.get("/me/promotions", requireConsumerJwt, async (req, res) => {
           select: { id: true, name: true, categoryType: true },
         },
         merchant: {
-          select: { id: true, name: true },
+          select: {
+            id: true,
+            name: true,
+            stores: {
+              where: { status: "active" },
+              select: { id: true, name: true, city: true, state: true },
+              orderBy: { name: "asc" },
+            },
+          },
         },
       },
     });
@@ -106,6 +114,12 @@ router.get("/me/promotions", requireConsumerJwt, async (req, res) => {
       id: p.id,
       merchantId: p.merchantId,
       merchantName: p.merchant.name,
+      stores: (p.merchant.stores || []).map(st => ({
+        id: st.id,
+        name: st.name,
+        city: st.city,
+        state: st.state,
+      })),
       name: p.name,
       description: p.description,
       legalText: p.legalText || null,

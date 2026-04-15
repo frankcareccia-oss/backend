@@ -4,7 +4,7 @@
 
 const { prisma, resetDb, createMerchant } = require("./helpers/seed");
 const { encrypt } = require("../src/utils/encrypt");
-const { issueGiftCardReward, resolveRewardAmountCents } = require("../src/pos/pos.giftcard");
+const { issueGiftCardReward, resolveRewardAmountCents, reconcileGiftCardBalances } = require("../src/pos/pos.giftcard");
 
 let merchant, consumer, posConn, store;
 
@@ -333,6 +333,36 @@ describe("issueGiftCardReward", () => {
     expect(result).toBeNull();
   });
 
+  it("resolves same PV consumer when duplicate Square customers exist (same phone)", async () => {
+    // Simulate: Square returns TWO customers with the same phone (merchant created a duplicate)
+    // Our search takes customers[0] — but both normalize to the same PV consumer
+    setupSquareMocks({
+      customerSearch: {
+        body: { customers: [
+          { id: "SQ_CUST_DUPLICATE", phone_number: "+17735550001" },
+          { id: "SQ_CUST_ORIGINAL",  phone_number: "+17735550001" },
+        ] },
+      },
+    });
+
+    const result = await issueGiftCardReward({
+      consumerId: consumer.id,
+      merchantId: merchant.id,
+      promo,
+    });
+
+    expect(result).toEqual({ giftCardId: "GC_1", amountCents: 500 });
+
+    // Gift card linked to whichever customer was returned first
+    const linkCall = fetchCalls.find(c => c.url.includes("/link-customer"));
+    expect(linkCall.body.customer_id).toBe("SQ_CUST_DUPLICATE");
+
+    // But the ConsumerGiftCard in PV is still tied to our one consumer
+    const gc = await prisma.consumerGiftCard.findFirst({ where: { consumerId: consumer.id } });
+    expect(gc).toBeTruthy();
+    expect(gc.squareGiftCardId).toBe("GC_1");
+  });
+
   it("loads free_item reward using product price lookup", async () => {
     await prisma.product.create({
       data: {
@@ -353,5 +383,138 @@ describe("issueGiftCardReward", () => {
     });
 
     expect(result).toEqual({ giftCardId: "GC_1", amountCents: 350 });
+  });
+});
+
+// ── reconcileGiftCardBalances ──
+
+describe("reconcileGiftCardBalances", () => {
+  let gcRecord;
+
+  async function createGiftCardWithEvents(loadCents, redeemCents = 0) {
+    gcRecord = await prisma.consumerGiftCard.create({
+      data: {
+        consumerId: consumer.id,
+        posConnectionId: posConn.id,
+        squareGiftCardId: "GC_RECON_1",
+        squareGan: "9999000011112222",
+        active: true,
+      },
+    });
+
+    // Seed LOAD event
+    await prisma.giftCardEvent.create({
+      data: {
+        giftCardId: gcRecord.id,
+        consumerId: consumer.id,
+        merchantId: merchant.id,
+        eventType: "LOAD",
+        amountCents: loadCents,
+        ganLast4: "2222",
+      },
+    });
+
+    if (redeemCents > 0) {
+      await prisma.giftCardEvent.create({
+        data: {
+          giftCardId: gcRecord.id,
+          consumerId: consumer.id,
+          merchantId: merchant.id,
+          eventType: "REDEEMED",
+          amountCents: redeemCents,
+          ganLast4: "2222",
+        },
+      });
+    }
+  }
+
+  it("logs RECONCILED when Square balance matches ledger", async () => {
+    await createGiftCardWithEvents(500);
+
+    // Square says $5.00 balance — matches LOAD of 500
+    mockFetch("/gift-cards/GC_RECON_1", {
+      body: { gift_card: { balance_money: { amount: 500, currency: "USD" } } },
+    });
+
+    const result = await reconcileGiftCardBalances();
+    expect(result).toEqual({ reconciled: 1, adjusted: 0, errors: 0 });
+
+    const events = await prisma.giftCardEvent.findMany({
+      where: { giftCardId: gcRecord.id, eventType: "RECONCILED" },
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0].amountCents).toBe(500);
+  });
+
+  it("logs RECONCILED when balance matches after partial redemption", async () => {
+    await createGiftCardWithEvents(500, 200);
+
+    // Square says $3.00 — matches 500 LOAD - 200 REDEEMED
+    mockFetch("/gift-cards/GC_RECON_1", {
+      body: { gift_card: { balance_money: { amount: 300, currency: "USD" } } },
+    });
+
+    const result = await reconcileGiftCardBalances();
+    expect(result).toEqual({ reconciled: 1, adjusted: 0, errors: 0 });
+  });
+
+  it("logs ADJUST when Square balance differs from ledger", async () => {
+    await createGiftCardWithEvents(500);
+
+    // Square says $3.00 but ledger expects $5.00 (external redemption we didn't see)
+    mockFetch("/gift-cards/GC_RECON_1", {
+      body: { gift_card: { balance_money: { amount: 300, currency: "USD" } } },
+    });
+
+    const result = await reconcileGiftCardBalances();
+    expect(result).toEqual({ reconciled: 0, adjusted: 1, errors: 0 });
+
+    const events = await prisma.giftCardEvent.findMany({
+      where: { giftCardId: gcRecord.id, eventType: "ADJUST" },
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0].amountCents).toBe(-200); // 300 - 500 = -200
+    expect(events[0].payloadJson).toMatchObject({
+      squareBalanceCents: 300,
+      ledgerExpectedCents: 500,
+      deltaCents: -200,
+    });
+  });
+
+  it("returns zeros when no active gift cards exist", async () => {
+    const result = await reconcileGiftCardBalances();
+    expect(result).toEqual({ reconciled: 0, adjusted: 0, errors: 0 });
+  });
+
+  it("counts errors when Square API fails for a card", async () => {
+    await createGiftCardWithEvents(500);
+
+    mockFetch("/gift-cards/GC_RECON_1", {
+      ok: false,
+      status: 500,
+      body: { errors: [{ detail: "Internal Server Error" }] },
+    });
+
+    const result = await reconcileGiftCardBalances();
+    expect(result).toEqual({ reconciled: 0, adjusted: 0, errors: 1 });
+
+    // No RECONCILED or ADJUST events should be created
+    const events = await prisma.giftCardEvent.findMany({
+      where: { giftCardId: gcRecord.id, eventType: { in: ["RECONCILED", "ADJUST"] } },
+    });
+    expect(events).toHaveLength(0);
+  });
+
+  it("skips cards with disconnected posConnection", async () => {
+    await createGiftCardWithEvents(500);
+    await prisma.posConnection.update({
+      where: { id: posConn.id },
+      data: { status: "disconnected" },
+    });
+
+    const result = await reconcileGiftCardBalances();
+    // Card is skipped (not active connection), not counted as error
+    expect(result).toEqual({ reconciled: 0, adjusted: 0, errors: 0 });
+    expect(fetchCalls).toHaveLength(0);
   });
 });
