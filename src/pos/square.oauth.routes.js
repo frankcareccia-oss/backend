@@ -67,7 +67,7 @@ function registerSquareOAuthRoutes(app, { prisma, sendError, requireAuth, requir
       const redirectUri = process.env.SQUARE_REDIRECT_URI || `${req.protocol}://${req.get("host")}/pos/connect/square/callback`;
       const params = new URLSearchParams({
         client_id: SQUARE_APP_ID,
-        scope: "MERCHANT_PROFILE_READ PAYMENTS_READ CUSTOMERS_READ ORDERS_READ ITEMS_READ",
+        scope: "MERCHANT_PROFILE_READ PAYMENTS_READ CUSTOMERS_READ ORDERS_READ ITEMS_READ GIFTCARDS_READ GIFTCARDS_WRITE",
         redirect_uri: redirectUri,
         state,
       });
