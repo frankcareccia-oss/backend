@@ -411,10 +411,17 @@ router.post("/me/wallet/:id/redeem-request", requireConsumerJwt, async (req, res
 // ──────────────────────────────────────────────
 router.get("/me/summary", requireConsumerJwt, async (req, res) => {
   try {
+    // Look up the consumer's phone for duplicate-alert check
+    const consumer = await prisma.consumer.findUnique({
+      where: { id: req.consumerId },
+      select: { phoneE164: true },
+    });
+
     const [
       rewardsReady,
       rewardsRedeemed,
       programsJoined,
+      duplicateAlertCount,
     ] = await Promise.all([
       // Active entitlements = rewards earned, not yet redeemed
       prisma.entitlement.count({
@@ -428,9 +435,20 @@ router.get("/me/summary", requireConsumerJwt, async (req, res) => {
       prisma.consumerPromoProgress.count({
         where: { consumerId: req.consumerId },
       }),
+      // Pending duplicate-customer alerts for this phone
+      consumer?.phoneE164
+        ? prisma.duplicateCustomerAlert.count({
+            where: { phoneE164: consumer.phoneE164, status: "pending" },
+          })
+        : 0,
     ]);
 
-    return res.json({ rewardsReady, rewardsRedeemed, programsJoined });
+    return res.json({
+      rewardsReady,
+      rewardsRedeemed,
+      programsJoined,
+      hasAccountIssue: duplicateAlertCount > 0,
+    });
   } catch (err) {
     return handlePrismaError(err, res);
   }

@@ -33,6 +33,77 @@ describe("Consumer Wallet", () => {
       expect(typeof res.body.rewardsReady).toBe("number");
     });
 
+    it("returns hasAccountIssue false when no duplicate alerts", async () => {
+      const res = await request(app).get("/me/summary").set(auth);
+      expect(res.status).toBe(200);
+      expect(res.body.hasAccountIssue).toBe(false);
+    });
+
+    it("returns hasAccountIssue true when pending duplicate alert exists", async () => {
+      // Need a merchant + posConnection to create the alert
+      const merchant = await createMerchant({ name: "Dup Alert Shop" });
+      const posConn = await prisma.posConnection.create({
+        data: {
+          merchantId: merchant.id,
+          posType: "square",
+          status: "active",
+          accessTokenEnc: encrypt("sq-test-token"),
+          externalMerchantId: "SQ_DUP_SUMMARY",
+        },
+      });
+
+      await prisma.duplicateCustomerAlert.create({
+        data: {
+          merchantId: merchant.id,
+          posConnectionId: posConn.id,
+          phoneE164: consumer.phoneE164,
+          squareCustomerIds: [
+            { id: "SQ_CUST_1", name: "Test One", phone: consumer.phoneE164 },
+            { id: "SQ_CUST_2", name: "Test Two", phone: consumer.phoneE164 },
+          ],
+          status: "pending",
+        },
+      });
+
+      const res = await request(app).get("/me/summary").set(auth);
+      expect(res.status).toBe(200);
+      expect(res.body.hasAccountIssue).toBe(true);
+    });
+
+    it("returns hasAccountIssue false when alert is resolved", async () => {
+      // Clean up any pending alerts from prior tests
+      await prisma.duplicateCustomerAlert.deleteMany({ where: { phoneE164: consumer.phoneE164 } });
+
+      const merchant = await createMerchant({ name: "Resolved Alert Shop" });
+      const posConn = await prisma.posConnection.create({
+        data: {
+          merchantId: merchant.id,
+          posType: "square",
+          status: "active",
+          accessTokenEnc: encrypt("sq-test-token"),
+          externalMerchantId: "SQ_DUP_RESOLVED",
+        },
+      });
+
+      await prisma.duplicateCustomerAlert.create({
+        data: {
+          merchantId: merchant.id,
+          posConnectionId: posConn.id,
+          phoneE164: consumer.phoneE164,
+          squareCustomerIds: [
+            { id: "SQ_CUST_1", name: "Test One", phone: consumer.phoneE164 },
+            { id: "SQ_CUST_2", name: "Test Two", phone: consumer.phoneE164 },
+          ],
+          status: "resolved",
+          resolvedAt: new Date(),
+        },
+      });
+
+      const res = await request(app).get("/me/summary").set(auth);
+      expect(res.status).toBe(200);
+      expect(res.body.hasAccountIssue).toBe(false);
+    });
+
     it("rejects unauthenticated", async () => {
       const res = await request(app).get("/me/summary");
       expect(res.status).toBe(401);
