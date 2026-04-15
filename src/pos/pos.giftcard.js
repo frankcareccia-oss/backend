@@ -90,14 +90,14 @@ async function squareRequest(accessToken, path, method, body) {
  * @param {number} posConnectionId — PV PosConnection ID
  * @returns {Promise<string>} — Square gift card ID
  */
-async function findOrCreateGiftCard(accessToken, squareCustomerId, locationId, consumerId, posConnectionId) {
+async function findOrCreateGiftCard(accessToken, squareCustomerId, locationId, consumerId, posConnectionId, amountCents) {
   // Check if we already have a gift card for this consumer
   const existing = await prisma.consumerGiftCard.findFirst({
     where: { consumerId, posConnectionId, active: true },
     select: { squareGiftCardId: true },
   });
 
-  if (existing) return existing.squareGiftCardId;
+  if (existing) return { giftCardId: existing.squareGiftCardId, isNew: false };
 
   // Create a new digital gift card
   const createRes = await squareRequest(accessToken, "/gift-cards", "POST", {
@@ -108,7 +108,7 @@ async function findOrCreateGiftCard(accessToken, squareCustomerId, locationId, c
 
   const giftCard = createRes.gift_card;
 
-  // Activate with $0 balance (we'll load funds separately per reward)
+  // Activate with the reward amount (Square requires a positive amount)
   await squareRequest(accessToken, "/gift-cards/activities", "POST", {
     idempotency_key: `pv-gc-activate-${giftCard.id}`,
     gift_card_activity: {
@@ -116,8 +116,7 @@ async function findOrCreateGiftCard(accessToken, squareCustomerId, locationId, c
       gift_card_id: giftCard.id,
       location_id: locationId,
       activate_activity_details: {
-        amount_money: { amount: 0, currency: "USD" },
-        buyer_payment_instrument_ids: ["CASH"],
+        amount_money: { amount: amountCents, currency: "USD" },
       },
     },
   });
@@ -139,7 +138,7 @@ async function findOrCreateGiftCard(accessToken, squareCustomerId, locationId, c
   });
 
   console.log(`[pos.giftcard] created gift card ${giftCard.id} (GAN: ${giftCard.gan}) for consumer ${consumerId}`);
-  return giftCard.id;
+  return { giftCardId: giftCard.id, isNew: true };
 }
 
 /**
@@ -233,19 +232,22 @@ async function issueGiftCardReward({ consumerId, merchantId, promo }) {
     }
 
     // 5. Find or create gift card
-    const giftCardId = await findOrCreateGiftCard(
+    const { giftCardId, isNew } = await findOrCreateGiftCard(
       accessToken,
       squareCustomer.id,
       locationMap.externalLocationId,
       consumerId,
-      conn.id
+      conn.id,
+      amountCents
     );
 
-    // 6. Load the reward amount
-    const reason = `${promo.name} — ${buildRewardLabel(promo)}`;
-    await loadGiftCardFunds(accessToken, giftCardId, locationMap.externalLocationId, amountCents, reason);
+    // 6. Load funds — skip if card was just created (activated with the amount already)
+    if (!isNew) {
+      const reason = `${promo.name} — ${buildRewardLabel(promo)}`;
+      await loadGiftCardFunds(accessToken, giftCardId, locationMap.externalLocationId, amountCents, reason);
+    }
 
-    console.log(`[pos.giftcard] reward issued: $${(amountCents / 100).toFixed(2)} for consumer ${consumerId}, promo "${promo.name}"`);
+    console.log(`[pos.giftcard] reward issued: $${(amountCents / 100).toFixed(2)} for consumer ${consumerId}, promo "${promo.name}" (${isNew ? "new card" : "existing card"})`);
     return { giftCardId, amountCents };
   } catch (e) {
     console.error(`[pos.giftcard] error issuing reward: consumerId=${consumerId} promo=${promo?.id}:`, e?.message || String(e));

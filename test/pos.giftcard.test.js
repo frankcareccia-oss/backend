@@ -203,11 +203,19 @@ describe("issueGiftCardReward", () => {
     expect(gc.squareGan).toBe("7777000011112222");
     expect(gc.active).toBe(true);
 
-    // Verify Square API calls
+    // Verify Square API calls — new card activates with amount, no separate LOAD
     const urls = fetchCalls.map(c => c.url);
     expect(urls.some(u => u.includes("/customers/search"))).toBe(true);
     expect(urls.some(u => u.includes("/gift-cards"))).toBe(true);
     expect(urls.some(u => u.includes("/link-customer"))).toBe(true);
+
+    // Activate should include the reward amount
+    const activateCall = fetchCalls.find(c => c.url.includes("/gift-cards/activities") && c.body?.gift_card_activity?.type === "ACTIVATE");
+    expect(activateCall.body.gift_card_activity.activate_activity_details.amount_money.amount).toBe(500);
+
+    // No separate LOAD call for new cards
+    const loadCalls = fetchCalls.filter(c => c.body?.gift_card_activity?.type === "LOAD");
+    expect(loadCalls).toHaveLength(0);
   });
 
   it("reuses existing gift card on second reward", async () => {
@@ -237,6 +245,11 @@ describe("issueGiftCardReward", () => {
       c.url.includes("/gift-cards") && !c.url.includes("/activities") && !c.url.includes("/link-customer")
     );
     expect(createCalls).toHaveLength(0);
+
+    // Should have called LOAD for existing card
+    const loadCalls = fetchCalls.filter(c => c.body?.gift_card_activity?.type === "LOAD");
+    expect(loadCalls).toHaveLength(1);
+    expect(loadCalls[0].body.gift_card_activity.load_activity_details.amount_money.amount).toBe(500);
   });
 
   it("skips when no calculable amount (discount_pct)", async () => {
