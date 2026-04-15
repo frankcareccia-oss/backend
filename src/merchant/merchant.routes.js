@@ -763,7 +763,7 @@ function buildMerchantRouter(deps) {
     }
   });
 
-  // PATCH /merchants/me/alerts/duplicate-customers/:id — resolve or dismiss
+  // PATCH /merchants/me/alerts/duplicate-customers/:id — resolve (merge) or dismiss
   router.patch("/merchants/me/alerts/duplicate-customers/:id", requireJwt, requireMerchantRole("merchant_admin", "store_admin"), async (req, res) => {
     try {
       const alertId = parseInt(req.params.id, 10);
@@ -774,8 +774,40 @@ function buildMerchantRouter(deps) {
 
       const alert = await prisma.duplicateCustomerAlert.findFirst({
         where: { id: alertId, merchantId: req.merchantId },
+        include: { posConnection: { select: { id: true, accessTokenEnc: true, status: true } } },
       });
       if (!alert) return sendError(res, 404, "NOT_FOUND", "Alert not found");
+
+      // If resolving, merge duplicate customers in Square
+      if (status === "resolved" && alert.posConnection.status === "active") {
+        const { SquareAdapter } = require("../pos/adapters/square.adapter");
+        const adapter = new SquareAdapter(alert.posConnection);
+        const customers = alert.squareCustomerIds || [];
+
+        if (customers.length >= 2) {
+          const primaryId = customers[0].id; // keep the first (original)
+          const mergeErrors = [];
+
+          for (let i = 1; i < customers.length; i++) {
+            try {
+              await adapter._squareFetch(`/customers/${primaryId}/merge`, {
+                method: "POST",
+                body: JSON.stringify({
+                  merge_from: { customer_id: customers[i].id },
+                }),
+              });
+              console.log(`[duplicate-alert] merged ${customers[i].id} → ${primaryId}`);
+            } catch (e) {
+              console.error(`[duplicate-alert] merge failed ${customers[i].id}:`, e?.message || String(e));
+              mergeErrors.push({ id: customers[i].id, error: e?.message || String(e) });
+            }
+          }
+
+          if (mergeErrors.length > 0) {
+            return sendError(res, 502, "MERGE_PARTIAL", `Merged ${customers.length - 1 - mergeErrors.length} of ${customers.length - 1} duplicates. Errors: ${mergeErrors.map(e => e.error).join("; ")}`);
+          }
+        }
+      }
 
       const updated = await prisma.duplicateCustomerAlert.update({
         where: { id: alertId },
