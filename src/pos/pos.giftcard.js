@@ -94,10 +94,10 @@ async function findOrCreateGiftCard(accessToken, squareCustomerId, locationId, c
   // Check if we already have a gift card for this consumer
   const existing = await prisma.consumerGiftCard.findFirst({
     where: { consumerId, posConnectionId, active: true },
-    select: { squareGiftCardId: true },
+    select: { id: true, squareGiftCardId: true, squareGan: true },
   });
 
-  if (existing) return { giftCardId: existing.squareGiftCardId, isNew: false };
+  if (existing) return { giftCardId: existing.squareGiftCardId, dbId: existing.id, ganLast4: (existing.squareGan || "").slice(-4), isNew: false };
 
   // Create a new digital gift card
   const createRes = await squareRequest(accessToken, "/gift-cards", "POST", {
@@ -128,7 +128,7 @@ async function findOrCreateGiftCard(accessToken, squareCustomerId, locationId, c
   });
 
   // Store reference in PV
-  await prisma.consumerGiftCard.create({
+  const dbRecord = await prisma.consumerGiftCard.create({
     data: {
       consumerId,
       posConnectionId,
@@ -139,7 +139,7 @@ async function findOrCreateGiftCard(accessToken, squareCustomerId, locationId, c
   });
 
   console.log(`[pos.giftcard] created gift card ${giftCard.id} (GAN: ${giftCard.gan}) for consumer ${consumerId}`);
-  return { giftCardId: giftCard.id, isNew: true };
+  return { giftCardId: giftCard.id, dbId: dbRecord.id, ganLast4: (giftCard.gan || "").slice(-4), isNew: true };
 }
 
 /**
@@ -233,7 +233,7 @@ async function issueGiftCardReward({ consumerId, merchantId, promo }) {
     }
 
     // 5. Find or create gift card
-    const { giftCardId, isNew } = await findOrCreateGiftCard(
+    const { giftCardId, dbId, ganLast4, isNew } = await findOrCreateGiftCard(
       accessToken,
       squareCustomer.id,
       locationMap.externalLocationId,
@@ -247,6 +247,25 @@ async function issueGiftCardReward({ consumerId, merchantId, promo }) {
       const reason = `${promo.name} — ${buildRewardLabel(promo)}`;
       await loadGiftCardFunds(accessToken, giftCardId, locationMap.externalLocationId, amountCents, reason);
     }
+
+    // 7. Log LOAD event for audit/analytics
+    await prisma.giftCardEvent.create({
+      data: {
+        giftCardId: dbId,
+        consumerId,
+        merchantId,
+        promotionId: promo.id,
+        eventType: "LOAD",
+        amountCents,
+        ganLast4,
+        payloadJson: {
+          promoName: promo.name,
+          rewardLabel: buildRewardLabel(promo),
+          isNew,
+          squareGiftCardId: giftCardId,
+        },
+      },
+    });
 
     console.log(`[pos.giftcard] reward issued: $${(amountCents / 100).toFixed(2)} for consumer ${consumerId}, promo "${promo.name}" (${isNew ? "new card" : "existing card"})`);
     return { giftCardId, amountCents };
@@ -266,4 +285,21 @@ function buildRewardLabel(promo) {
   return promo.name;
 }
 
-module.exports = { issueGiftCardReward, resolveRewardAmountCents };
+/**
+ * Query Square for the current balance of a gift card.
+ *
+ * @param {string} accessToken — decrypted Square access token
+ * @param {string} squareGiftCardId — Square gift card ID (gftc:...)
+ * @returns {Promise<{ balanceCents: number, currency: string } | null>}
+ */
+async function getGiftCardBalance(accessToken, squareGiftCardId) {
+  const res = await squareRequest(accessToken, `/gift-cards/${squareGiftCardId}`, "GET");
+  const gc = res.gift_card;
+  if (!gc?.balance_money) return null;
+  return {
+    balanceCents: gc.balance_money.amount,
+    currency: gc.balance_money.currency,
+  };
+}
+
+module.exports = { issueGiftCardReward, resolveRewardAmountCents, getGiftCardBalance };

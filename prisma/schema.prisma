@@ -1379,8 +1379,32 @@ model ConsumerGiftCard {
   active            Boolean       @default(true)
   createdAt         DateTime      @default(now())
 
+  events    GiftCardEvent[]
+
   @@unique([consumerId, posConnectionId])
   @@index([consumerId])
+}
+
+/// Audit/analytics log for gift card lifecycle events.
+/// Square is source of truth for balance; this tracks PV-side actions.
+model GiftCardEvent {
+  id              Int              @id @default(autoincrement())
+  giftCardId      Int
+  giftCard        ConsumerGiftCard @relation(fields: [giftCardId], references: [id])
+  consumerId      Int
+  merchantId      Int
+  promotionId     Int?
+  eventType       String           @db.VarChar(32) // LOAD, PRESENTED, REDEEMED, ADJUST, RECONCILED
+  amountCents     Int?
+  ganLast4        String?          @db.VarChar(4)
+  payloadJson     Json?
+  createdAt       DateTime         @default(now())
+
+  @@index([giftCardId])
+  @@index([consumerId])
+  @@index([merchantId])
+  @@index([eventType])
+  @@index([createdAt])
 }
 
 /// Log of catalog sync events — tracks what changed and when.

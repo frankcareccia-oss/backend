@@ -13,6 +13,8 @@ const { prisma } = require("../db/prisma");
 const { sendError, handlePrismaError } = require("../utils/errors");
 const { requireConsumerJwt } = require("../middleware/auth");
 const { writeEventLog } = require("../eventlog/eventlog");
+const { getGiftCardBalance } = require("../pos/pos.giftcard");
+const { decrypt } = require("../utils/encrypt");
 
 const router = express.Router();
 
@@ -125,6 +127,138 @@ router.get("/me/wallet", requireConsumerJwt, async (req, res) => {
     });
 
     return res.json({ wallet, total: wallet.length });
+  } catch (err) {
+    return handlePrismaError(err, res);
+  }
+});
+
+// ──────────────────────────────────────────────
+// GET /me/wallet/giftcards
+// Consumer's gift cards with live balances from Square.
+// Must be registered BEFORE /me/wallet/:id to avoid param capture.
+// ──────────────────────────────────────────────
+router.get("/me/wallet/giftcards", requireConsumerJwt, async (req, res) => {
+  try {
+    const giftCards = await prisma.consumerGiftCard.findMany({
+      where: { consumerId: req.consumerId, active: true },
+      include: {
+        posConnection: {
+          select: { id: true, merchantId: true, accessTokenEnc: true, posType: true, status: true },
+        },
+      },
+    });
+
+    if (!giftCards.length) return res.json({ giftCards: [] });
+
+    // Resolve merchant names
+    const merchantIds = [...new Set(giftCards.map(gc => gc.posConnection.merchantId))];
+    const merchants = await prisma.merchant.findMany({
+      where: { id: { in: merchantIds } },
+      select: { id: true, name: true },
+    });
+    const merchantMap = Object.fromEntries(merchants.map(m => [m.id, m.name]));
+
+    // Query Square for live balances
+    const results = await Promise.all(giftCards.map(async (gc) => {
+      const conn = gc.posConnection;
+      const merchantId = conn.merchantId;
+      let balanceCents = null;
+      let currency = "USD";
+
+      if (conn.status === "active" && conn.accessTokenEnc) {
+        try {
+          const accessToken = decrypt(conn.accessTokenEnc);
+          const balance = await getGiftCardBalance(accessToken, gc.squareGiftCardId);
+          if (balance) {
+            balanceCents = balance.balanceCents;
+            currency = balance.currency;
+          }
+        } catch (e) {
+          console.error(`[consumer.wallet] gift card balance error: gc=${gc.id}:`, e?.message || String(e));
+        }
+      }
+
+      return {
+        id: gc.id,
+        merchantId,
+        merchantName: merchantMap[merchantId] || "Unknown merchant",
+        ganLast4: (gc.squareGan || "").slice(-4),
+        balanceCents,
+        currency,
+        createdAt: gc.createdAt,
+      };
+    }));
+
+    return res.json({ giftCards: results });
+  } catch (err) {
+    return handlePrismaError(err, res);
+  }
+});
+
+// ──────────────────────────────────────────────
+// POST /me/wallet/giftcards/:id/present
+// Consumer taps "Use My Reward" — returns GAN for barcode display.
+// Logs a PRESENTED analytics event. No backend token needed;
+// the countdown timer is frontend-only UX.
+// ──────────────────────────────────────────────
+router.post("/me/wallet/giftcards/:id/present", requireConsumerJwt, async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!id) return sendError(res, 400, "VALIDATION_ERROR", "Invalid id");
+
+    const gc = await prisma.consumerGiftCard.findFirst({
+      where: { id, consumerId: req.consumerId, active: true },
+      include: {
+        posConnection: {
+          select: { merchantId: true, accessTokenEnc: true, status: true },
+        },
+      },
+    });
+
+    if (!gc) return sendError(res, 404, "NOT_FOUND", "Gift card not found");
+
+    // Query Square for live balance
+    let balanceCents = null;
+    let currency = "USD";
+    if (gc.posConnection.status === "active" && gc.posConnection.accessTokenEnc) {
+      try {
+        const accessToken = decrypt(gc.posConnection.accessTokenEnc);
+        const balance = await getGiftCardBalance(accessToken, gc.squareGiftCardId);
+        if (balance) {
+          balanceCents = balance.balanceCents;
+          currency = balance.currency;
+        }
+      } catch (e) {
+        console.error(`[consumer.wallet] gift card balance error on present: gc=${gc.id}:`, e?.message || String(e));
+      }
+    }
+
+    if (balanceCents === 0) {
+      return sendError(res, 409, "ZERO_BALANCE", "This gift card has no balance");
+    }
+
+    const ganLast4 = (gc.squareGan || "").slice(-4);
+
+    // Log PRESENTED event for analytics
+    await prisma.giftCardEvent.create({
+      data: {
+        giftCardId: gc.id,
+        consumerId: req.consumerId,
+        merchantId: gc.posConnection.merchantId,
+        eventType: "PRESENTED",
+        amountCents: balanceCents,
+        ganLast4,
+        payloadJson: { source: "consumer_app" },
+      },
+    });
+
+    return res.json({
+      gan: gc.squareGan,
+      ganLast4,
+      balanceCents,
+      currency,
+      merchantId: gc.posConnection.merchantId,
+    });
   } catch (err) {
     return handlePrismaError(err, res);
   }
