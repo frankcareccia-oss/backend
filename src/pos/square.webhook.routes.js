@@ -288,6 +288,43 @@ async function dispatchSquareEvent(eventType, data, merchantIdFromEvent) {
     }
   }
 
+  // Gift card tender detection — log REDEEMED event for analytics
+  if (consumerId && payment.tenders) {
+    try {
+      const gcTenders = payment.tenders.filter(t => t.type === "SQUARE_GIFT_CARD");
+      for (const tender of gcTenders) {
+        const tenderCents = tender.amount_money?.amount || 0;
+        if (tenderCents <= 0) continue;
+
+        // Find the consumer's gift card record
+        const gcRecord = await prisma.consumerGiftCard.findFirst({
+          where: { consumerId, posConnectionId: posConnection.id, active: true },
+          select: { id: true, squareGan: true },
+        });
+        if (gcRecord) {
+          await prisma.giftCardEvent.create({
+            data: {
+              giftCardId: gcRecord.id,
+              consumerId,
+              merchantId,
+              eventType: "REDEEMED",
+              amountCents: tenderCents,
+              ganLast4: (gcRecord.squareGan || "").slice(-4),
+              payloadJson: {
+                squarePaymentId,
+                tenderId: tender.id,
+                visitId: visit.id,
+              },
+            },
+          });
+          console.log(`[square.webhook] gift card redeemed: $${(tenderCents / 100).toFixed(2)} consumer=${consumerId} gc=${gcRecord.id}`);
+        }
+      }
+    } catch (e) {
+      console.error("[square.webhook] gift card tender detection error:", e?.message || String(e));
+    }
+  }
+
   // Order enrichment — fetch line items from Square Orders API (fire-and-forget)
   const orderId = payment.order_id || null;
   enrichOrderData(adapter, {
