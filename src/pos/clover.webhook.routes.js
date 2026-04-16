@@ -151,6 +151,67 @@ async function dispatchCloverEvent(event) {
 }
 
 /**
+ * Fetch Clover order line items and store in PosOrder + PosOrderItem.
+ * Fire-and-forget — never blocks the pipeline.
+ */
+async function enrichCloverOrderData(adapter, { visitId, merchantId, storeId, consumerId, orderId, cloverMerchantId }) {
+  if (!orderId) return;
+  try {
+    const order = await adapter.getOrder(orderId);
+    if (!order) return;
+
+    const lineItems = order.lineItems?.elements || [];
+
+    const posOrder = await prisma.posOrder.create({
+      data: {
+        visitId,
+        merchantId,
+        storeId,
+        consumerId: consumerId || null,
+        externalOrderId: orderId,
+        posType: "clover",
+        orderState: order.state || order.paymentState || null,
+        totalAmount: order.total || null,
+        totalTax: null,
+        totalDiscount: null,
+        totalTip: null,
+        currency: order.currency || "USD",
+        rawJson: order,
+        items: {
+          create: lineItems.map((li) => ({
+            itemName: li.name || null,
+            itemSku: li.item?.id || null,
+            variationName: null,
+            variationId: null,
+            categoryName: null,
+            quantity: 1,
+            unitPrice: li.price || null,
+            totalPrice: li.price || null,
+            totalTax: null,
+            totalDiscount: null,
+            itemType: li.isRevenue ? "ITEM" : "FEE",
+            rawJson: li,
+          })),
+        },
+      },
+    });
+
+    console.log(`[clover.webhook] order enriched: orderId=${orderId} items=${lineItems.length} posOrderId=${posOrder.id}`);
+    console.log(JSON.stringify({
+      pvHook: "clover.order.enriched",
+      ts: new Date().toISOString(),
+      tc: "TC-CLO-ORD-01",
+      sev: "info",
+      orderId,
+      merchantId,
+      itemCount: lineItems.length,
+    }));
+  } catch (e) {
+    console.error(`[clover.webhook] order enrichment failed: orderId=${orderId}`, e?.message || String(e));
+  }
+}
+
+/**
  * Handle a Clover payment event.
  * Full pipeline: fetch payment → resolve location → resolve consumer → create visit → stamps
  */
@@ -275,6 +336,24 @@ async function handleCloverPayment(conn, cloverMerchantId, paymentEvent) {
     console.error("[clover.webhook] PaymentEvent recording error:", e?.message);
   }
 
+  // ── Order enrichment (fire-and-forget) ──
+  if (orderId) {
+    enrichCloverOrderData(adapter, {
+      visitId: visit.id, merchantId, storeId: pvStoreId,
+      consumerId: consumerId || null, orderId, cloverMerchantId,
+    }).catch(e => console.error("[clover.webhook] order enrichment failed:", e?.message));
+  }
+
+  // Apply any pending Clover discount rewards from previous milestones
+  if (consumerId && orderId) {
+    try {
+      const { applyPendingCloverRewards } = require("./pos.clover.discount");
+      await applyPendingCloverRewards({ consumerId, merchantId, posConnection: conn, orderId });
+    } catch (e) {
+      console.error("[clover.webhook] applyPendingCloverRewards error:", e?.message);
+    }
+  }
+
   // Stamp accumulation for identified consumers
   if (consumerId) {
     try {
@@ -283,6 +362,8 @@ async function handleCloverPayment(conn, cloverMerchantId, paymentEvent) {
         merchantId,
         storeId: pvStoreId,
         visitId: visit.id,
+        posType: "clover",
+        orderId: orderId || null,
       });
     } catch (e) {
       console.error("[clover.webhook] accumulateStamps error:", e?.message);

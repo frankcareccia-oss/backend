@@ -400,6 +400,7 @@ async function dispatchSquareEvent(eventType, data, merchantIdFromEvent) {
         merchantId,
         storeId: pvStoreId,
         visitId: visit.id,
+        posType: "square",
       });
     } catch (e) {
       console.error("[square.webhook] accumulateStamps error:", e?.message || String(e));

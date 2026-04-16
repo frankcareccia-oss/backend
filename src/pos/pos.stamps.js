@@ -15,6 +15,7 @@ const { writeEventLog } = require("../eventlog/eventlog");
 const { recordPromotionEvent } = require("../growth/promotionOutcome.events");
 const { writeOutboxEvent } = require("../events/event.outbox.service");
 const { issueGiftCardReward } = require("./pos.giftcard");
+const { issueCloverDiscountReward } = require("./pos.clover.discount");
 
 /**
  * Build the human-readable reward label for Entitlement metadata.
@@ -40,10 +41,10 @@ function buildDisplayLabel(promo) {
  *       milestonesAvailable++ and Entitlement created (type:reward, status:active)
  *
  * @param {object} prisma
- * @param {{ consumerId: number, merchantId: number, storeId: number|null, visitId: number|null }} ctx
+ * @param {{ consumerId: number, merchantId: number, storeId: number|null, visitId: number|null, posType?: string, orderId?: string }} ctx
  * @returns {Promise<Array<{ promotionId: number, stampCount: number, milestoneEarned: boolean }>>}
  */
-async function accumulateStamps(prisma, { consumerId, merchantId, storeId, visitId }) {
+async function accumulateStamps(prisma, { consumerId, merchantId, storeId, visitId, posType, orderId }) {
   const promotions = await prisma.promotion.findMany({
     where: { merchantId, status: "active" },
     select: {
@@ -209,10 +210,16 @@ async function accumulateStamps(prisma, { consumerId, merchantId, storeId, visit
           visitId,
         });
 
-        // Issue gift card reward (fire-and-forget — never blocks the pipeline)
-        issueGiftCardReward({ consumerId, merchantId, promo }).catch(e => {
-          console.error("[pos.stamps] gift card reward error:", e?.message || String(e));
-        });
+        // Issue reward (fire-and-forget — never blocks the pipeline)
+        if (posType === "clover") {
+          issueCloverDiscountReward({ consumerId, merchantId, promo, orderId, entitlementId: null }).catch(e => {
+            console.error("[pos.stamps] clover discount reward error:", e?.message || String(e));
+          });
+        } else {
+          issueGiftCardReward({ consumerId, merchantId, promo }).catch(e => {
+            console.error("[pos.stamps] gift card reward error:", e?.message || String(e));
+          });
+        }
       }
     } catch (e) {
       console.error(

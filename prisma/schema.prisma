@@ -115,6 +115,9 @@ model Merchant {
 
   // Duplicate customer alerts
   duplicateCustomerAlerts DuplicateCustomerAlert[]
+
+  // Clover reward discounts
+  rewardDiscounts PosRewardDiscount[]
 }
 
 model Store {
@@ -250,8 +253,9 @@ model Consumer {
   // Entitlements (Thread 1)
   entitlements Entitlement[]
 
-  posOrders PosOrder[]
-  giftCards ConsumerGiftCard[]
+  posOrders        PosOrder[]
+  giftCards        ConsumerGiftCard[]
+  rewardDiscounts  PosRewardDiscount[]
 
   @@index([email])
   @@index([phoneE164])
@@ -1364,6 +1368,7 @@ model PosConnection {
   catalogSyncLog CatalogSyncLog[]
   giftCards               ConsumerGiftCard[]
   duplicateCustomerAlerts DuplicateCustomerAlert[]
+  rewardDiscounts         PosRewardDiscount[]
 
   @@unique([merchantId, posType])
   @@index([merchantId])
@@ -1431,6 +1436,37 @@ model DuplicateCustomerAlert {
   @@unique([posConnectionId, phoneE164, status])
   @@index([merchantId, status])
   @@index([posConnectionId])
+}
+
+/// Tracks Clover discount rewards applied (or pending) on orders.
+/// When a consumer earns a milestone, the reward is either applied instantly
+/// to the current order or stored as pending for the next visit.
+model PosRewardDiscount {
+  id                Int           @id @default(autoincrement())
+  consumerId        Int
+  merchantId        Int
+  posConnectionId   Int
+  entitlementId     Int?
+  promotionId       Int?
+  cloverOrderId     String?       @db.VarChar(64)
+  cloverDiscountId  String?       @db.VarChar(64)
+  discountName      String        @db.VarChar(255)
+  amountCents       Int?
+  percentage        Int?
+  rewardType        String        @db.VarChar(32) // discount_fixed, discount_pct, free_item
+  status            String        @default("pending") @db.VarChar(20) // pending, applied, failed, skipped
+  skippedReason     String?       @db.VarChar(255)
+  appliedAt         DateTime?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  consumer      Consumer      @relation(fields: [consumerId], references: [id])
+  merchant      Merchant      @relation(fields: [merchantId], references: [id])
+  posConnection PosConnection @relation(fields: [posConnectionId], references: [id])
+
+  @@index([consumerId, merchantId, status])
+  @@index([posConnectionId])
+  @@index([entitlementId])
 }
 
 /// Log of catalog sync events — tracks what changed and when.
