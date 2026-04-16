@@ -37,34 +37,49 @@ router.get("/consumer/discover", requireConsumerJwt, async (req, res) => {
     const lng = parseFloat(req.query.lng);
     const radiusMeters = parseInt(req.query.radiusMeters) || 3218; // default ~2 miles
 
-    if (isNaN(lat) || isNaN(lng)) {
-      return sendError(res, 400, "VALIDATION_ERROR", "lat and lng are required");
+    const browseAll = isNaN(lat) || isNaN(lng);
+
+    // Browse All mode — no location required, show all discoverable merchants
+    let stores;
+    if (browseAll) {
+      stores = await prisma.store.findMany({
+        where: { status: "active", discoverability: true },
+        select: {
+          id: true, name: true, merchantId: true, latitude: true, longitude: true,
+          address1: true, city: true, state: true, postal: true,
+          category: true, logoUrl: true, hoursJson: true,
+          merchant: { select: { id: true, name: true } },
+        },
+      });
+    } else {
+      // Bounding box pre-filter
+      const degRadius = (radiusMeters / 111320) * 1.5;
+
+      stores = await prisma.store.findMany({
+        where: {
+          latitude: { not: null, gte: lat - degRadius, lte: lat + degRadius },
+          longitude: { not: null, gte: lng - degRadius, lte: lng + degRadius },
+          status: "active",
+          discoverability: true,
+        },
+        select: {
+          id: true, name: true, merchantId: true, latitude: true, longitude: true,
+          address1: true, city: true, state: true, postal: true,
+          category: true, logoUrl: true, hoursJson: true,
+          merchant: { select: { id: true, name: true } },
+        },
+      });
     }
-
-    // Bounding box pre-filter
-    const degRadius = (radiusMeters / 111320) * 1.5;
-
-    const stores = await prisma.store.findMany({
-      where: {
-        latitude: { not: null, gte: lat - degRadius, lte: lat + degRadius },
-        longitude: { not: null, gte: lng - degRadius, lte: lng + degRadius },
-        status: "active",
-        discoverability: true,
-      },
-      select: {
-        id: true, name: true, merchantId: true, latitude: true, longitude: true,
-        address1: true, city: true, state: true, postal: true,
-        category: true, logoUrl: true, hoursJson: true,
-        merchant: { select: { id: true, name: true } },
-      },
-    });
 
     // Build response with loyalty context per store
     const results = [];
 
+    // Deduplicate by merchant — show one entry per merchant (first store)
+    const seenMerchants = new Set();
+
     for (const store of stores) {
-      const dist = haversine(lat, lng, store.latitude, store.longitude);
-      if (dist > radiusMeters) continue;
+      const dist = browseAll ? null : haversine(lat, lng, store.latitude, store.longitude);
+      if (!browseAll && dist > radiusMeters) continue;
 
       // Consumer's enrollment + progress at this merchant
       const progress = await prisma.consumerPromoProgress.findMany({
@@ -127,7 +142,7 @@ router.get("/consumer/discover", requireConsumerJwt, async (req, res) => {
         address: [store.address1, store.city, store.state, store.postal].filter(Boolean).join(", "),
         latitude: store.latitude,
         longitude: store.longitude,
-        distanceMeters: Math.round(dist),
+        distanceMeters: dist !== null ? Math.round(dist) : null,
         hours,
         consumerRelationship: {
           enrolled,
