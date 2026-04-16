@@ -788,34 +788,47 @@ if (require.main === module) app.listen(PORT, () => {
   console.log(`CORS_ORIGIN=${process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN : "(open/dev)"}`);
   console.log(`BILLING_POLICY_FILE=${BILLING_POLICY_FILE}`);
 
+  // ── Scheduled Jobs (node-cron) ──────────────────────────────────────────────
+  const cron = require("node-cron");
+
   // Growth Advisor — recompute promotion outcomes every 6 hours
   const { computeAllPromotionOutcomes } = require("./src/growth/promotionOutcome.aggregate");
-  const SIX_HOURS = 6 * 60 * 60 * 1000;
-  setInterval(() => {
-    console.log("[cron] recomputing promotion outcomes...");
+  cron.schedule("0 */6 * * *", async () => {
+    console.log("[PV Cron] recomputing promotion outcomes...");
     computeAllPromotionOutcomes(prisma).catch((e) => {
-      console.error("[cron] outcome recompute failed:", e?.message || String(e));
+      console.error("[PV Cron] outcome recompute failed:", e?.message || String(e));
     });
-  }, SIX_HOURS);
+  }, { timezone: "UTC" });
 
-  // Gift Card Reconciliation — compare Square balances against ledger every 24h
+  // Gift Card Reconciliation — compare Square balances against ledger daily at 3 AM UTC
   const { reconcileGiftCardBalances } = require("./src/pos/pos.giftcard");
-  const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
-  setInterval(() => {
-    console.log("[cron] reconciling gift card balances...");
+  cron.schedule("0 3 * * *", async () => {
+    console.log("[PV Cron] reconciling gift card balances...");
     reconcileGiftCardBalances().catch((e) => {
-      console.error("[cron] gift card reconciliation failed:", e?.message || String(e));
+      console.error("[PV Cron] gift card reconciliation failed:", e?.message || String(e));
     });
-  }, TWENTY_FOUR_HOURS);
+  }, { timezone: "UTC" });
 
-  // Reward Expiry — send notifications + expire overdue rewards every 24h
+  // Reward Expiry — send notifications + expire overdue rewards daily at 8 AM UTC
   const { runRewardExpiryCron } = require("./src/cron/reward.expiry.cron");
-  setInterval(() => {
-    console.log("[cron] running reward expiry check...");
+  cron.schedule("0 8 * * *", async () => {
+    console.log("[PV Cron] running reward expiry check...");
     runRewardExpiryCron().catch((e) => {
-      console.error("[cron] reward expiry cron failed:", e?.message || String(e));
+      console.error("[PV Cron] reward expiry cron failed:", e?.message || String(e));
     });
-  }, TWENTY_FOUR_HOURS);
+  }, { timezone: "UTC" });
+
+  // Reporting Aggregation — nightly at 2 AM UTC
+  const { runReportingAggregation } = require("./src/cron/reporting.aggregate.cron");
+  cron.schedule("0 2 * * *", async () => {
+    console.log("[PV Cron] nightly reporting aggregation starting...");
+    try {
+      const result = await runReportingAggregation();
+      console.log("[PV Cron] reporting aggregation complete:", JSON.stringify(result));
+    } catch (e) {
+      console.error("[PV Cron] reporting aggregation failed:", e?.message || String(e));
+    }
+  }, { timezone: "UTC" });
 
   // Event Publisher — poll outbox and dispatch to consumers
   const { bootstrapEventPublisher } = require("./src/events/event.bootstrap");

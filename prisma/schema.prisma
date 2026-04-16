@@ -121,6 +121,11 @@ model Merchant {
 
   // Consumer check-ins
   checkins ConsumerCheckin[]
+
+  // Reporting summaries
+  dailySummaries          MerchantDailySummary[]
+  promotionDailySummaries PromotionDailySummary[]
+  engagementSummaries     ConsumerEngagementSummary[]
 }
 
 model Store {
@@ -192,6 +197,10 @@ model Store {
 
   // Consumer check-ins
   checkins ConsumerCheckin[]
+
+  // Reporting summaries
+  dailySummaries      MerchantDailySummary[]
+  engagementSummaries ConsumerEngagementSummary[]
 
   @@index([merchantId])
   @@index([phoneE164])
@@ -1011,6 +1020,9 @@ model Promotion {
   // null = no expiry window (progress never resets by time).
   timeframeDays Int?
 
+  /// Promotion type for simulator context: stamp | bundle | tiered | conditional | referral
+  promotionType String  @default("stamp") @db.VarChar(20)
+
   // Reward definition
   rewardType  PromoRewardType
   /// discount_pct: 1–100; discount_fixed: cents; null for free_item/custom.
@@ -1050,6 +1062,9 @@ model Promotion {
   promotionEvents    PromotionEvent[]
   baselineSnapshots  PromotionBaselineSnapshot[]
   outcomes           PromotionOutcome[]
+
+  // Reporting summaries
+  dailySummaries PromotionDailySummary[]
 
   @@index([merchantId, status])
 }
@@ -1524,6 +1539,109 @@ model RewardNotification {
 
   @@unique([rewardId, rewardType, notificationType, channel])
   @@index([consumerId])
+}
+
+/// Pre-aggregated daily merchant metrics. Written nightly by reporting cron.
+/// Dashboard queries hit this table, never raw transaction tables.
+model MerchantDailySummary {
+  id                       Int       @id @default(autoincrement())
+  merchantId               Int
+  storeId                  Int?      // null = merchant-wide aggregate
+  date                     DateTime  @db.Date
+
+  totalTransactions        Int       @default(0)
+  attributedTransactions   Int       @default(0)
+  unattributedTransactions Int       @default(0)
+  attributionRate          Float     @default(0)
+
+  newEnrollments           Int       @default(0)
+  stampsIssued             Int       @default(0)
+  milestonesReached        Int       @default(0)
+  rewardsRedeemed          Int       @default(0)
+  redemptionValueCents     Int       @default(0)
+  rewardsExpired           Int       @default(0)
+  expiredValueCents        Int       @default(0)
+  budgetConsumedCents      Int       @default(0)
+
+  discoverImpressions      Int       @default(0)
+  discoverEnrollments      Int       @default(0)
+  checkins                 Int       @default(0)
+  geofenceCheckins         Int       @default(0)
+  manualCheckins           Int       @default(0)
+
+  activeConsumers          Int       @default(0)
+  newConsumers             Int       @default(0)
+  returningConsumers       Int       @default(0)
+
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
+
+  merchant  Merchant @relation(fields: [merchantId], references: [id])
+  store     Store?   @relation(fields: [storeId], references: [id])
+
+  @@unique([merchantId, storeId, date])
+  @@index([merchantId, date])
+  @@index([storeId, date])
+}
+
+/// Pre-aggregated daily promotion metrics.
+model PromotionDailySummary {
+  id                    Int       @id @default(autoincrement())
+  promotionId           Int
+  merchantId            Int
+  date                  DateTime  @db.Date
+
+  newEnrollments        Int       @default(0)
+  stampsIssued          Int       @default(0)
+  milestonesReached     Int       @default(0)
+  rewardsRedeemed       Int       @default(0)
+  redemptionValueCents  Int       @default(0)
+  rewardsExpired        Int       @default(0)
+  expiredValueCents     Int       @default(0)
+  activeParticipants    Int       @default(0)
+  totalEnrolled         Int       @default(0)
+
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  promotion Promotion @relation(fields: [promotionId], references: [id])
+  merchant  Merchant  @relation(fields: [merchantId], references: [id])
+
+  @@unique([promotionId, date])
+  @@index([merchantId, date])
+  @@index([promotionId, date])
+}
+
+/// Pre-aggregated consumer engagement distribution snapshot.
+model ConsumerEngagementSummary {
+  id               Int       @id @default(autoincrement())
+  merchantId       Int
+  storeId          Int?
+  date             DateTime  @db.Date
+
+  visitedOnce      Int       @default(0)
+  visited2to3      Int       @default(0)
+  visited4to7      Int       @default(0)
+  visited8plus     Int       @default(0)
+
+  progress0to25    Int       @default(0)
+  progress25to50   Int       @default(0)
+  progress50to75   Int       @default(0)
+  progress75to100  Int       @default(0)
+  rewardReady      Int       @default(0)
+
+  inactiveDays30   Int       @default(0)
+  inactiveDays60   Int       @default(0)
+  inactiveDays90   Int       @default(0)
+
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  merchant Merchant @relation(fields: [merchantId], references: [id])
+  store    Store?   @relation(fields: [storeId], references: [id])
+
+  @@unique([merchantId, storeId, date])
+  @@index([merchantId, date])
 }
 
 /// Log of catalog sync events — tracks what changed and when.
