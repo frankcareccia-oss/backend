@@ -668,6 +668,8 @@ const consumerWalletRouter = require("./src/consumer/consumer.wallet.routes");
 app.use(consumerWalletRouter);
 const consumerPromosRouter = require("./src/consumer/consumer.promotions.routes");
 app.use(consumerPromosRouter);
+const consumerCheckinRouter = require("./src/consumer/consumer.checkin.routes");
+app.use(consumerCheckinRouter);
 
 const growthRouter = require("./src/growth/growth.routes");
 app.use(growthRouter);
