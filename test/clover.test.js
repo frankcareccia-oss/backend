@@ -375,8 +375,10 @@ describe("Clover Webhook", () => {
       expect(progress.lifetimeEarned).toBe(1);
 
       // Clean up (connections/locationMaps handled by afterEach)
+      await prisma.posRewardDiscount.deleteMany({ where: { consumerId: consumer.id } });
+      await prisma.entitlement.deleteMany({ where: { consumerId: consumer.id } });
       await prisma.consumerPromoProgress.deleteMany({ where: { consumerId: consumer.id } });
-      await prisma.promoRedemption.deleteMany({ where: { promotionId: promo.id } });
+      await prisma.promoRedemption.deleteMany({ where: { consumerId: consumer.id } });
       await prisma.promotionEvent.deleteMany({ where: { promotionId: promo.id } });
       await prisma.visit.delete({ where: { id: visit.id } });
       await prisma.promotion.delete({ where: { id: promo.id } });

@@ -19,7 +19,98 @@ const { accumulateStamps } = require("./pos.stamps");
 const { writeEventLog } = require("../eventlog/eventlog");
 const { CloverAdapter } = require("./adapters/clover.adapter");
 
+const { syncCatalogFromPos } = require("./pos.catalog.sync");
+
 const CLOVER_WEBHOOK_SECRET = process.env.CLOVER_WEBHOOK_SECRET || "";
+const CLOVER_API_BASE = process.env.CLOVER_API_BASE || "https://apisandbox.dev.clover.com";
+
+// ─── Webhook dedup cache ─────────────────────────────────────────────────────
+const DEDUP_TTL_MS = 5 * 60 * 1000;
+const recentEventIds = new Map();
+
+function isDuplicateEvent(eventId) {
+  if (!eventId) return false;
+  if (recentEventIds.has(eventId)) return true;
+  recentEventIds.set(eventId, Date.now());
+  if (recentEventIds.size > 500) {
+    const cutoff = Date.now() - DEDUP_TTL_MS;
+    for (const [id, ts] of recentEventIds) {
+      if (ts < cutoff) recentEventIds.delete(id);
+    }
+  }
+  return false;
+}
+
+/**
+ * Normalize a phone string to E.164 format.
+ */
+function normalizePhone(raw) {
+  if (!raw) return null;
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  return null;
+}
+
+/**
+ * Check for duplicate Clover customers sharing the same phone number.
+ * If duplicates found, creates or updates a DuplicateCustomerAlert.
+ */
+async function checkDuplicateCloverCustomers(adapter, phoneE164, merchantId, posConnectionId, cloverMerchantId) {
+  if (!phoneE164) return null;
+  try {
+    const accessToken = require("../utils/encrypt").decrypt(adapter.conn.accessTokenEnc);
+    const res = await fetch(
+      `${CLOVER_API_BASE}/v3/merchants/${cloverMerchantId}/customers?filter=phoneNumber=${encodeURIComponent(phoneE164)}&expand=phoneNumbers`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    const data = await res.json();
+    const customers = data.elements || [];
+    if (customers.length <= 1) return null;
+
+    const customerIds = customers.map(c => ({
+      id: c.id,
+      name: [c.firstName, c.lastName].filter(Boolean).join(" ") || "(no name)",
+      phone: phoneE164,
+    }));
+
+    const existing = await prisma.duplicateCustomerAlert.findFirst({
+      where: { posConnectionId, phoneE164, status: "pending" },
+    });
+
+    if (existing) {
+      await prisma.duplicateCustomerAlert.update({
+        where: { id: existing.id },
+        data: { squareCustomerIds: customerIds, updatedAt: new Date() },
+      });
+    } else {
+      await prisma.duplicateCustomerAlert.create({
+        data: {
+          merchantId,
+          posConnectionId,
+          phoneE164,
+          squareCustomerIds: customerIds,
+          status: "pending",
+        },
+      });
+    }
+
+    console.warn(`[clover.webhook] duplicate customers detected: phone=${phoneE164} count=${customers.length} merchant=${merchantId}`);
+    console.log(JSON.stringify({
+      pvHook: "clover.customer.duplicate",
+      ts: new Date().toISOString(),
+      tc: "TC-CLO-CUST-01",
+      sev: "warn",
+      phoneE164,
+      count: customers.length,
+      merchantId,
+    }));
+    return { duplicates: customers.length };
+  } catch (e) {
+    console.error("[clover.webhook] duplicate customer check error:", e?.message || String(e));
+    return null;
+  }
+}
 
 /**
  * Verify Clover webhook signature.
@@ -134,11 +225,41 @@ async function dispatchCloverEvent(event) {
       // Process payment events
       if (merchantEvents.payments) {
         for (const payment of merchantEvents.payments) {
+          const dedupKey = `clover:pay:${cloverMerchantId}:${payment.objectId}:${payment.type}`;
+          if (isDuplicateEvent(dedupKey)) {
+            console.log("[clover.webhook] dedup skip:", dedupKey);
+            continue;
+          }
           await handleCloverPayment(conn, cloverMerchantId, payment);
         }
       }
 
-      // Process order events
+      // Process inventory/catalog events (I = items, IC = categories)
+      const catalogEvents = [
+        ...(merchantEvents.items || []),
+        ...(merchantEvents.item_categories || []),
+      ];
+      if (catalogEvents.length > 0) {
+        const dedupKey = `clover:catalog:${cloverMerchantId}:${Date.now()}`;
+        if (!isDuplicateEvent(dedupKey)) {
+          handleCloverCatalogUpdate(conn, cloverMerchantId).catch(e => {
+            console.error("[clover.webhook] catalog sync error:", e?.message);
+          });
+        }
+      }
+
+      // Process customer events (C = customers)
+      if (merchantEvents.customers) {
+        for (const custEvent of merchantEvents.customers) {
+          if (custEvent.type === "CREATE") {
+            handleCloverCustomerCreated(conn, cloverMerchantId, custEvent).catch(e => {
+              console.error("[clover.webhook] customer created handler error:", e?.message);
+            });
+          }
+        }
+      }
+
+      // Process order events (log only for now)
       if (merchantEvents.orders) {
         for (const order of merchantEvents.orders) {
           console.log("[clover.webhook] order event:", order.type, order.objectId);
@@ -148,6 +269,56 @@ async function dispatchCloverEvent(event) {
   }
 
   return { processed: true };
+}
+
+/**
+ * Handle Clover catalog update — trigger a full catalog re-sync.
+ */
+async function handleCloverCatalogUpdate(conn, cloverMerchantId) {
+  const adapter = new CloverAdapter(conn);
+  const result = await syncCatalogFromPos(prisma, adapter, {
+    merchantId: conn.merchantId,
+    posConnectionId: conn.id,
+    trigger: "webhook",
+  });
+  console.log(JSON.stringify({
+    pvHook: "clover.catalog.synced",
+    ts: new Date().toISOString(),
+    tc: "TC-CLO-CAT-01",
+    sev: "info",
+    merchantId: conn.merchantId,
+    summary: result?.summary || null,
+  }));
+  return result;
+}
+
+/**
+ * Handle Clover customer.created — check for duplicates by phone.
+ */
+async function handleCloverCustomerCreated(conn, cloverMerchantId, custEvent) {
+  const custId = custEvent.objectId;
+  if (!custId) return;
+
+  const adapter = new CloverAdapter(conn);
+  const accessToken = require("../utils/encrypt").decrypt(conn.accessTokenEnc);
+
+  // Fetch the customer to get their phone
+  try {
+    const res = await fetch(
+      `${CLOVER_API_BASE}/v3/merchants/${cloverMerchantId}/customers/${custId}?expand=phoneNumbers`,
+      { headers: { Authorization: `Bearer ${accessToken}` } }
+    );
+    const customer = await res.json();
+    const phone = customer.phoneNumbers?.elements?.[0]?.phoneNumber;
+    if (!phone) return;
+
+    const phoneE164 = normalizePhone(phone);
+    if (!phoneE164) return;
+
+    await checkDuplicateCloverCustomers(adapter, phoneE164, conn.merchantId, conn.id, cloverMerchantId);
+  } catch (e) {
+    console.error("[clover.webhook] customer created duplicate check error:", e?.message);
+  }
 }
 
 /**
@@ -272,6 +443,16 @@ async function handleCloverPayment(conn, cloverMerchantId, paymentEvent) {
       consumerId = await adapter.resolveConsumer(order);
     } catch (e) {
       console.warn("[clover.webhook] consumer resolution error:", e?.message);
+    }
+  }
+
+  // Duplicate customer detection (fire-and-forget)
+  if (consumerId) {
+    const consumer = await prisma.consumer.findUnique({ where: { id: consumerId }, select: { phoneE164: true } });
+    if (consumer?.phoneE164) {
+      checkDuplicateCloverCustomers(adapter, consumer.phoneE164, merchantId, conn.id, cloverMerchantId).catch(e => {
+        console.error("[clover.webhook] duplicate check error:", e?.message);
+      });
     }
   }
 

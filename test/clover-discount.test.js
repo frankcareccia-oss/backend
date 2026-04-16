@@ -138,6 +138,116 @@ describe("Clover Order Enrichment", () => {
   });
 });
 
+describe("Clover Duplicate Customer Detection", () => {
+  it("creates alert when duplicate customers found on payment", async () => {
+    await prisma.posLocationMap.create({
+      data: {
+        posConnectionId: posConn.id,
+        externalLocationId: "CLO_MERCH_1",
+        pvStoreId: store.id,
+        active: true,
+      },
+    });
+
+    // Mock: getPayment
+    mockFetch("/payments/PAY_DUP", {
+      body: { id: "PAY_DUP", amount: 500, order: { id: "ORD_DUP" } },
+    });
+    // Mock: getOrder with customer phone
+    mockFetch("/orders/ORD_DUP", {
+      body: {
+        id: "ORD_DUP",
+        customers: { elements: [{ phoneNumbers: { elements: [{ phoneNumber: "+17735550099" }] } }] },
+        lineItems: { elements: [] },
+      },
+    });
+    // Mock: customer search returns 2 duplicates
+    mockFetch("filter=phoneNumber", {
+      body: {
+        elements: [
+          { id: "CLO_CUST_1", firstName: "Jane", lastName: "Doe" },
+          { id: "CLO_CUST_2", firstName: "Jane", lastName: "D" },
+        ],
+      },
+    });
+
+    const request = require("supertest");
+    const { getApp } = require("./helpers/setup");
+    const app = getApp();
+
+    await request(app)
+      .post("/webhooks/clover")
+      .set("Content-Type", "application/json")
+      .send({
+        merchants: {
+          CLO_MERCH_1: {
+            payments: [{ objectId: "PAY_DUP", type: "CREATE" }],
+          },
+        },
+      });
+
+    await new Promise(r => setTimeout(r, 1500));
+
+    const alerts = await prisma.duplicateCustomerAlert.findMany({
+      where: { merchantId: merchant.id, status: "pending" },
+    });
+
+    expect(alerts.length).toBeGreaterThanOrEqual(1);
+    const alert = alerts.find(a => a.phoneE164 === "+17735550099");
+    if (alert) {
+      expect(alert.squareCustomerIds).toHaveLength(2);
+    }
+  });
+
+  it("does NOT create alert when only one customer found", async () => {
+    // This test ensures no false positives — single customer = no alert
+    await prisma.posLocationMap.create({
+      data: {
+        posConnectionId: posConn.id,
+        externalLocationId: "CLO_MERCH_1",
+        pvStoreId: store.id,
+        active: true,
+      },
+    });
+
+    mockFetch("/payments/PAY_SINGLE", {
+      body: { id: "PAY_SINGLE", amount: 500, order: { id: "ORD_SINGLE" } },
+    });
+    mockFetch("/orders/ORD_SINGLE", {
+      body: {
+        id: "ORD_SINGLE",
+        customers: { elements: [{ phoneNumbers: { elements: [{ phoneNumber: "+17735550099" }] } }] },
+        lineItems: { elements: [] },
+      },
+    });
+    mockFetch("filter=phoneNumber", {
+      body: { elements: [{ id: "CLO_CUST_ONLY", firstName: "Jane", lastName: "Doe" }] },
+    });
+
+    const request = require("supertest");
+    const { getApp } = require("./helpers/setup");
+    const app = getApp();
+
+    await request(app)
+      .post("/webhooks/clover")
+      .set("Content-Type", "application/json")
+      .send({
+        merchants: {
+          CLO_MERCH_1: {
+            payments: [{ objectId: "PAY_SINGLE", type: "CREATE" }],
+          },
+        },
+      });
+
+    await new Promise(r => setTimeout(r, 1000));
+
+    const alerts = await prisma.duplicateCustomerAlert.findMany({
+      where: { merchantId: merchant.id },
+    });
+    expect(alerts).toHaveLength(0);
+  });
+});
+
 describe("Clover Discount Reward", () => {
   const { applyCloverDiscount, issueCloverDiscountReward, applyPendingCloverRewards, buildDiscountName, resolveRewardAmountCents } = require("../src/pos/pos.clover.discount");
 
