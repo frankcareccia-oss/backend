@@ -486,6 +486,196 @@ Visit 3:  Consumer shows barcode to cashier
 
 ---
 
+## Phase 9: Reward Expiry Notifications
+
+### Overview
+
+When a consumer earns a reward but does not activate or redeem it within the promotion's expiry window, PV notifies them proactively via email and/or SMS before expiry, then expires the reward cleanly with full audit trail preservation.
+
+This is consumer-protective communication — not marketing. Tone must reflect that. Messages should be clear, direct, and link the consumer directly to the reward in the app.
+
+### 9a. Promotion Model — Expiry TTL Field
+
+Add to Promotion model:
+
+```
+Promotion {
+  ...existing fields...
+  rewardExpiryDays     Int    @default(90)    // Platform minimum: 30 days
+  rewardExpiryAction   String @default("expire")  // Fixed: "expire"
+}
+```
+
+- Merchant sets `rewardExpiryDays` at promotion creation time
+- Platform enforces a minimum of 30 days — validation rejects anything below
+- Expiry clock starts from the date the reward is earned (milestone hit), not activation date
+- Expiry behavior is NOT merchant-configurable — fixed platform rule: expired rewards are cancelled, gift card balances zeroed out
+- This rule is stated in promotion terms the consumer accepts at enrollment
+
+Add `expiresAt` to reward tracking models:
+
+```
+PosRewardDiscount {
+  ...existing fields...
+  expiresAt   DateTime?   // earnedAt + rewardExpiryDays
+}
+
+ConsumerGiftCard {
+  ...existing fields...
+  expiresAt   DateTime?   // earnedAt + rewardExpiryDays
+}
+```
+
+### 9b. Promotion Legal Language — Expiry Clause
+
+Auto-appended to all promotion terms at creation time:
+
+> *"Rewards not redeemed within [X] days of earning will expire. Any associated credit or gift card balance will be cancelled at expiry. You will be notified by email and/or SMS before your reward expires."*
+
+Non-negotiable, non-editable by merchant. Generated from `rewardExpiryDays` value.
+
+**Promotion creation UI:** Add `rewardExpiryDays` field — number input, min 30, default 90, label: "Days until reward expires". Display generated clause in real time.
+
+### 9c. Notification Schedule
+
+Three touchpoints before expiry, calculated from `expiresAt`:
+
+| Trigger | Timing | Channel |
+|---------|--------|---------|
+| First warning | 14 days before expiry | Email + SMS |
+| Second warning | 7 days before expiry | Email + SMS |
+| Final warning | 48 hours before expiry | Email + SMS |
+
+Rules:
+- Send email if consumer has a verified email on file
+- Send SMS if consumer has a verified phone on file
+- Send both if both exist — service notifications, not marketing
+- Each notification logged: consumerId, rewardId, channel, sentAt, notificationType
+- Skip if reward already activated or redeemed
+- Deduplicate — check notification log before each send
+
+### 9d. Notification Content
+
+**Email subject:** "Your PerkValet reward at [Store Name] expires in [X days]"
+
+**Email body:** "Hi [First Name], your [Promotion Name] reward worth $[X] at [Store Name] expires on [Date]. Open PerkValet to activate it before it expires." Include deep link: "View My Reward" → opens app to reward card.
+
+**SMS:** "PerkValet: Your $[X] reward at [Store Name] expires [Date]. Tap to activate: [deep link]" — keep under 160 characters.
+
+### 9e. Expiry Cron Job
+
+**New file:** `src/cron/reward.expiry.cron.js`
+
+Daily job (e.g., 8:00 AM UTC):
+
+1. Query PosRewardDiscount and ConsumerGiftCard where status = "earned" or "activated" and expiresAt is not null
+2. Check notification triggers (14-day, 7-day, 48-hour) — send applicable notifications
+3. For records where `expiresAt <= now()`:
+
+**All POS types:**
+- Set status = "expired"
+- Set entitlement status = "expired"
+- Log expiry event with full context
+- Fire pvHook: `reward.expired`
+
+**Clover specific:**
+- Delete discount template from register if activated
+- Log deletion
+
+**Square specific:**
+- Get current gift card balance: `GET /v2/gift-cards/{id}`
+- Zero out balance: `POST /v2/gift-cards/activities` with type `ADJUST_DECREMENT` by exact current balance amount
+- Deactivate card: `POST /v2/gift-cards/activities` with type `DEACTIVATE`
+- Log both actions with: giftCardId, previousBalance, newBalance: 0, reason: "promotion_expired"
+- Card can be reactivated later if consumer earns a new reward (reuse same card with fresh ACTIVATE + LOAD)
+
+### 9f. Consumer App — Expired Reward Display
+
+| Status | What Consumer Sees |
+|--------|-------------------|
+| Expiring soon (≤14 days) | Amber indicator: "Expires [Date]" |
+| Expiring soon (≤48 hours) | Red indicator: "Expires soon — activate today" |
+| Expired | Grayed out card: "Expired on [Date]" — moved to Past Rewards history |
+
+Expired rewards are never deleted — they appear in a collapsible "Past Rewards" section. Builds trust, reduces support contacts.
+
+### 9g. Merchant Reporting
+
+Add to Reports:
+- Rewards expired this month — count and total dollar value
+- Expiry rate per promotion — % of earned rewards that expired unredeemed
+- Notification delivery stats — emails/SMS sent per type
+- Budget impact — expired rewards = saved redemption budget
+
+Growth Advisor integration: *"14 rewards expired this month ($42 in budget savings). Consider adjusting your expiry window or promotion structure to improve redemption rates."*
+
+### 9h. Audit Trail — Expiry Events
+
+Every expiry action is immutable and permanently logged:
+
+| Event | Logged Fields |
+|-------|--------------|
+| Notification sent | consumerId, rewardId, channel, notificationType, sentAt |
+| Reward expired | consumerId, rewardId, promotionId, merchantId, storeId, rewardValue, expiresAt, expiredAt, promotionTermsVersion, action |
+| Gift card zeroed (Square) | giftCardId, previousBalance, newBalance, reason, timestamp |
+| Gift card deactivated (Square) | giftCardId, deactivatedAt, reason |
+| Clover template deleted | discountTemplateId, merchantId, deletedAt, reason |
+
+### 9i. Notification Dedup Model
+
+Dedicated table for clean dedup (faster than scanning general audit log):
+
+```
+RewardNotification {
+  id                Int       @id @default(autoincrement())
+  consumerId        Int
+  rewardId          Int       // PosRewardDiscount.id or ConsumerGiftCard.id
+  rewardType        String    // "discount" | "giftcard"
+  notificationType  String    // "14_day" | "7_day" | "48_hour"
+  channel           String    // "email" | "sms"
+  sentAt            DateTime  @default(now())
+
+  @@unique([rewardId, rewardType, notificationType, channel])
+  @@index([consumerId])
+}
+```
+
+### Phase 9 Test Coverage (8-10 tests)
+
+| Test |
+|------|
+| Notification triggered correctly at 14-day mark |
+| Notification triggered correctly at 7-day mark |
+| Notification triggered correctly at 48-hour mark |
+| Duplicate notification suppressed correctly |
+| Already-redeemed reward skipped by cron |
+| Reward correctly marked expired with full audit log |
+| Square gift card zeroed (ADJUST_DECREMENT) + deactivated on expiry |
+| Clover template deleted on expiry |
+| Consumer wallet shows expiring-soon amber state |
+| Consumer wallet shows expired state in Past Rewards |
+| Merchant report reflects expired reward count and dollar value |
+
+---
+
+## Revised Implementation Order
+
+| Order | Phase | Dependency | Estimated Tests |
+|-------|-------|-----------|----------------|
+| 1 | Phase 1: Schema changes | None | 0 (migration) |
+| 2 | Phase 2: Store coordinate sync | Phase 1 | 4-5 |
+| 3 | Phase 3: Check-in endpoint | Phase 1 | 6-8 |
+| 4 | Phase 4: Reward activation | Phase 1, 3 | 6-8 |
+| 5 | Phase 5: Redemption detection | Phase 4 | 4-5 |
+| 6 | Phase 6: Consumer app changes | Phase 3, 4 | 3-4 |
+| 7 | Phase 7: Merchant portal | Phase 1, 2 | 2-3 |
+| 8 | Phase 8: Cleanup & hardening | Phase 4, 5 | 2-3 |
+| 9 | Phase 9: Reward expiry notifications | Phase 1, 4, notification infra | 8-10 |
+
+**Revised total: ~38-46 new tests**
+
+---
+
 ## Open Questions
 
 1. **Geofence TTL** — How long should an activated Clover discount template stay on the register? Default 24h? Configurable per merchant?
