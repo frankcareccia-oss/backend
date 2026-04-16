@@ -352,6 +352,93 @@ async function handleCloverCustomerCreated(conn, cloverMerchantId, custEvent) {
 }
 
 /**
+ * Detect if a PV discount template was applied to a Clover order.
+ * Called after payment webhook — scans order discounts for PV-branded names,
+ * marks the reward as redeemed, updates entitlement, and deletes the template.
+ */
+async function detectCloverDiscountRedemption(adapter, { consumerId, merchantId, orderId, conn }) {
+  try {
+    const accessToken = require("../utils/encrypt").decrypt(conn.accessTokenEnc);
+    const cloverMid = conn.externalMerchantId;
+
+    // Fetch order with discounts
+    const order = await adapter._cloverFetch(`/orders/${orderId}?expand=discounts`);
+    const discounts = order?.discounts?.elements || [];
+
+    if (!discounts.length) return;
+
+    // Find activated PV rewards for this consumer + merchant
+    const activatedRewards = await prisma.posRewardDiscount.findMany({
+      where: { consumerId, merchantId, status: "activated", cloverDiscountId: { not: null } },
+    });
+
+    if (!activatedRewards.length) {
+      // Also check by name pattern as fallback
+      const pvDiscounts = discounts.filter(d => d.name && d.name.startsWith("PerkValet"));
+      if (pvDiscounts.length > 0) {
+        console.log(`[clover.webhook] PV-branded discount found on order ${orderId} but no matching activated reward`);
+      }
+      return;
+    }
+
+    // Match by discount template ID or by name
+    for (const reward of activatedRewards) {
+      const matchById = discounts.find(d => d.id === reward.cloverDiscountId);
+      const matchByName = !matchById ? discounts.find(d => d.name === reward.discountName) : null;
+      const match = matchById || matchByName;
+
+      if (match) {
+        // Mark as redeemed
+        await prisma.posRewardDiscount.update({
+          where: { id: reward.id },
+          data: {
+            status: "redeemed",
+            cloverOrderId: orderId,
+            appliedAt: new Date(),
+          },
+        });
+
+        // Update entitlement if linked
+        if (reward.entitlementId) {
+          await prisma.entitlement.update({
+            where: { id: reward.entitlementId },
+            data: { status: "redeemed" },
+          }).catch(() => {}); // ignore if already redeemed
+        }
+
+        // Delete the discount template from Clover register (cleanup)
+        if (reward.cloverDiscountId) {
+          try {
+            await fetch(`${CLOVER_API_BASE}/v3/merchants/${cloverMid}/discounts/${reward.cloverDiscountId}`, {
+              method: "DELETE",
+              headers: { Authorization: `Bearer ${accessToken}` },
+            });
+            console.log(`[clover.webhook] deleted discount template ${reward.cloverDiscountId} from register`);
+          } catch (delErr) {
+            console.warn(`[clover.webhook] could not delete template ${reward.cloverDiscountId}:`, delErr?.message);
+          }
+        }
+
+        console.log(`[clover.webhook] discount redeemed: reward ${reward.id} on order ${orderId}`);
+        console.log(JSON.stringify({
+          pvHook: "clover.discount.redeemed",
+          ts: new Date().toISOString(),
+          tc: "TC-CLO-DISC-07",
+          sev: "info",
+          consumerId,
+          merchantId,
+          orderId,
+          rewardId: reward.id,
+          discountName: reward.discountName,
+        }));
+      }
+    }
+  } catch (e) {
+    console.error(`[clover.webhook] discount redemption detection error: orderId=${orderId}`, e?.message || String(e));
+  }
+}
+
+/**
  * Handle Clover order UPDATE — check if the order has a customer with a pending
  * discount reward. If so, apply the discount BEFORE payment so the POS total
  * reflects the discounted amount.
@@ -612,9 +699,6 @@ async function handleCloverPayment(conn, cloverMerchantId, paymentEvent) {
     }).catch(e => console.error("[clover.webhook] order enrichment failed:", e?.message));
   }
 
-  // NOTE: Pending discount rewards are now applied on ORDER UPDATE (before payment),
-  // not on payment CREATE (after payment). See handleCloverOrderUpdate().
-
   // Stamp accumulation for identified consumers
   if (consumerId) {
     try {
@@ -629,6 +713,13 @@ async function handleCloverPayment(conn, cloverMerchantId, paymentEvent) {
     } catch (e) {
       console.error("[clover.webhook] accumulateStamps error:", e?.message);
     }
+  }
+
+  // Detect PV discount redemption on the order (fire-and-forget)
+  if (consumerId && orderId) {
+    detectCloverDiscountRedemption(adapter, { consumerId, merchantId, orderId, conn }).catch(e => {
+      console.error("[clover.webhook] discount redemption detection error:", e?.message);
+    });
   }
 
   return { visitId: visit.id, consumerId, identified: !!consumerId };

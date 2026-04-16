@@ -437,6 +437,12 @@ async function dispatchSquareEvent(eventType, data, merchantIdFromEvent) {
             },
           });
           console.log(`[square.webhook] gift card redeemed: $${(tenderCents / 100).toFixed(2)} consumer=${consumerId} gc=${gcRecord.id}`);
+
+          // Mark any active entitlements as redeemed for this consumer + merchant
+          await prisma.entitlement.updateMany({
+            where: { consumerId, merchantId, type: "reward", status: "active" },
+            data: { status: "redeemed" },
+          }).catch(() => {}); // ignore if none found
         }
       }
     } catch (e) {

@@ -248,6 +248,97 @@ describe("Clover Duplicate Customer Detection", () => {
   });
 });
 
+describe("Clover Discount Redemption Detection", () => {
+  it("detects PV discount on order and marks reward redeemed via webhook", async () => {
+    await prisma.posLocationMap.create({
+      data: {
+        posConnectionId: posConn.id,
+        externalLocationId: "CLO_MERCH_1",
+        pvStoreId: store.id,
+        active: true,
+      },
+    });
+
+    // Create an activated reward with a template ID
+    const entitlement = await prisma.entitlement.create({
+      data: {
+        consumerId: consumer.id, merchantId: merchant.id, storeId: store.id,
+        type: "reward", sourceId: 1, status: "active",
+        metadataJson: { displayLabel: "$3.00 off" },
+      },
+    });
+    const reward = await prisma.posRewardDiscount.create({
+      data: {
+        consumerId: consumer.id, merchantId: merchant.id, posConnectionId: posConn.id,
+        entitlementId: entitlement.id, promotionId: 50,
+        discountName: "PerkValet — Jane D. $3.00 off",
+        amountCents: 300, rewardType: "discount_fixed",
+        status: "activated", cloverDiscountId: "TMPL_REDEEM_1",
+      },
+    });
+
+    // Mock: getPayment returns order ID
+    mockFetch("/payments/PAY_REDEEM", {
+      body: { id: "PAY_REDEEM", amount: 500, order: { id: "ORD_REDEEM" } },
+    });
+    // Mock: getOrder returns customer + discounts
+    mockFetch("/orders/ORD_REDEEM", (url) => {
+      if (url.includes("expand=discounts")) {
+        return {
+          body: {
+            id: "ORD_REDEEM",
+            discounts: { elements: [{ id: "TMPL_REDEEM_1", name: "PerkValet — Jane D. $3.00 off", amount: -300 }] },
+          },
+        };
+      }
+      return {
+        body: {
+          id: "ORD_REDEEM",
+          customers: { elements: [{ id: "CUST_1", firstName: "Jane", lastName: "Doe" }] },
+          lineItems: { elements: [{ name: "Coffee", price: 500 }] },
+        },
+      };
+    });
+    // Mock: customer phone lookup
+    mockFetch("/customers/CUST_1", {
+      body: { id: "CUST_1", phoneNumbers: { elements: [{ phoneNumber: "+17735550099" }] } },
+    });
+    // Mock: delete discount template
+    mockFetch("discounts/TMPL_REDEEM_1", { body: {} });
+
+    const request = require("supertest");
+    const { getApp } = require("./helpers/setup");
+    const app = getApp();
+
+    await request(app)
+      .post("/webhooks/clover")
+      .set("Content-Type", "application/json")
+      .send({
+        merchants: {
+          CLO_MERCH_1: {
+            payments: [{ objectId: "PAY_REDEEM", type: "CREATE" }],
+          },
+        },
+      });
+
+    // Wait for async processing
+    await new Promise(r => setTimeout(r, 2000));
+
+    // Verify reward marked redeemed
+    const updatedReward = await prisma.posRewardDiscount.findUnique({ where: { id: reward.id } });
+    expect(updatedReward.status).toBe("redeemed");
+    expect(updatedReward.cloverOrderId).toBe("ORD_REDEEM");
+
+    // Verify entitlement marked redeemed
+    const updatedEnt = await prisma.entitlement.findUnique({ where: { id: entitlement.id } });
+    expect(updatedEnt.status).toBe("redeemed");
+
+    // Verify delete template was called
+    const deleteCalls = fetchCalls.filter(c => c.method === "DELETE" && c.url.includes("TMPL_REDEEM_1"));
+    expect(deleteCalls.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
 describe("Clover Discount Reward", () => {
   const { applyCloverDiscount, issueCloverDiscountReward, applyPendingCloverRewards, buildDiscountName, resolveRewardAmountCents } = require("../src/pos/pos.clover.discount");
 
