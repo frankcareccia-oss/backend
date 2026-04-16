@@ -118,6 +118,9 @@ model Merchant {
 
   // Clover reward discounts
   rewardDiscounts PosRewardDiscount[]
+
+  // Consumer check-ins
+  checkins ConsumerCheckin[]
 }
 
 model Store {
@@ -175,6 +178,14 @@ model Store {
 
   // Payment Event Ledger
   paymentEvents       PaymentEvent[] @relation("PaymentEventStore")
+
+  // Geofencing
+  latitude             Float?
+  longitude            Float?
+  geofenceRadiusMeters Int      @default(150) // 50-500, merchant-configurable
+
+  // Consumer check-ins
+  checkins ConsumerCheckin[]
 
   @@index([merchantId])
   @@index([phoneE164])
@@ -256,6 +267,7 @@ model Consumer {
   posOrders        PosOrder[]
   giftCards        ConsumerGiftCard[]
   rewardDiscounts  PosRewardDiscount[]
+  checkins         ConsumerCheckin[]
 
   @@index([email])
   @@index([phoneE164])
@@ -1009,6 +1021,9 @@ model Promotion {
   /// If false, consumer earns one reward and stamps stop accumulating.
   repeatable       Boolean @default(true)
 
+  /// Days after earning before reward expires. Platform minimum: 30.
+  rewardExpiryDays Int     @default(90)
+
   // Lifecycle
   status           PromotionStatus @default(draft)
   startAt          DateTime?
@@ -1386,6 +1401,7 @@ model ConsumerGiftCard {
   squareGiftCardId  String        @db.VarChar(128)
   squareGan         String?       @db.VarChar(32)
   active            Boolean       @default(true)
+  expiresAt         DateTime?
   createdAt         DateTime      @default(now())
 
   events    GiftCardEvent[]
@@ -1454,9 +1470,10 @@ model PosRewardDiscount {
   amountCents       Int?
   percentage        Int?
   rewardType        String        @db.VarChar(32) // discount_fixed, discount_pct, free_item
-  status            String        @default("pending") @db.VarChar(20) // pending, applied, failed, skipped
+  status            String        @default("earned") @db.VarChar(20) // earned, activated, redeemed, expired, skipped
   skippedReason     String?       @db.VarChar(255)
   appliedAt         DateTime?
+  expiresAt         DateTime?
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
@@ -1467,6 +1484,40 @@ model PosRewardDiscount {
   @@index([consumerId, merchantId, status])
   @@index([posConnectionId])
   @@index([entitlementId])
+}
+
+/// Consumer check-in at a store — presence detection for geofencing and analytics.
+/// Does NOT create a visit or stamp. Purely notification + analytics.
+model ConsumerCheckin {
+  id               Int       @id @default(autoincrement())
+  consumerId       Int
+  storeId          Int
+  merchantId       Int
+  triggeredBy      String    @db.VarChar(20) // "geofence" | "manual" | "qr"
+  hadPendingReward Boolean   @default(false)
+  createdAt        DateTime  @default(now())
+
+  consumer  Consumer @relation(fields: [consumerId], references: [id])
+  store     Store    @relation(fields: [storeId], references: [id])
+  merchant  Merchant @relation(fields: [merchantId], references: [id])
+
+  @@index([consumerId, storeId, createdAt])
+  @@index([storeId, createdAt])
+  @@index([merchantId, createdAt])
+}
+
+/// Tracks reward expiry notifications sent to consumers — dedup table.
+model RewardNotification {
+  id                Int       @id @default(autoincrement())
+  consumerId        Int
+  rewardId          Int
+  rewardType        String    @db.VarChar(20) // "discount" | "giftcard"
+  notificationType  String    @db.VarChar(20) // "14_day" | "7_day" | "48_hour"
+  channel           String    @db.VarChar(10) // "email" | "sms"
+  sentAt            DateTime  @default(now())
+
+  @@unique([rewardId, rewardType, notificationType, channel])
+  @@index([consumerId])
 }
 
 /// Log of catalog sync events — tracks what changed and when.
