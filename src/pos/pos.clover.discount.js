@@ -24,7 +24,7 @@ const CLOVER_API_BASE = process.env.CLOVER_API_BASE || "https://apisandbox.dev.c
 /**
  * Make an authenticated request to Clover API v3.
  */
-async function cloverRequest(accessToken, merchantId, path, method, body) {
+async function cloverRequest(accessToken, merchantId, path, method, body, retries = 2) {
   const url = `${CLOVER_API_BASE}/v3/merchants/${merchantId}${path}`;
   const opts = {
     method,
@@ -35,6 +35,16 @@ async function cloverRequest(accessToken, merchantId, path, method, body) {
   };
   if (body) opts.body = JSON.stringify(body);
   const res = await fetch(url, opts);
+
+  // Retry on 429 (rate limit) with exponential backoff
+  if (res.status === 429 && retries > 0) {
+    const retryAfter = parseInt(res.headers?.get?.("Retry-After") || "2", 10);
+    const delay = retryAfter * 1000 || 2000;
+    console.warn(`[clover.api] 429 rate limited on ${method} ${path} — retrying in ${delay}ms (${retries} retries left)`);
+    await new Promise(r => setTimeout(r, delay));
+    return cloverRequest(accessToken, merchantId, path, method, body, retries - 1);
+  }
+
   const data = await res.json();
   if (!res.ok) {
     const errMsg = data?.message || `Clover API ${res.status}`;

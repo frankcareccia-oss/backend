@@ -284,16 +284,10 @@ async function dispatchCloverEvent(event) {
         }
       }
 
-      // Process order UPDATE events — apply pending discounts before payment
+      // Log order events (discount templates are applied by associate on register,
+      // not injected by PV on order update — see docs/clover-reward-redemption-flow.md)
       for (const order of orders) {
-        if (order.type === "UPDATE") {
-          const dedupKey = `clover:ord:discount:${cloverMerchantId}:${order.objectId}`;
-          if (!isDuplicateEvent(dedupKey)) {
-            handleCloverOrderUpdate(conn, cloverMerchantId, order.objectId).catch(e => {
-              console.error("[clover.webhook] order update handler error:", e?.message);
-            });
-          }
-        }
+        console.log("[clover.webhook] order event:", order.type, order.objectId);
       }
     }
   }
@@ -435,63 +429,6 @@ async function detectCloverDiscountRedemption(adapter, { consumerId, merchantId,
     }
   } catch (e) {
     console.error(`[clover.webhook] discount redemption detection error: orderId=${orderId}`, e?.message || String(e));
-  }
-}
-
-/**
- * Handle Clover order UPDATE — check if the order has a customer with a pending
- * discount reward. If so, apply the discount BEFORE payment so the POS total
- * reflects the discounted amount.
- *
- * This is the key timing window: order updated (items added, customer attached)
- * → discount applied → associate sees lower total → customer pays less.
- */
-async function handleCloverOrderUpdate(conn, cloverMerchantId, orderId) {
-  if (!orderId) return;
-
-  const adapter = new CloverAdapter(conn);
-  const merchantId = conn.merchantId;
-
-  try {
-    // Fetch order with customers
-    const order = await adapter.getOrder(orderId);
-    if (!order) return;
-
-    // Skip if order is already locked/paid
-    if (order.state === "locked" || order.paymentState === "PAID") return;
-
-    // Resolve consumer from order's customer
-    const consumerId = await adapter.resolveConsumer(order);
-    if (!consumerId) return;
-
-    // Check for pending rewards
-    const { applyPendingCloverRewards } = require("./pos.clover.discount");
-    const results = await applyPendingCloverRewards({
-      consumerId,
-      merchantId,
-      posConnection: conn,
-      orderId,
-    });
-
-    if (results.length > 0) {
-      const applied = results.filter(r => r.applied);
-      if (applied.length > 0) {
-        console.log(`[clover.webhook] pre-payment discount applied: ${applied.length} reward(s) on order ${orderId}`);
-        console.log(JSON.stringify({
-          pvHook: "clover.discount.pre_payment",
-          ts: new Date().toISOString(),
-          tc: "TC-CLO-DISC-05",
-          sev: "info",
-          orderId,
-          consumerId,
-          merchantId,
-          appliedCount: applied.length,
-        }));
-      }
-    }
-  } catch (e) {
-    // Never block — this is fire-and-forget
-    console.error(`[clover.webhook] order update discount check error: orderId=${orderId}`, e?.message || String(e));
   }
 }
 
