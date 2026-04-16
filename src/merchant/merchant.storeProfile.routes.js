@@ -128,6 +128,14 @@ function buildMerchantStoreProfileRouter(deps) {
         data.posSessionTimeoutMinutes = t;
       }
 
+      // Geofence radius (merchant-configurable, 50–500 meters)
+      if (b.geofenceRadiusMeters !== undefined) {
+        const g = Number(b.geofenceRadiusMeters);
+        if (!Number.isInteger(g) || g < 50 || g > 500)
+          return sendError(res, 400, "VALIDATION_ERROR", "geofenceRadiusMeters must be an integer between 50 and 500");
+        data.geofenceRadiusMeters = g;
+      }
+
       // Location phone (Store.*)
       if (typeof b.phoneCountry === "string") data.phoneCountry = b.phoneCountry;
       if (typeof b.phoneRaw === "string") data.phoneRaw = b.phoneRaw;
