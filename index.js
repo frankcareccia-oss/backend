@@ -670,6 +670,8 @@ const consumerPromosRouter = require("./src/consumer/consumer.promotions.routes"
 app.use(consumerPromosRouter);
 const consumerCheckinRouter = require("./src/consumer/consumer.checkin.routes");
 app.use(consumerCheckinRouter);
+const consumerDiscoverRouter = require("./src/consumer/consumer.discover.routes");
+app.use(consumerDiscoverRouter);
 
 const growthRouter = require("./src/growth/growth.routes");
 app.use(growthRouter);

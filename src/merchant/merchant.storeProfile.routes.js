@@ -136,6 +136,12 @@ function buildMerchantStoreProfileRouter(deps) {
         data.geofenceRadiusMeters = g;
       }
 
+      // Discover fields
+      if (typeof b.discoverability === "boolean") data.discoverability = b.discoverability;
+      if (typeof b.category === "string") data.category = b.category.trim() || null;
+      if (typeof b.logoUrl === "string") data.logoUrl = b.logoUrl.trim() || null;
+      if (typeof b.hoursJson === "string") data.hoursJson = b.hoursJson;
+
       // Location phone (Store.*)
       if (typeof b.phoneCountry === "string") data.phoneCountry = b.phoneCountry;
       if (typeof b.phoneRaw === "string") data.phoneRaw = b.phoneRaw;

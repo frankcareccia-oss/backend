@@ -184,6 +184,12 @@ model Store {
   longitude            Float?
   geofenceRadiusMeters Int      @default(150) // 50-500, merchant-configurable
 
+  // Discover
+  discoverability      Boolean  @default(true)  // Merchant opt-out from Discover screen
+  category             String?  @db.VarChar(32) // cafe, salon, retail, auto, pet, restaurant, other
+  logoUrl              String?  @db.VarChar(500)
+  hoursJson            String?  @db.Text        // JSON: { mon: "7am-6pm", tue: "7am-6pm", ... }
+
   // Consumer check-ins
   checkins ConsumerCheckin[]
 
