@@ -143,16 +143,18 @@ function verifyCloverSignature(rawBody, signature) {
 function registerCloverWebhookRoute(app) {
   app.post(
     "/webhooks/clover",
-    express.raw({ type: "*/*" }),
     async (req, res) => {
       const rawBody = req.rawBody || req.body || Buffer.alloc(0);
       const signature = req.headers["x-clover-hmac"] || "";
+
+      console.log("[clover.webhook] raw body type:", typeof rawBody, "length:", rawBody?.length, "isBuffer:", Buffer.isBuffer(rawBody));
 
       // Always respond 200 quickly — Clover expects fast ACK
       // Verification requests just need a 200
       let event;
       try {
-        const bodyStr = rawBody.toString("utf8");
+        const bodyStr = typeof rawBody === "string" ? rawBody : rawBody.toString("utf8");
+        console.log("[clover.webhook] bodyStr:", bodyStr.slice(0, 300));
         if (!bodyStr || bodyStr.trim() === "") {
           // Empty body = verification ping
           console.log("[clover.webhook] verification ping received");
@@ -222,24 +224,49 @@ async function dispatchCloverEvent(event) {
         continue;
       }
 
-      // Process payment events
-      if (merchantEvents.payments) {
-        for (const payment of merchantEvents.payments) {
-          const dedupKey = `clover:pay:${cloverMerchantId}:${payment.objectId}:${payment.type}`;
-          if (isDuplicateEvent(dedupKey)) {
-            console.log("[clover.webhook] dedup skip:", dedupKey);
-            continue;
+      // Clover sends events in two formats:
+      // 1. Flat array: [{ objectId: "P:xxx", type: "CREATE" }, { objectId: "O:yyy", ... }]
+      // 2. Keyed object: { payments: [...], orders: [...] }
+      // Normalize to keyed format.
+      let payments = [];
+      let orders = [];
+      let customers = [];
+      let catalogItems = [];
+
+      if (Array.isArray(merchantEvents)) {
+        // Real Clover format — flat array with prefixed objectIds
+        for (const evt of merchantEvents) {
+          const oid = evt.objectId || "";
+          if (oid.startsWith("P:")) {
+            payments.push({ ...evt, objectId: oid.slice(2) });
+          } else if (oid.startsWith("O:")) {
+            orders.push({ ...evt, objectId: oid.slice(2) });
+          } else if (oid.startsWith("C:")) {
+            customers.push({ ...evt, objectId: oid.slice(2) });
+          } else if (oid.startsWith("I:") || oid.startsWith("IC:")) {
+            catalogItems.push(evt);
           }
-          await handleCloverPayment(conn, cloverMerchantId, payment);
         }
+      } else {
+        // Test/legacy format — keyed by type
+        payments = merchantEvents.payments || [];
+        orders = merchantEvents.orders || [];
+        customers = merchantEvents.customers || [];
+        catalogItems = [...(merchantEvents.items || []), ...(merchantEvents.item_categories || [])];
       }
 
-      // Process inventory/catalog events (I = items, IC = categories)
-      const catalogEvents = [
-        ...(merchantEvents.items || []),
-        ...(merchantEvents.item_categories || []),
-      ];
-      if (catalogEvents.length > 0) {
+      // Process payment events
+      for (const payment of payments) {
+        const dedupKey = `clover:pay:${cloverMerchantId}:${payment.objectId}:${payment.type}`;
+        if (isDuplicateEvent(dedupKey)) {
+          console.log("[clover.webhook] dedup skip:", dedupKey);
+          continue;
+        }
+        await handleCloverPayment(conn, cloverMerchantId, payment);
+      }
+
+      // Process inventory/catalog events
+      if (catalogItems.length > 0) {
         const dedupKey = `clover:catalog:${cloverMerchantId}:${Date.now()}`;
         if (!isDuplicateEvent(dedupKey)) {
           handleCloverCatalogUpdate(conn, cloverMerchantId).catch(e => {
@@ -248,21 +275,24 @@ async function dispatchCloverEvent(event) {
         }
       }
 
-      // Process customer events (C = customers)
-      if (merchantEvents.customers) {
-        for (const custEvent of merchantEvents.customers) {
-          if (custEvent.type === "CREATE") {
-            handleCloverCustomerCreated(conn, cloverMerchantId, custEvent).catch(e => {
-              console.error("[clover.webhook] customer created handler error:", e?.message);
-            });
-          }
+      // Process customer events
+      for (const custEvent of customers) {
+        if (custEvent.type === "CREATE") {
+          handleCloverCustomerCreated(conn, cloverMerchantId, custEvent).catch(e => {
+            console.error("[clover.webhook] customer created handler error:", e?.message);
+          });
         }
       }
 
-      // Process order events (log only for now)
-      if (merchantEvents.orders) {
-        for (const order of merchantEvents.orders) {
-          console.log("[clover.webhook] order event:", order.type, order.objectId);
+      // Process order UPDATE events — apply pending discounts before payment
+      for (const order of orders) {
+        if (order.type === "UPDATE") {
+          const dedupKey = `clover:ord:discount:${cloverMerchantId}:${order.objectId}`;
+          if (!isDuplicateEvent(dedupKey)) {
+            handleCloverOrderUpdate(conn, cloverMerchantId, order.objectId).catch(e => {
+              console.error("[clover.webhook] order update handler error:", e?.message);
+            });
+          }
         }
       }
     }
@@ -318,6 +348,63 @@ async function handleCloverCustomerCreated(conn, cloverMerchantId, custEvent) {
     await checkDuplicateCloverCustomers(adapter, phoneE164, conn.merchantId, conn.id, cloverMerchantId);
   } catch (e) {
     console.error("[clover.webhook] customer created duplicate check error:", e?.message);
+  }
+}
+
+/**
+ * Handle Clover order UPDATE — check if the order has a customer with a pending
+ * discount reward. If so, apply the discount BEFORE payment so the POS total
+ * reflects the discounted amount.
+ *
+ * This is the key timing window: order updated (items added, customer attached)
+ * → discount applied → associate sees lower total → customer pays less.
+ */
+async function handleCloverOrderUpdate(conn, cloverMerchantId, orderId) {
+  if (!orderId) return;
+
+  const adapter = new CloverAdapter(conn);
+  const merchantId = conn.merchantId;
+
+  try {
+    // Fetch order with customers
+    const order = await adapter.getOrder(orderId);
+    if (!order) return;
+
+    // Skip if order is already locked/paid
+    if (order.state === "locked" || order.paymentState === "PAID") return;
+
+    // Resolve consumer from order's customer
+    const consumerId = await adapter.resolveConsumer(order);
+    if (!consumerId) return;
+
+    // Check for pending rewards
+    const { applyPendingCloverRewards } = require("./pos.clover.discount");
+    const results = await applyPendingCloverRewards({
+      consumerId,
+      merchantId,
+      posConnection: conn,
+      orderId,
+    });
+
+    if (results.length > 0) {
+      const applied = results.filter(r => r.applied);
+      if (applied.length > 0) {
+        console.log(`[clover.webhook] pre-payment discount applied: ${applied.length} reward(s) on order ${orderId}`);
+        console.log(JSON.stringify({
+          pvHook: "clover.discount.pre_payment",
+          ts: new Date().toISOString(),
+          tc: "TC-CLO-DISC-05",
+          sev: "info",
+          orderId,
+          consumerId,
+          merchantId,
+          appliedCount: applied.length,
+        }));
+      }
+    }
+  } catch (e) {
+    // Never block — this is fire-and-forget
+    console.error(`[clover.webhook] order update discount check error: orderId=${orderId}`, e?.message || String(e));
   }
 }
 
@@ -525,15 +612,8 @@ async function handleCloverPayment(conn, cloverMerchantId, paymentEvent) {
     }).catch(e => console.error("[clover.webhook] order enrichment failed:", e?.message));
   }
 
-  // Apply any pending Clover discount rewards from previous milestones
-  if (consumerId && orderId) {
-    try {
-      const { applyPendingCloverRewards } = require("./pos.clover.discount");
-      await applyPendingCloverRewards({ consumerId, merchantId, posConnection: conn, orderId });
-    } catch (e) {
-      console.error("[clover.webhook] applyPendingCloverRewards error:", e?.message);
-    }
-  }
+  // NOTE: Pending discount rewards are now applied on ORDER UPDATE (before payment),
+  // not on payment CREATE (after payment). See handleCloverOrderUpdate().
 
   // Stamp accumulation for identified consumers
   if (consumerId) {

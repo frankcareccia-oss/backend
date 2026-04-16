@@ -229,7 +229,17 @@ class CloverAdapter extends PVPosAdapter {
     if (!cloverOrder?.customers?.elements?.length) return null;
 
     const customer = cloverOrder.customers.elements[0];
-    const phone = customer.phoneNumbers?.elements?.[0]?.phoneNumber;
+
+    // Phone may not be expanded on the order — fetch customer directly if needed
+    let phone = customer.phoneNumbers?.elements?.[0]?.phoneNumber;
+    if (!phone && customer.id) {
+      try {
+        const fullCustomer = await this._cloverFetch(`/customers/${customer.id}?expand=phoneNumbers`);
+        phone = fullCustomer?.phoneNumbers?.elements?.[0]?.phoneNumber;
+      } catch (e) {
+        console.warn("[clover.adapter] could not fetch customer phone:", e?.message);
+      }
+    }
 
     if (!phone) return null;
 
@@ -248,10 +258,10 @@ class CloverAdapter extends PVPosAdapter {
   }
 
   /**
-   * Fetch a specific order with line items.
+   * Fetch a specific order with line items and customers.
    */
   async getOrder(orderId) {
-    return this._cloverFetch(`/orders/${orderId}?expand=lineItems`);
+    return this._cloverFetch(`/orders/${orderId}?expand=lineItems,customers`);
   }
 
   /**
