@@ -671,8 +671,118 @@ RewardNotification {
 | 7 | Phase 7: Merchant portal | Phase 1, 2 | 2-3 |
 | 8 | Phase 8: Cleanup & hardening | Phase 4, 5 | 2-3 |
 | 9 | Phase 9: Reward expiry notifications | Phase 1, 4, notification infra | 8-10 |
+| 10 | Phase 10: Toast API validation (research only) | Phases 1-9 complete for Clover + Square | 0 (research) |
+| 11 | Phase 11: Toast reward delivery implementation | Phase 10 | 8-12 |
 
-**Revised total: ~38-46 new tests**
+**Revised total: ~46-58 new tests**
+
+---
+
+## Execution Strategy: One POS at a Time
+
+Build, prove, and stabilize one POS platform before moving to the next. This minimizes confusion, reduces churn, and ensures each integration is production-solid before adding complexity.
+
+### Wave 1: Clover (Phases 1-9)
+
+Clover is first because:
+- Discount template approach is new and unproven in production — needs the most attention
+- Consumer activation flow (create template on demand) is the most complex delivery mechanism
+- We have sandbox access and have already proven the API works
+
+**Gate:** All 9 phases complete and E2E tested on Clover sandbox before starting Wave 2.
+
+### Wave 2: Square (Phases 1-9 — Square-specific work only)
+
+Square is second because:
+- Gift card reward flow is already working in production
+- Most Phase 1-9 work is POS-agnostic (schema, check-in, consumer app, merchant portal) — done in Wave 1
+- Square-specific work is limited to: wiring gift card flow into activation lifecycle, ensuring redemption detection updates entitlement status, gift card zero-out on expiry
+
+**Estimated Wave 2 effort:** ~30% of Wave 1 (most infrastructure built in Wave 1)
+
+**Gate:** Square E2E tested on sandbox before starting Wave 3.
+
+### Wave 3: Toast (Phases 10-11)
+
+Toast is third because:
+- Toast adapter, OAuth, webhook, and catalog sync already exist (23 tests)
+- But reward delivery mechanism is **unknown** — needs API validation first
+- Cannot plan implementation until we know what Toast supports
+
+**Phase 10 is research only — no code.** Same validation brief format as we did for Clover:
+- Can Toast apply discounts to orders via API?
+- Does Toast support gift cards / store credit via API?
+- What are Toast's webhook event types for payments and orders?
+- Can a discount be pre-staged on a customer profile?
+- What plan tier is required?
+- What are the rate limits?
+
+**Phase 11 is implementation** — build the reward delivery mechanism based on Phase 10 findings. The pattern will likely be one of:
+- Discount template (like Clover) — if Toast supports named discounts via API
+- Gift card (like Square) — if Toast has a gift card API
+- Something new — if Toast has a different mechanism
+
+---
+
+## Phase 10: Toast API Validation (Research Only)
+
+**Prerequisite:** Phases 1-9 complete for both Clover and Square.
+**Deliverable:** Written validation report — same format as the Clover/Square API Validation Report.
+**No implementation code.**
+
+### What Already Exists for Toast
+
+| Component | Status |
+|-----------|--------|
+| Toast adapter | Built — `src/pos/adapters/toast.adapter.js` |
+| Toast OAuth | Built — client-credentials flow |
+| Toast webhook handler | Built — `src/pos/toast.webhook.routes.js` |
+| Toast catalog sync | Built |
+| Toast tests | 23 tests passing |
+| Toast stamp pipeline | Working — shares `pos.stamps.js` |
+
+### What Needs Validation
+
+| Area | Question |
+|------|----------|
+| Discount API | Can Toast apply discounts to orders or checks via API? Endpoint? Timing constraints? |
+| Gift card API | Does Toast support programmatic gift card creation and loading? |
+| Store credit | Does Toast have a store credit or loyalty credit mechanism? |
+| Customer identity | How does Toast associate customers with transactions? Phone? Email? Loyalty ID? |
+| Pre-staged rewards | Can a discount or credit be attached to a customer profile for auto-apply? |
+| Webhook payload | Do Toast payment webhooks include customer identity and order details? |
+| Multi-location | Does Toast support multi-location under one account? How are locations identified? |
+| Plan tiers | What Toast plan is required for API access to discounts, customers, webhooks? |
+| Rate limits | What are Toast's API rate limits? |
+
+### Validation Method
+
+1. Search Toast developer documentation (developer portal)
+2. Test against Toast sandbox (if available)
+3. Review Toast developer community / forums
+4. Document findings in same format as Areas 1-6 validation report
+
+---
+
+## Phase 11: Toast Reward Delivery Implementation
+
+**Prerequisite:** Phase 10 validation complete and reviewed.
+**Scope:** Determined by Phase 10 findings.
+
+### Likely work items (to be confirmed by Phase 10):
+
+- Implement Toast-specific reward delivery mechanism (discount, gift card, or new approach)
+- Wire Toast into the activation endpoint (`POST /me/wallet/{id}/activate`)
+- Add Toast redemption detection in webhook handler
+- Add Toast expiry cleanup (zero-out or delete, depending on mechanism)
+- Update consumer app if Toast requires different UI (unlikely — should be unified)
+- Tests: 8-12 estimated
+
+### Toast-specific considerations:
+
+- Toast uses restaurant-industry terminology (checks, items, modifiers) — may differ from Clover/Square patterns
+- Toast's OAuth is client-credentials (not merchant-initiated like Square/Clover) — onboarding flow may differ
+- Toast may have a different multi-location model
 
 ---
 
@@ -689,3 +799,5 @@ RewardNotification {
 5. **Square gift card minimum** — Square requires a minimum amount for gift card activation. Is $1.00 the minimum? Does this affect small rewards?
 
 6. **Notification strategy** — Push notifications (Web Push API) vs in-app only for check-in alerts? Push requires separate permission flow.
+
+7. **Toast timeline** — Toast API validation (Phase 10) should not begin until Clover and Square are stable in production. Estimated start: after Wave 2 gate passes.
