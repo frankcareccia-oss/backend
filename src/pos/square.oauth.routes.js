@@ -274,6 +274,20 @@ function registerSquareOAuthRoutes(app, { prisma, sendError, requireAuth, requir
         },
       });
 
+      // Sync coordinates from Square location to PV store (fire-and-forget)
+      try {
+        const adapter = new SquareAdapter(conn);
+        const locations = await adapter.listLocations();
+        const sqLoc = locations.find(l => l.id === externalLocationId);
+        if (sqLoc?.coordinates?.latitude && sqLoc?.coordinates?.longitude) {
+          const { syncSquareCoordinates } = require("../utils/geocode");
+          await syncSquareCoordinates(prisma, store.id, sqLoc.coordinates);
+          console.log(`[square.oauth] synced coordinates for store ${store.id} from Square location ${externalLocationId}`);
+        }
+      } catch (coordErr) {
+        console.warn("[square.oauth] coordinate sync failed:", coordErr?.message);
+      }
+
       res.json({ ok: true, map });
     } catch (e) {
       sendError(res, 500, "SERVER_ERROR", e?.message);

@@ -318,6 +318,18 @@ function buildCloverOAuthRouter({ requireJwt, sendError, emitPvHook }) {
         pvStoreId: store.id,
       });
 
+      // Geocode store address for Discover/geofencing (fire-and-forget)
+      const storeData = await prisma.store.findUnique({
+        where: { id: store.id },
+        select: { latitude: true, address1: true, city: true, state: true, postal: true },
+      });
+      if (!storeData?.latitude && storeData?.address1) {
+        const { geocodeAndUpdateStore } = require("../utils/geocode");
+        geocodeAndUpdateStore(prisma, store.id, storeData).catch(e => {
+          console.warn("[clover.oauth] geocode failed:", e?.message);
+        });
+      }
+
       return res.json({ ok: true, map });
     } catch (err) {
       return sendError(res, 500, "SERVER_ERROR", err?.message || "Failed to map location");
