@@ -384,10 +384,161 @@ async function applyPendingCloverRewards({ consumerId, merchantId, posConnection
   return results;
 }
 
+/**
+ * Record a Clover reward as earned at milestone time.
+ * Does NOT create a Clover discount template — that happens when the consumer activates.
+ *
+ * Called from pos.stamps.js when milestoneEarned === true on a Clover merchant.
+ * Fire-and-forget — never blocks the stamp pipeline.
+ *
+ * @param {object} params
+ * @param {number} params.consumerId
+ * @param {number} params.merchantId
+ * @param {object} params.promo — { id, name, rewardType, rewardValue, rewardSku, rewardNote, rewardExpiryDays }
+ * @param {number|null} params.entitlementId
+ */
+async function recordCloverRewardEarned({ consumerId, merchantId, promo, entitlementId }) {
+  try {
+    const conn = await prisma.posConnection.findFirst({
+      where: { merchantId, posType: "clover", status: "active" },
+    });
+    if (!conn) {
+      console.log(`[clover.discount] skipping — no active Clover connection for merchant ${merchantId}`);
+      return null;
+    }
+
+    const amountCents = await resolveRewardAmountCents(promo, merchantId);
+    let itemName = null;
+    if (promo.rewardType === "free_item" && promo.rewardSku) {
+      const product = await prisma.product.findFirst({
+        where: { merchantId, sku: promo.rewardSku, status: "active" },
+        select: { name: true },
+      });
+      itemName = product?.name || null;
+    }
+
+    const expiryDays = promo.rewardExpiryDays || 90;
+    const expiresAt = new Date(Date.now() + expiryDays * 24 * 60 * 60 * 1000);
+
+    const record = await prisma.posRewardDiscount.create({
+      data: {
+        consumerId,
+        merchantId,
+        posConnectionId: conn.id,
+        entitlementId: entitlementId || null,
+        promotionId: promo.id,
+        discountName: buildDiscountName(promo, itemName),
+        amountCents: promo.rewardType === "discount_pct" ? null : amountCents,
+        percentage: promo.rewardType === "discount_pct" ? promo.rewardValue : null,
+        rewardType: promo.rewardType,
+        status: "earned",
+        expiresAt,
+      },
+    });
+
+    console.log(`[clover.discount] reward earned for consumer ${consumerId}, promo "${promo.name}" — activate in app to use`);
+    console.log(JSON.stringify({
+      pvHook: "clover.reward.earned",
+      ts: new Date().toISOString(),
+      tc: "TC-CLO-DISC-08",
+      sev: "info",
+      consumerId,
+      promotionId: promo.id,
+      recordId: record.id,
+      expiresAt: expiresAt.toISOString(),
+    }));
+
+    return { earned: true, recordId: record.id, expiresAt };
+  } catch (e) {
+    console.error(`[clover.discount] error recording earned reward: consumerId=${consumerId} promo=${promo?.id}:`, e?.message || String(e));
+    return null;
+  }
+}
+
+/**
+ * Activate a Clover reward — create the discount template on the merchant's Clover register.
+ * Called when the consumer taps "Activate" in the PV mobile app.
+ *
+ * @param {object} params
+ * @param {number} params.posRewardDiscountId — PosRewardDiscount.id
+ * @param {number} params.consumerId — for validation
+ * @returns {Promise<{ activated: true, templateId: string } | { error: string }>}
+ */
+async function activateCloverReward({ posRewardDiscountId, consumerId }) {
+  const reward = await prisma.posRewardDiscount.findUnique({
+    where: { id: posRewardDiscountId },
+    include: { posConnection: true },
+  });
+
+  if (!reward) return { error: "Reward not found" };
+  if (reward.consumerId !== consumerId) return { error: "Reward does not belong to this consumer" };
+  if (reward.status !== "earned") return { error: `Reward is ${reward.status}, not earned` };
+
+  const conn = reward.posConnection;
+  const accessToken = decrypt(conn.accessTokenEnc);
+  const merchantCloverid = conn.externalMerchantId;
+
+  // Look up consumer name for personalized discount label
+  const consumer = await prisma.consumer.findUnique({
+    where: { id: consumerId },
+    select: { firstName: true, lastName: true },
+  });
+  const nameLabel = consumer
+    ? `${consumer.firstName || ""} ${(consumer.lastName || "")[0] || ""}`.trim()
+    : "";
+  const personalizedName = nameLabel
+    ? `PerkValet — ${nameLabel}. ${reward.discountName.replace("PerkValet Reward — ", "")}`
+    : reward.discountName;
+
+  // Create discount template on Clover register
+  const discountBody = { name: personalizedName };
+  if (reward.percentage) {
+    discountBody.percentage = reward.percentage;
+  } else if (reward.amountCents) {
+    discountBody.amount = -reward.amountCents;
+  } else {
+    return { error: "No amount or percentage on reward" };
+  }
+
+  const template = await cloverRequest(
+    accessToken,
+    merchantCloverid,
+    "/discounts",
+    "POST",
+    discountBody
+  );
+
+  // Update record
+  await prisma.posRewardDiscount.update({
+    where: { id: reward.id },
+    data: {
+      status: "activated",
+      cloverDiscountId: template.id,
+      discountName: personalizedName,
+    },
+  });
+
+  console.log(`[clover.discount] reward activated: template "${personalizedName}" (${template.id}) on register for consumer ${consumerId}`);
+  console.log(JSON.stringify({
+    pvHook: "clover.discount.template_created",
+    ts: new Date().toISOString(),
+    tc: "TC-CLO-DISC-06",
+    sev: "info",
+    consumerId,
+    rewardId: reward.id,
+    templateId: template.id,
+    discountName: personalizedName,
+  }));
+
+  return { activated: true, templateId: template.id, discountName: personalizedName };
+}
+
 module.exports = {
   applyCloverDiscount,
   issueCloverDiscountReward,
   applyPendingCloverRewards,
+  recordCloverRewardEarned,
+  activateCloverReward,
   buildDiscountName,
   resolveRewardAmountCents,
   // Exported for testing

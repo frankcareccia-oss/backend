@@ -454,4 +454,85 @@ router.get("/me/summary", requireConsumerJwt, async (req, res) => {
   }
 });
 
+// ──────────────────────────────────────────────
+// POST /me/wallet/:id/activate
+// Activate a reward — for Clover, creates a discount template on the register.
+// For Square, gift card is already loaded — just flags as activated.
+// ──────────────────────────────────────────────
+router.post("/me/wallet/:id/activate", requireConsumerJwt, async (req, res) => {
+  try {
+    const entitlementId = parseInt(req.params.id, 10);
+    const consumerId = req.consumerId;
+
+    if (isNaN(entitlementId)) return sendError(res, 400, "VALIDATION_ERROR", "Invalid entitlement ID");
+
+    // Validate entitlement
+    const entitlement = await prisma.entitlement.findUnique({
+      where: { id: entitlementId },
+      select: { id: true, consumerId: true, merchantId: true, status: true, type: true },
+    });
+
+    if (!entitlement) return sendError(res, 404, "NOT_FOUND", "Entitlement not found");
+    if (entitlement.consumerId !== consumerId) return sendError(res, 403, "FORBIDDEN", "Not your entitlement");
+    if (entitlement.status !== "active") return sendError(res, 400, "INVALID_STATE", `Entitlement is ${entitlement.status}, not active`);
+    if (entitlement.type !== "reward") return sendError(res, 400, "INVALID_TYPE", "Only reward entitlements can be activated");
+
+    // Determine POS type for this merchant
+    const posConn = await prisma.posConnection.findFirst({
+      where: { merchantId: entitlement.merchantId, status: "active" },
+      select: { id: true, posType: true },
+    });
+
+    if (!posConn) return sendError(res, 400, "NO_POS", "No active POS connection for this merchant");
+
+    if (posConn.posType === "clover") {
+      // Find the PosRewardDiscount linked to this entitlement
+      const reward = await prisma.posRewardDiscount.findFirst({
+        where: { entitlementId, consumerId, status: "earned" },
+      });
+
+      if (!reward) return sendError(res, 400, "NO_REWARD", "No earned reward found for this entitlement");
+
+      const { activateCloverReward } = require("../pos/pos.clover.discount");
+      const result = await activateCloverReward({ posRewardDiscountId: reward.id, consumerId });
+
+      if (result.error) return sendError(res, 400, "ACTIVATION_FAILED", result.error);
+
+      return res.json({
+        ok: true,
+        activated: true,
+        type: "discount",
+        discountName: result.discountName,
+        instructions: "Tell the associate to apply your PerkValet discount, or give them your phone number.",
+      });
+
+    } else if (posConn.posType === "square") {
+      // Square: gift card is already loaded at milestone time
+      // Just flag the entitlement metadata as activated for UI purposes
+      await prisma.entitlement.update({
+        where: { id: entitlementId },
+        data: {
+          metadataJson: {
+            ...(entitlement.metadataJson || {}),
+            activatedAt: new Date().toISOString(),
+          },
+        },
+      });
+
+      return res.json({
+        ok: true,
+        activated: true,
+        type: "giftcard",
+        instructions: "Show your gift card barcode to the cashier.",
+      });
+
+    } else {
+      return sendError(res, 400, "UNSUPPORTED_POS", `POS type ${posConn.posType} does not support activation yet`);
+    }
+  } catch (err) {
+    console.error("[consumer.wallet] activate error:", err);
+    return sendError(res, 500, "SERVER_ERROR", "Activation failed");
+  }
+});
+
 module.exports = router;

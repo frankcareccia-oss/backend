@@ -15,7 +15,7 @@ const { writeEventLog } = require("../eventlog/eventlog");
 const { recordPromotionEvent } = require("../growth/promotionOutcome.events");
 const { writeOutboxEvent } = require("../events/event.outbox.service");
 const { issueGiftCardReward } = require("./pos.giftcard");
-const { issueCloverDiscountReward } = require("./pos.clover.discount");
+const { recordCloverRewardEarned } = require("./pos.clover.discount");
 
 /**
  * Build the human-readable reward label for Entitlement metadata.
@@ -212,8 +212,8 @@ async function accumulateStamps(prisma, { consumerId, merchantId, storeId, visit
 
         // Issue reward (fire-and-forget — never blocks the pipeline)
         if (posType === "clover") {
-          issueCloverDiscountReward({ consumerId, merchantId, promo, orderId, entitlementId: null }).catch(e => {
-            console.error("[pos.stamps] clover discount reward error:", e?.message || String(e));
+          recordCloverRewardEarned({ consumerId, merchantId, promo, entitlementId: null }).catch(e => {
+            console.error("[pos.stamps] clover reward earned error:", e?.message || String(e));
           });
         } else {
           issueGiftCardReward({ consumerId, merchantId, promo }).catch(e => {

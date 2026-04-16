@@ -304,3 +304,127 @@ describe("Consumer Promotions", () => {
     });
   });
 });
+
+describe("Consumer Reward Activation", () => {
+  let activateMerchant, activateStore, cloverConn, promo, entitlement, rewardDiscount;
+
+  // Mock fetch for Clover API
+  beforeAll(async () => {
+    global._origFetchActivate = global.fetch;
+    global.fetch = jest.fn(async (url, opts) => {
+      if (url.includes("/discounts") && opts?.method === "POST") {
+        return {
+          ok: true, status: 200,
+          json: async () => ({ id: "TMPL_TEST_123", name: JSON.parse(opts.body).name, amount: JSON.parse(opts.body).amount }),
+        };
+      }
+      return { ok: false, status: 404, json: async () => ({ message: "Not found" }) };
+    });
+
+    activateMerchant = await createMerchant({ name: "Activate Test Shop" });
+    activateStore = await prisma.store.create({
+      data: { merchantId: activateMerchant.id, name: "Activate Store", phoneRaw: "555-9999" },
+    });
+    cloverConn = await prisma.posConnection.create({
+      data: {
+        merchantId: activateMerchant.id,
+        posType: "clover",
+        status: "active",
+        accessTokenEnc: encrypt("clover-activate-token"),
+        externalMerchantId: "CLO_ACTIVATE_1",
+      },
+    });
+    promo = await prisma.promotion.create({
+      data: {
+        merchantId: activateMerchant.id,
+        name: "Activate Promo",
+        mechanic: "stamps",
+        threshold: 5,
+        repeatable: true,
+        rewardType: "discount_fixed",
+        rewardValue: 300,
+        status: "active",
+      },
+    });
+
+    // Create entitlement + PosRewardDiscount (simulating a milestone)
+    const progress = await prisma.consumerPromoProgress.create({
+      data: {
+        consumerId: consumer.id, promotionId: promo.id, merchantId: activateMerchant.id,
+        stampCount: 0, lifetimeEarned: 5, lastEarnedAt: new Date(),
+      },
+    });
+    const redemption = await prisma.promoRedemption.create({
+      data: {
+        progressId: progress.id,
+        promotionId: promo.id, consumerId: consumer.id, merchantId: activateMerchant.id,
+        pointsDecremented: 5, balanceBefore: 5, balanceAfter: 0,
+        status: "granted", grantedAt: new Date(),
+      },
+    });
+    entitlement = await prisma.entitlement.create({
+      data: {
+        consumerId: consumer.id, merchantId: activateMerchant.id,
+        storeId: activateStore.id, type: "reward", sourceId: redemption.id,
+        status: "active", metadataJson: { displayLabel: "$3.00 off" },
+      },
+    });
+    rewardDiscount = await prisma.posRewardDiscount.create({
+      data: {
+        consumerId: consumer.id, merchantId: activateMerchant.id,
+        posConnectionId: cloverConn.id, entitlementId: entitlement.id,
+        promotionId: promo.id, discountName: "PerkValet Reward — $3.00 off",
+        amountCents: 300, rewardType: "discount_fixed", status: "earned",
+        expiresAt: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000),
+      },
+    });
+  });
+
+  afterAll(() => {
+    global.fetch = global._origFetchActivate;
+  });
+
+  describe("POST /me/wallet/:id/activate", () => {
+    it("activates a Clover reward — creates discount template", async () => {
+      const res = await request(app)
+        .post(`/me/wallet/${entitlement.id}/activate`)
+        .set(auth);
+
+      expect(res.status).toBe(200);
+      expect(res.body.ok).toBe(true);
+      expect(res.body.activated).toBe(true);
+      expect(res.body.type).toBe("discount");
+      expect(res.body.discountName).toContain("PerkValet");
+      expect(res.body.instructions).toContain("associate");
+
+      // Verify PosRewardDiscount was updated
+      const updated = await prisma.posRewardDiscount.findUnique({ where: { id: rewardDiscount.id } });
+      expect(updated.status).toBe("activated");
+      expect(updated.cloverDiscountId).toBe("TMPL_TEST_123");
+    });
+
+    it("rejects activating an already activated reward", async () => {
+      const res = await request(app)
+        .post(`/me/wallet/${entitlement.id}/activate`)
+        .set(auth);
+
+      // No "earned" reward left — should fail
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects non-existent entitlement", async () => {
+      const res = await request(app)
+        .post("/me/wallet/99999/activate")
+        .set(auth);
+
+      expect(res.status).toBe(404);
+    });
+
+    it("rejects unauthenticated", async () => {
+      const res = await request(app)
+        .post(`/me/wallet/${entitlement.id}/activate`);
+
+      expect(res.status).toBe(401);
+    });
+  });
+});

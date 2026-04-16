@@ -381,6 +381,99 @@ describe("Clover Discount Reward", () => {
     });
   });
 
+  describe("recordCloverRewardEarned", () => {
+    const { recordCloverRewardEarned } = require("../src/pos/pos.clover.discount");
+
+    it("creates a PosRewardDiscount with status 'earned' and expiresAt", async () => {
+      const result = await recordCloverRewardEarned({
+        consumerId: consumer.id,
+        merchantId: merchant.id,
+        promo: { id: 30, name: "Earn Test", rewardType: "discount_fixed", rewardValue: 500, rewardExpiryDays: 60 },
+        entitlementId: null,
+      });
+
+      expect(result.earned).toBe(true);
+      expect(result.expiresAt).toBeDefined();
+
+      const record = await prisma.posRewardDiscount.findUnique({ where: { id: result.recordId } });
+      expect(record.status).toBe("earned");
+      expect(record.amountCents).toBe(500);
+      expect(record.expiresAt).toBeTruthy();
+
+      // Expiry should be ~60 days from now
+      const diffDays = (new Date(record.expiresAt) - new Date()) / (1000 * 60 * 60 * 24);
+      expect(diffDays).toBeGreaterThan(59);
+      expect(diffDays).toBeLessThan(61);
+    });
+
+    it("defaults to 90 days expiry when not specified", async () => {
+      const result = await recordCloverRewardEarned({
+        consumerId: consumer.id,
+        merchantId: merchant.id,
+        promo: { id: 31, name: "Default Expiry", rewardType: "discount_fixed", rewardValue: 300 },
+        entitlementId: null,
+      });
+
+      const record = await prisma.posRewardDiscount.findUnique({ where: { id: result.recordId } });
+      const diffDays = (new Date(record.expiresAt) - new Date()) / (1000 * 60 * 60 * 24);
+      expect(diffDays).toBeGreaterThan(89);
+      expect(diffDays).toBeLessThan(91);
+    });
+  });
+
+  describe("activateCloverReward", () => {
+    const { activateCloverReward } = require("../src/pos/pos.clover.discount");
+
+    it("creates discount template on Clover and updates status to activated", async () => {
+      mockFetch("/discounts", {
+        body: { id: "TMPL_ACT_1", name: "test", amount: -300 },
+      });
+
+      const reward = await prisma.posRewardDiscount.create({
+        data: {
+          consumerId: consumer.id, merchantId: merchant.id, posConnectionId: posConn.id,
+          promotionId: 40, discountName: "PerkValet Reward — $3.00 off",
+          amountCents: 300, rewardType: "discount_fixed", status: "earned",
+        },
+      });
+
+      const result = await activateCloverReward({ posRewardDiscountId: reward.id, consumerId: consumer.id });
+
+      expect(result.activated).toBe(true);
+      expect(result.templateId).toBe("TMPL_ACT_1");
+
+      const updated = await prisma.posRewardDiscount.findUnique({ where: { id: reward.id } });
+      expect(updated.status).toBe("activated");
+      expect(updated.cloverDiscountId).toBe("TMPL_ACT_1");
+    });
+
+    it("rejects activation of non-earned reward", async () => {
+      const reward = await prisma.posRewardDiscount.create({
+        data: {
+          consumerId: consumer.id, merchantId: merchant.id, posConnectionId: posConn.id,
+          promotionId: 41, discountName: "Already Activated",
+          amountCents: 300, rewardType: "discount_fixed", status: "activated",
+        },
+      });
+
+      const result = await activateCloverReward({ posRewardDiscountId: reward.id, consumerId: consumer.id });
+      expect(result.error).toContain("not earned");
+    });
+
+    it("rejects activation by wrong consumer", async () => {
+      const reward = await prisma.posRewardDiscount.create({
+        data: {
+          consumerId: consumer.id, merchantId: merchant.id, posConnectionId: posConn.id,
+          promotionId: 42, discountName: "Wrong Consumer",
+          amountCents: 300, rewardType: "discount_fixed", status: "earned",
+        },
+      });
+
+      const result = await activateCloverReward({ posRewardDiscountId: reward.id, consumerId: 99999 });
+      expect(result.error).toContain("does not belong");
+    });
+  });
+
   describe("issueCloverDiscountReward", () => {
     it("stores pending reward for next_visit timing", async () => {
       const result = await issueCloverDiscountReward({
