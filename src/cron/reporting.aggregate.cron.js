@@ -141,8 +141,16 @@ async function aggregateDay(merchantId, storeId, dayStart, dayEnd) {
     },
   });
 
-  // Upsert — handle nullable storeId with raw SQL for the unique lookup
+  // Upsert — handle nullable storeId (NULL != NULL in Postgres unique constraints)
   const dateOnly = dayStart.toISOString().slice(0, 10);
+
+  // Delete + insert pattern for merchant-wide rows (storeId IS NULL)
+  if (storeId === null) {
+    await prisma.$executeRawUnsafe(
+      `DELETE FROM "MerchantDailySummary" WHERE "merchantId" = $1 AND "storeId" IS NULL AND "date" = $2::date`,
+      merchantId, dateOnly
+    );
+  }
 
   await prisma.$executeRawUnsafe(`
     INSERT INTO "MerchantDailySummary" (
@@ -253,6 +261,13 @@ async function aggregateEngagement(merchantId, storeId, date) {
   const inactiveDays90 = enrolledIds.filter(id => !active90Set.has(id)).length;
 
   const dateOnly = date.toISOString().slice(0, 10);
+
+  if (storeId === null) {
+    await prisma.$executeRawUnsafe(
+      `DELETE FROM "ConsumerEngagementSummary" WHERE "merchantId" = $1 AND "storeId" IS NULL AND "date" = $2::date`,
+      merchantId, dateOnly
+    );
+  }
 
   await prisma.$executeRawUnsafe(`
     INSERT INTO "ConsumerEngagementSummary" (

@@ -16,8 +16,12 @@
 const express = require("express");
 const { prisma } = require("../db/prisma");
 const { sendError } = require("../utils/errors");
+const { requireJwt } = require("../middleware/auth");
 
 const router = express.Router();
+
+// Apply JWT auth to all reporting routes
+router.use("/merchant/reporting", requireJwt);
 
 // Resolve merchantId from JWT (merchant user)
 async function getMerchantId(req) {
@@ -287,6 +291,29 @@ router.get("/merchant/reporting/promotions/:id", async (req, res) => {
 });
 
 // ──────────────────────────────────────────────
+// GET /merchant/reporting/simulator/new/:promotionType
+// Simulator baseline for new (not-yet-created) promotion
+// NOTE: Must be registered BEFORE :promotionId route
+// ──────────────────────────────────────────────
+router.get("/merchant/reporting/simulator/new/:promotionType", async (req, res) => {
+  try {
+    const merchantId = await getMerchantId(req);
+    if (!merchantId) return sendError(res, 403, "FORBIDDEN", "Not authorized");
+
+    const baseline = await computeBaseline(merchantId);
+
+    return res.json({
+      promotionType: req.params.promotionType,
+      historical: [],
+      baseline,
+      lockedFields: [],
+    });
+  } catch (err) {
+    return sendError(res, 500, "SERVER_ERROR", err.message);
+  }
+});
+
+// ──────────────────────────────────────────────
 // GET /merchant/reporting/simulator/:promotionId
 // Simulator baseline data for existing promotion
 // ──────────────────────────────────────────────
@@ -342,28 +369,6 @@ router.get("/merchant/reporting/simulator/:promotionId", async (req, res) => {
       })),
       baseline,
       lockedFields,
-    });
-  } catch (err) {
-    return sendError(res, 500, "SERVER_ERROR", err.message);
-  }
-});
-
-// ──────────────────────────────────────────────
-// GET /merchant/reporting/simulator/new/:promotionType
-// Simulator baseline for new (not-yet-created) promotion
-// ──────────────────────────────────────────────
-router.get("/merchant/reporting/simulator/new/:promotionType", async (req, res) => {
-  try {
-    const merchantId = await getMerchantId(req);
-    if (!merchantId) return sendError(res, 403, "FORBIDDEN", "Not authorized");
-
-    const baseline = await computeBaseline(merchantId);
-
-    return res.json({
-      promotionType: req.params.promotionType,
-      historical: [],
-      baseline,
-      lockedFields: [],
     });
   } catch (err) {
     return sendError(res, 500, "SERVER_ERROR", err.message);
