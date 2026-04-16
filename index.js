@@ -675,6 +675,8 @@ app.use(consumerDiscoverRouter);
 
 const growthRouter = require("./src/growth/growth.routes");
 app.use(growthRouter);
+const reportingRouter = require("./src/merchant/merchant.reporting.routes");
+app.use(reportingRouter);
 const promotionOutcomeRouter = require("./src/growth/promotionOutcome.routes");
 app.use(promotionOutcomeRouter);
 
