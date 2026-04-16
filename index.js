@@ -806,6 +806,15 @@ if (require.main === module) app.listen(PORT, () => {
     });
   }, TWENTY_FOUR_HOURS);
 
+  // Reward Expiry — send notifications + expire overdue rewards every 24h
+  const { runRewardExpiryCron } = require("./src/cron/reward.expiry.cron");
+  setInterval(() => {
+    console.log("[cron] running reward expiry check...");
+    runRewardExpiryCron().catch((e) => {
+      console.error("[cron] reward expiry cron failed:", e?.message || String(e));
+    });
+  }, TWENTY_FOUR_HOURS);
+
   // Event Publisher — poll outbox and dispatch to consumers
   const { bootstrapEventPublisher } = require("./src/events/event.bootstrap");
   const eventPublisher = bootstrapEventPublisher(prisma, emitPvHook);
