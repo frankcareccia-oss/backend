@@ -820,6 +820,21 @@ if (require.main === module) app.listen(PORT, () => {
     });
   }, { timezone: "UTC" });
 
+  // Seed Data — generate staging transactions at noon + 5pm Pacific
+  const { runSeedCron } = require("./src/cron/seed.data.cron");
+  cron.schedule("0 12 * * *", async () => {
+    console.log("[PV Cron] seed data — morning window...");
+    runSeedCron({ window: "morning" }).catch((e) => {
+      console.error("[PV Cron] seed morning failed:", e?.message || String(e));
+    });
+  }, { timezone: "America/Los_Angeles" });
+  cron.schedule("0 17 * * *", async () => {
+    console.log("[PV Cron] seed data — afternoon window...");
+    runSeedCron({ window: "afternoon" }).catch((e) => {
+      console.error("[PV Cron] seed afternoon failed:", e?.message || String(e));
+    });
+  }, { timezone: "America/Los_Angeles" });
+
   // Reporting Aggregation — nightly at 2 AM UTC
   const { runReportingAggregation } = require("./src/cron/reporting.aggregate.cron");
   cron.schedule("0 2 * * *", async () => {

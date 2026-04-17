@@ -122,6 +122,10 @@ model Merchant {
   // Consumer check-ins
   checkins ConsumerCheckin[]
 
+  // Seed data (staging only)
+  isSeedMerchant    Boolean @default(false)
+  seedBaselineDaily Int     @default(80)
+
   // Reporting summaries
   dailySummaries          MerchantDailySummary[]
   promotionDailySummaries PromotionDailySummary[]
@@ -287,6 +291,10 @@ model Consumer {
   rewardDiscounts  PosRewardDiscount[]
   checkins         ConsumerCheckin[]
 
+  // Seed data
+  isSeedConsumer   Boolean @default(false)
+  seedMerchantId   Int?
+
   @@index([email])
   @@index([phoneE164])
   @@index([status])
@@ -391,6 +399,9 @@ model Visit {
   merchant   Merchant    @relation(fields: [merchantId], references: [id])
   qr         StoreQr?    @relation(fields: [qrId], references: [id], onDelete: Restrict)
   store      Store       @relation(fields: [storeId], references: [id])
+
+  // Seed data flag
+  isSeedData        Boolean @default(false)
 
   // POS-5A extensions (additive, safe)
   posVisitId        String? @unique @db.VarChar(64)
