@@ -81,6 +81,22 @@ router.get("/consumer/discover", requireConsumerJwt, async (req, res) => {
       const dist = browseAll ? null : haversine(lat, lng, store.latitude, store.longitude);
       if (!browseAll && dist > radiusMeters) continue;
 
+      // Deduplicate by merchant — one entry per merchant, use nearest store
+      if (seenMerchants.has(store.merchantId)) continue;
+      seenMerchants.add(store.merchantId);
+
+      // Get all stores for this merchant (for the stores list in the card)
+      const merchantStores = stores
+        .filter(s => s.merchantId === store.merchantId)
+        .map(s => ({
+          storeId: s.id,
+          storeName: s.name,
+          address: [s.address1, s.city, s.state, s.postal].filter(Boolean).join(", "),
+          latitude: s.latitude,
+          longitude: s.longitude,
+          distanceMeters: (!browseAll && s.latitude && s.longitude) ? Math.round(haversine(lat, lng, s.latitude, s.longitude)) : null,
+        }));
+
       // Consumer's enrollment + progress at this merchant
       const progress = await prisma.consumerPromoProgress.findMany({
         where: { consumerId, merchantId: store.merchantId },
@@ -143,6 +159,8 @@ router.get("/consumer/discover", requireConsumerJwt, async (req, res) => {
         latitude: store.latitude,
         longitude: store.longitude,
         distanceMeters: dist !== null ? Math.round(dist) : null,
+        storeCount: merchantStores.length,
+        stores: merchantStores,
         hours,
         consumerRelationship: {
           enrolled,
