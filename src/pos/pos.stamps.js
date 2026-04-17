@@ -45,7 +45,7 @@ function buildDisplayLabel(promo) {
  * @returns {Promise<Array<{ promotionId: number, stampCount: number, milestoneEarned: boolean }>>}
  */
 async function accumulateStamps(prisma, { consumerId, merchantId, storeId, visitId, posType, orderId }) {
-  const promotions = await prisma.promotion.findMany({
+  const allPromotions = await prisma.promotion.findMany({
     where: { merchantId, status: "active" },
     select: {
       id: true,
@@ -56,8 +56,13 @@ async function accumulateStamps(prisma, { consumerId, merchantId, storeId, visit
       rewardValue: true,
       rewardSku: true,
       rewardNote: true,
+      rewardExpiryDays: true,
+      storeId: true,
     },
   });
+
+  // Filter: merchant-wide promos earn everywhere; store-specific only at that store
+  const promotions = allPromotions.filter(p => !p.storeId || p.storeId === storeId);
 
   if (!promotions.length) return [];
 

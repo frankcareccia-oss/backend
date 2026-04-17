@@ -423,7 +423,7 @@ router.post(
         name, description, legalText,
         mechanic, earnPerUnit, threshold, maxGrantsPerVisit,
         rewardType, rewardValue, rewardSku, rewardNote,
-        categoryId,
+        categoryId, storeId,
         promoItemIds,
         startAt, endAt,
       } = req.body || {};
@@ -482,6 +482,7 @@ router.post(
           rewardSku: rewardSku ? String(rewardSku).trim() : null,
           rewardNote: rewardNote ? String(rewardNote).trim() : null,
           categoryId: categoryId ? parseInt(categoryId, 10) : null,
+          storeId: storeId ? parseInt(storeId, 10) : null,
           status: "draft",
           startAt: startAt ? new Date(startAt) : null,
           endAt: endAt ? new Date(endAt) : null,

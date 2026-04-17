@@ -198,6 +198,9 @@ model Store {
   // Consumer check-ins
   checkins ConsumerCheckin[]
 
+  // Store-specific promotions
+  storePromotions Promotion[] @relation("StorePromotions")
+
   // Reporting summaries
   dailySummaries      MerchantDailySummary[]
   engagementSummaries ConsumerEngagementSummary[]
@@ -1038,6 +1041,10 @@ model Promotion {
   /// If true, stamp card resets after each reward and consumer keeps earning.
   /// If false, consumer earns one reward and stamps stop accumulating.
   repeatable       Boolean @default(true)
+
+  /// Store-specific promotion: null = merchant-wide (all stores), populated = this store only.
+  storeId          Int?
+  store            Store?  @relation("StorePromotions", fields: [storeId], references: [id])
 
   /// Days after earning before reward expires. Platform minimum: 30.
   rewardExpiryDays Int     @default(90)

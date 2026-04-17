@@ -135,13 +135,13 @@ router.get("/consumer/discover", requireConsumerJwt, async (req, res) => {
         }
       }
 
-      // Available promotions (for non-enrolled or all consumers)
-      const availablePromos = await prisma.promotion.findMany({
+      // Available promotions — split by scope
+      const allPromos = await prisma.promotion.findMany({
         where: { merchantId: store.merchantId, status: "active" },
         select: {
           id: true, name: true, description: true, threshold: true,
           rewardType: true, rewardValue: true, rewardNote: true, rewardExpiryDays: true,
-          legalText: true,
+          legalText: true, storeId: true,
         },
       });
 
@@ -171,7 +171,7 @@ router.get("/consumer/discover", requireConsumerJwt, async (req, res) => {
           pendingReward,
           rewardReady,
         },
-        availablePromotions: availablePromos.map(p => ({
+        merchantPromotions: allPromos.filter(p => !p.storeId).map(p => ({
           promotionId: p.id,
           name: p.name,
           description: p.description,
@@ -180,12 +180,32 @@ router.get("/consumer/discover", requireConsumerJwt, async (req, res) => {
           stampThreshold: p.threshold,
           rewardExpiryDays: p.rewardExpiryDays,
           termsSnippet: p.legalText ? p.legalText.slice(0, 200) : null,
+          scope: "merchant",
         })),
+        storePromotions: merchantStores.map(ms => {
+          const storePromos = allPromos.filter(p => p.storeId === ms.storeId);
+          if (!storePromos.length) return null;
+          return {
+            storeId: ms.storeId,
+            storeName: ms.storeName,
+            promotions: storePromos.map(p => ({
+              promotionId: p.id,
+              name: p.name,
+              description: p.description,
+              rewardDescription: buildRewardDesc(p),
+              rewardValue: p.rewardValue,
+              stampThreshold: p.threshold,
+              rewardExpiryDays: p.rewardExpiryDays,
+              termsSnippet: p.legalText ? p.legalText.slice(0, 200) : null,
+              scope: "store",
+            })),
+          };
+        }).filter(Boolean),
       });
     }
 
     // Sort by distance
-    results.sort((a, b) => a.distanceMeters - b.distanceMeters);
+    results.sort((a, b) => (a.distanceMeters ?? 999999) - (b.distanceMeters ?? 999999));
 
     console.log(JSON.stringify({
       pvHook: "consumer.discover.opened",
