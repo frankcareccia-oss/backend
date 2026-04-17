@@ -60,10 +60,11 @@ router.get("/me/wallet", requireConsumerJwt, async (req, res) => {
     const merchants = merchantIds.length
       ? await prisma.merchant.findMany({
           where: { id: { in: merchantIds } },
-          select: { id: true, name: true },
+          select: { id: true, name: true, merchantType: true },
         })
       : [];
     const merchantMap = Object.fromEntries(merchants.map(m => [m.id, m.name]));
+    const merchantTypeMap = Object.fromEntries(merchants.map(m => [m.id, m.merchantType || "cafe"]));
 
     // Resolve store names for entitlements with storeId
     const storeIds = [...new Set(entitlements.filter(e => e.storeId).map(e => e.storeId))];
@@ -109,6 +110,7 @@ router.get("/me/wallet", requireConsumerJwt, async (req, res) => {
         status: e.status,
         merchantId: e.merchantId,
         merchantName: merchantMap[e.merchantId] || "Unknown merchant",
+        merchantType: merchantTypeMap[e.merchantId] || "cafe",
         storeName: e.storeId ? (storeMap[e.storeId] || null) : null,
         validFrom: e.validFrom,
         expiresAt: e.expiresAt,
