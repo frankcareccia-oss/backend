@@ -45,7 +45,7 @@ router.get("/consumer/discover", requireConsumerJwt, async (req, res) => {
       stores = await prisma.store.findMany({
         where: { status: "active", discoverability: true },
         select: {
-          id: true, name: true, merchantId: true, latitude: true, longitude: true,
+          id: true, name: true, merchantId: true, latitude: true, longitude: true, phoneRaw: true,
           address1: true, city: true, state: true, postal: true,
           category: true, logoUrl: true, hoursJson: true,
           merchant: { select: { id: true, name: true } },
@@ -63,7 +63,7 @@ router.get("/consumer/discover", requireConsumerJwt, async (req, res) => {
           discoverability: true,
         },
         select: {
-          id: true, name: true, merchantId: true, latitude: true, longitude: true,
+          id: true, name: true, merchantId: true, latitude: true, longitude: true, phoneRaw: true,
           address1: true, city: true, state: true, postal: true,
           category: true, logoUrl: true, hoursJson: true,
           merchant: { select: { id: true, name: true } },
@@ -91,6 +91,7 @@ router.get("/consumer/discover", requireConsumerJwt, async (req, res) => {
         .map(s => ({
           storeId: s.id,
           storeName: s.name,
+          phone: s.phoneRaw || null,
           address: [s.address1, s.city, s.state, s.postal].filter(Boolean).join(", "),
           latitude: s.latitude,
           longitude: s.longitude,
