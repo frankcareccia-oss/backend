@@ -179,7 +179,7 @@ router.get("/consumer/discover", requireConsumerJwt, async (req, res) => {
           rewardValue: p.rewardValue,
           stampThreshold: p.threshold,
           rewardExpiryDays: p.rewardExpiryDays,
-          termsSnippet: p.legalText ? p.legalText.slice(0, 200) : null,
+          termsSnippet: p.legalText || null,
           scope: "merchant",
         })),
         storePromotions: merchantStores.map(ms => {
@@ -196,7 +196,7 @@ router.get("/consumer/discover", requireConsumerJwt, async (req, res) => {
               rewardValue: p.rewardValue,
               stampThreshold: p.threshold,
               rewardExpiryDays: p.rewardExpiryDays,
-              termsSnippet: p.legalText ? p.legalText.slice(0, 200) : null,
+              termsSnippet: p.legalText || null,
               scope: "store",
             })),
           };
