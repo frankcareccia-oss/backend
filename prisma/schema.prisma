@@ -130,6 +130,9 @@ model Merchant {
   dailySummaries          MerchantDailySummary[]
   promotionDailySummaries PromotionDailySummary[]
   engagementSummaries     ConsumerEngagementSummary[]
+
+  // Onboarding
+  onboardingSession OnboardingSession?
 }
 
 model Store {
@@ -1676,6 +1679,55 @@ model CronJobLog {
 
   @@index([jobName, startedAt])
   @@index([startedAt])
+}
+
+/// Merchant onboarding session — tracks progress through the guided setup flow.
+/// Resume-able, branching, stores every answer for context-aware help.
+model OnboardingSession {
+  id                 Int       @id @default(autoincrement())
+  merchantId         Int       @unique
+  merchantUserId     Int
+
+  // Progress
+  currentStage       String    @default("pos-access") @db.VarChar(32)
+  currentStep        String    @default("2.1") @db.VarChar(10)
+  completedSteps     Json      @default("[]")
+
+  // Answers
+  posType            String?   @db.VarChar(20) // clover, square, toast, manual
+  setupPersona       String?   @db.VarChar(20) // self, someone-else, unsure
+  credentialStatus   String?   @db.VarChar(20) // ready, recovering, unknown
+
+  // Connection
+  posConnectionId    Int?
+  externalMerchantId String?   @db.VarChar(20) // Clover 13-char ID — validate format
+  posEnvironment     String?   @db.VarChar(20) // production, sandbox
+  storesFound        Int?
+  storesMapped       Int?
+
+  // OAuth error tracking (internal)
+  lastOAuthError     String?   @db.VarChar(255)
+  oauthAttempts      Int       @default(0)
+
+  // First promo
+  firstPromoId       Int?
+  firstPromoStatus   String?   @db.VarChar(20) // active, draft
+
+  // Stuck/help
+  stuckAtStep        String?   @db.VarChar(10)
+  stuckReason        String?   @db.Text
+  stuckAt            DateTime?
+  helpMessages       Json      @default("[]")
+
+  // Timestamps
+  startedAt          DateTime  @default(now())
+  completedAt        DateTime?
+  lastActivityAt     DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  merchant Merchant @relation(fields: [merchantId], references: [id])
+
+  @@index([merchantId])
 }
 
 /// Log of catalog sync events — tracks what changed and when.
