@@ -423,4 +423,42 @@ router.post("/merchant/onboarding/ingest", async (req, res) => {
   }
 });
 
+// ──────────────────────────────────────────────
+// POST /merchant/onboarding/scan-promotion — flag & warn check
+// ──────────────────────────────────────────────
+router.post("/merchant/onboarding/scan-promotion", async (req, res) => {
+  try {
+    const mu = await resolveMerchantId(req);
+    if (!mu) return sendError(res, 403, "FORBIDDEN", "Not authorized");
+
+    const promoData = req.body;
+    const { scanPromotion } = require("../promo/promo.legal.flags");
+    const flags = scanPromotion(promoData);
+
+    return res.json({ flags });
+  } catch (err) {
+    return sendError(res, 500, "SERVER_ERROR", err.message);
+  }
+});
+
+// ──────────────────────────────────────────────
+// POST /merchant/onboarding/acknowledge-flag — record risk acknowledgment
+// ──────────────────────────────────────────────
+router.post("/merchant/onboarding/acknowledge-flag", async (req, res) => {
+  try {
+    const mu = await resolveMerchantId(req);
+    if (!mu) return sendError(res, 403, "FORBIDDEN", "Not authorized");
+
+    const { promotionId, flagId, action } = req.body;
+    if (!promotionId || !flagId) return sendError(res, 400, "VALIDATION_ERROR", "promotionId and flagId required");
+
+    const { acknowledgeFlagRisk } = require("../promo/promo.legal.flags");
+    await acknowledgeFlagRisk(promotionId, req.userId, flagId, action || "acknowledged");
+
+    return res.json({ ok: true });
+  } catch (err) {
+    return sendError(res, 500, "SERVER_ERROR", err.message);
+  }
+});
+
 module.exports = router;
