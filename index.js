@@ -681,6 +681,8 @@ const promotionOutcomeRouter = require("./src/growth/promotionOutcome.routes");
 app.use(promotionOutcomeRouter);
 
 const buildAdminRouter = require("./src/admin/admin.routes");
+const adminSystemRouter = require("./src/admin/admin.system.routes");
+app.use(requireJwt, adminSystemRouter);
 
 app.use(
   requireJwt,
@@ -790,62 +792,31 @@ if (require.main === module) app.listen(PORT, () => {
   console.log(`CORS_ORIGIN=${process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN : "(open/dev)"}`);
   console.log(`BILLING_POLICY_FILE=${BILLING_POLICY_FILE}`);
 
-  // ── Scheduled Jobs (node-cron) ──────────────────────────────────────────────
+  // ── Scheduled Jobs (node-cron + auto-logged) ────────────────────────────────
   const cron = require("node-cron");
+  const { withCronLog } = require("./src/cron/cron.logger");
 
-  // Growth Advisor — recompute promotion outcomes every 6 hours
   const { computeAllPromotionOutcomes } = require("./src/growth/promotionOutcome.aggregate");
-  cron.schedule("0 */6 * * *", async () => {
-    console.log("[PV Cron] recomputing promotion outcomes...");
-    computeAllPromotionOutcomes(prisma).catch((e) => {
-      console.error("[PV Cron] outcome recompute failed:", e?.message || String(e));
-    });
-  }, { timezone: "UTC" });
-
-  // Gift Card Reconciliation — compare Square balances against ledger daily at 3 AM UTC
   const { reconcileGiftCardBalances } = require("./src/pos/pos.giftcard");
-  cron.schedule("0 3 * * *", async () => {
-    console.log("[PV Cron] reconciling gift card balances...");
-    reconcileGiftCardBalances().catch((e) => {
-      console.error("[PV Cron] gift card reconciliation failed:", e?.message || String(e));
-    });
-  }, { timezone: "UTC" });
-
-  // Reward Expiry — send notifications + expire overdue rewards daily at 8 AM UTC
   const { runRewardExpiryCron } = require("./src/cron/reward.expiry.cron");
-  cron.schedule("0 8 * * *", async () => {
-    console.log("[PV Cron] running reward expiry check...");
-    runRewardExpiryCron().catch((e) => {
-      console.error("[PV Cron] reward expiry cron failed:", e?.message || String(e));
-    });
-  }, { timezone: "UTC" });
-
-  // Seed Data — generate staging transactions at noon + 5pm Pacific
   const { runSeedCron } = require("./src/cron/seed.data.cron");
-  cron.schedule("0 12 * * *", async () => {
-    console.log("[PV Cron] seed data — morning window...");
-    runSeedCron({ window: "morning" }).catch((e) => {
-      console.error("[PV Cron] seed morning failed:", e?.message || String(e));
-    });
-  }, { timezone: "America/Los_Angeles" });
-  cron.schedule("0 17 * * *", async () => {
-    console.log("[PV Cron] seed data — afternoon window...");
-    runSeedCron({ window: "afternoon" }).catch((e) => {
-      console.error("[PV Cron] seed afternoon failed:", e?.message || String(e));
-    });
-  }, { timezone: "America/Los_Angeles" });
-
-  // Reporting Aggregation — nightly at 2 AM UTC
   const { runReportingAggregation } = require("./src/cron/reporting.aggregate.cron");
-  cron.schedule("0 2 * * *", async () => {
-    console.log("[PV Cron] nightly reporting aggregation starting...");
-    try {
-      const result = await runReportingAggregation();
-      console.log("[PV Cron] reporting aggregation complete:", JSON.stringify(result));
-    } catch (e) {
-      console.error("[PV Cron] reporting aggregation failed:", e?.message || String(e));
-    }
-  }, { timezone: "UTC" });
+
+  // Growth Advisor — every 6 hours
+  cron.schedule("0 */6 * * *", withCronLog("growth-advisor", () => computeAllPromotionOutcomes(prisma)), { timezone: "UTC" });
+
+  // Gift Card Reconciliation — 3 AM UTC
+  cron.schedule("0 3 * * *", withCronLog("gift-card-reconcile", () => reconcileGiftCardBalances()), { timezone: "UTC" });
+
+  // Reward Expiry — 8 AM UTC
+  cron.schedule("0 8 * * *", withCronLog("reward-expiry", () => runRewardExpiryCron()), { timezone: "UTC" });
+
+  // Seed Data — noon + 5pm Pacific
+  cron.schedule("0 12 * * *", withCronLog("seed-morning", () => runSeedCron({ window: "morning" })), { timezone: "America/Los_Angeles" });
+  cron.schedule("0 17 * * *", withCronLog("seed-afternoon", () => runSeedCron({ window: "afternoon" })), { timezone: "America/Los_Angeles" });
+
+  // Reporting Aggregation — 2 AM UTC
+  cron.schedule("0 2 * * *", withCronLog("reporting", () => runReportingAggregation()), { timezone: "UTC" });
 
   // Event Publisher — poll outbox and dispatch to consumers
   const { bootstrapEventPublisher } = require("./src/events/event.bootstrap");
