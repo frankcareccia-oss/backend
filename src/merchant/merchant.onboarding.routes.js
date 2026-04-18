@@ -377,4 +377,50 @@ router.post("/merchant/onboarding/complete-connection", async (req, res) => {
   }
 });
 
+// ──────────────────────────────────────────────
+// POST /merchant/onboarding/ingest — pull existing POS promotions
+// ──────────────────────────────────────────────
+router.post("/merchant/onboarding/ingest", async (req, res) => {
+  try {
+    const mu = await resolveMerchantId(req);
+    if (!mu) return sendError(res, 403, "FORBIDDEN", "Not authorized");
+
+    const conn = await prisma.posConnection.findFirst({
+      where: { merchantId: mu.merchantId, status: "active" },
+    });
+    if (!conn) return sendError(res, 400, "NO_CONNECTION", "No active POS connection");
+
+    const { ingestPosPromotions, generateGapAnalysis } = require("../pos/pos.promotion.ingest");
+    const ingested = await ingestPosPromotions(conn);
+
+    // Get existing PV promotions for comparison
+    const pvPromotions = await prisma.promotion.findMany({
+      where: { merchantId: mu.merchantId },
+      select: { id: true, name: true, rewardType: true, threshold: true, status: true },
+    });
+
+    const gapAnalysis = generateGapAnalysis(ingested.posPromotions, ingested.posDiscounts, pvPromotions);
+
+    console.log(JSON.stringify({
+      pvHook: "onboarding.ingest.complete",
+      ts: new Date().toISOString(),
+      tc: "TC-ONBOARD-04",
+      sev: "info",
+      merchantId: mu.merchantId,
+      posPromotions: ingested.posPromotions.length,
+      posDiscounts: ingested.posDiscounts.length,
+      pvPromotions: pvPromotions.length,
+    }));
+
+    return res.json({
+      ingested,
+      gapAnalysis,
+      pvPromotions,
+    });
+  } catch (err) {
+    console.error("[onboarding] ingest error:", err);
+    return sendError(res, 500, "SERVER_ERROR", "Could not ingest POS promotions");
+  }
+});
+
 module.exports = router;
