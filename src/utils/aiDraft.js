@@ -56,23 +56,30 @@ async function draftPromoTerms({
     : "each qualifying purchase";
 
   const windowLine = timeframeDays
-    ? `Stamps earned more than ${timeframeDays} days ago will not count toward your next reward.`
-    : "Earned stamps do not expire.";
+    ? `Stamps stay active for ${timeframeDays} days from when they're earned.`
+    : "Your stamps never expire.";
 
   const startFmt = fmtDate(startAt);
   const endFmt   = fmtDate(endAt);
   const periodLine = (startFmt || endFmt)
-    ? `Program valid ${startFmt || "immediately"} through ${endFmt || "further notice"}.`
-    : "Program runs until further notice.";
+    ? `Available ${startFmt || "now"} through ${endFmt || "further notice"}.`
+    : "This program is ongoing with no end date.";
 
   const limitLine = maxGrantsPerVisit
-    ? `A maximum of ${maxGrantsPerVisit} reward(s) may be redeemed per visit.`
+    ? `Up to ${maxGrantsPerVisit} reward(s) can be redeemed per visit.`
     : "";
 
-  const prompt = `Write a 2-3 sentence loyalty program summary for a mobile app. Plain English, second person, no headings. Cover: how to earn, the reward, and expiry/period. End with one short sentence that the merchant may modify or cancel the program at any time.
+  const prompt = `Write a 2-3 sentence loyalty program summary for a mobile app. Warm, friendly, plain English, second person. No headings. Cover: how to earn, the reward, and any time limits. End with one short reassuring sentence noting that program details may be updated from time to time.
+
+Tone rules:
+- Be welcoming, not legalistic. This is a gift, not a contract.
+- Say "stay active for X days" instead of "won't count after X days"
+- Say "details may be updated" instead of "we may modify or cancel"
+- Never use the words "void", "forfeit", "terminate", or "cancel"
+- Keep it under 3 sentences total
 
 Program: ${name}
-Earn: 1 stamp per ${earnDesc}. Need ${threshold} stamps to earn ${rewardDesc}.
+Earn: 1 stamp per ${earnDesc}. Collect ${threshold} stamps to receive ${rewardDesc}.
 ${windowLine}
 ${periodLine}
 ${limitLine}
