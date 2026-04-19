@@ -17,6 +17,7 @@ const express = require("express");
 const { prisma } = require("../db/prisma");
 const { sendError } = require("../utils/errors");
 const { requireJwt } = require("../middleware/auth");
+const { projectByObjective, checkDivergence, OBJECTIVES } = require("./simulator.projections");
 
 const router = express.Router();
 
@@ -293,6 +294,7 @@ router.get("/merchant/reporting/promotions/:id", async (req, res) => {
 // ──────────────────────────────────────────────
 // GET /merchant/reporting/simulator/new/:promotionType
 // Simulator baseline for new (not-yet-created) promotion
+// ?objective=bring-back (optional, defaults to bring-back)
 // NOTE: Must be registered BEFORE :promotionId route
 // ──────────────────────────────────────────────
 router.get("/merchant/reporting/simulator/new/:promotionType", async (req, res) => {
@@ -300,13 +302,21 @@ router.get("/merchant/reporting/simulator/new/:promotionType", async (req, res) 
     const merchantId = await getMerchantId(req);
     if (!merchantId) return sendError(res, 403, "FORBIDDEN", "Not authorized");
 
+    const objective = req.query.objective || "bring-back";
     const baseline = await computeBaseline(merchantId);
+    const merchant = await prisma.merchant.findUnique({
+      where: { id: merchantId },
+      select: { merchantType: true },
+    });
 
     return res.json({
       promotionType: req.params.promotionType,
+      objective,
+      objectives: OBJECTIVES,
       historical: [],
       baseline,
       lockedFields: [],
+      merchantType: merchant?.merchantType,
     });
   } catch (err) {
     return sendError(res, 500, "SERVER_ERROR", err.message);
@@ -316,6 +326,7 @@ router.get("/merchant/reporting/simulator/new/:promotionType", async (req, res) 
 // ──────────────────────────────────────────────
 // GET /merchant/reporting/simulator/:promotionId
 // Simulator baseline data for existing promotion
+// Includes objective-driven projection + validation mode
 // ──────────────────────────────────────────────
 router.get("/merchant/reporting/simulator/:promotionId", async (req, res) => {
   try {
@@ -329,6 +340,11 @@ router.get("/merchant/reporting/simulator/:promotionId", async (req, res) => {
     });
     if (!promotion) return sendError(res, 404, "NOT_FOUND", "Promotion not found");
 
+    const merchant = await prisma.merchant.findUnique({
+      where: { id: merchantId },
+      select: { merchantType: true },
+    });
+
     const enrolledCount = await prisma.consumerPromoProgress.count({ where: { promotionId } });
 
     // Historical performance
@@ -341,6 +357,41 @@ router.get("/merchant/reporting/simulator/:promotionId", async (req, res) => {
     // Merchant baseline (last 30 days)
     const baseline = await computeBaseline(merchantId);
 
+    // Previous outcome for learning loop
+    const previousOutcome = await prisma.promotionOutcome.findFirst({
+      where: { merchantId, objective: { not: null } },
+      orderBy: { computedAt: "desc" },
+    });
+
+    // Objective (from promotion or query param or default)
+    const objective = promotion.objective || req.query.objective || "bring-back";
+
+    // Compute projection
+    const params = {
+      stampThreshold: promotion.threshold,
+      rewardValueCents: promotion.rewardValue || 500,
+      expiryDays: promotion.rewardExpiryDays,
+      promotionType: promotion.promotionType,
+    };
+    const projection = projectByObjective(objective, baseline, params, merchant?.merchantType, previousOutcome);
+
+    // Validation mode: check for divergence if promotion active 14+ days
+    let validation = null;
+    if (promotion.firstActivatedAt && historical.length >= 14) {
+      const daysSinceLaunch = Math.round(
+        (Date.now() - new Date(promotion.firstActivatedAt).getTime()) / (1000 * 60 * 60 * 24)
+      );
+      if (daysSinceLaunch >= 14) {
+        const actualRedemptionValue = historical.reduce((s, h) => s + h.redemptionValueCents, 0);
+        const divergence = checkDivergence(projection.projectedMonthlyCostCents, actualRedemptionValue);
+        validation = {
+          mode: "active",
+          daysSinceLaunch,
+          divergence,
+        };
+      }
+    }
+
     // Locked fields (if consumers are enrolled, core params are locked)
     const lockedFields = enrolledCount > 0
       ? ["stampThreshold", "rewardValue"]
@@ -351,6 +402,7 @@ router.get("/merchant/reporting/simulator/:promotionId", async (req, res) => {
         id: promotion.id,
         name: promotion.name,
         promotionType: promotion.promotionType,
+        objective,
         currentParams: {
           stampThreshold: promotion.threshold,
           rewardValueCents: promotion.rewardValue,
@@ -368,8 +420,37 @@ router.get("/merchant/reporting/simulator/:promotionId", async (req, res) => {
         activeParticipants: h.activeParticipants,
       })),
       baseline,
+      projection,
+      validation,
+      objectives: OBJECTIVES,
       lockedFields,
+      merchantType: merchant?.merchantType,
     });
+  } catch (err) {
+    return sendError(res, 500, "SERVER_ERROR", err.message);
+  }
+});
+
+// ──────────────────────────────────────────────
+// PATCH /merchant/reporting/simulator/aov
+// Merchant manually sets avg transaction value
+// ──────────────────────────────────────────────
+router.patch("/merchant/reporting/simulator/aov", async (req, res) => {
+  try {
+    const merchantId = await getMerchantId(req);
+    if (!merchantId) return sendError(res, 403, "FORBIDDEN", "Not authorized");
+
+    const { avgTransactionValueCents } = req.body;
+    if (!avgTransactionValueCents || avgTransactionValueCents < 100 || avgTransactionValueCents > 100000) {
+      return sendError(res, 400, "INVALID_VALUE", "Average transaction value must be between $1.00 and $1,000.00");
+    }
+
+    await prisma.merchant.update({
+      where: { id: merchantId },
+      data: { avgTransactionValueCents },
+    });
+
+    return res.json({ avgTransactionValueCents });
   } catch (err) {
     return sendError(res, 500, "SERVER_ERROR", err.message);
   }
@@ -377,6 +458,7 @@ router.get("/merchant/reporting/simulator/:promotionId", async (req, res) => {
 
 /**
  * Compute merchant baseline from last 30 days of summary data.
+ * Now includes avgTransactionValueCents for objective-driven projections.
  */
 async function computeBaseline(merchantId) {
   const thirtyDaysAgo = daysAgo(30);
@@ -419,12 +501,19 @@ async function computeBaseline(merchantId) {
 
   const currentEnrolled = await prisma.consumerPromoProgress.count({ where: { merchantId } });
 
+  // Avg transaction value: from merchant record or computed from POS data
+  const merchant = await prisma.merchant.findUnique({
+    where: { id: merchantId },
+    select: { avgTransactionValueCents: true },
+  });
+
   return {
     avgDailyVisitors,
     attributionRate: Math.round(attributionRate * 100) / 100,
     avgVisitsPerConsumerPerMonth,
     currentEnrolled,
     enrollmentConversionRate: Math.round(enrollmentConversionRate * 1000) / 1000,
+    avgTransactionValueCents: merchant?.avgTransactionValueCents || 0,
     dataAgeDays,
   };
 }

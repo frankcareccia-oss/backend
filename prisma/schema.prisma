@@ -126,6 +126,9 @@ model Merchant {
   isSeedMerchant    Boolean @default(false)
   seedBaselineDaily Int     @default(80)
 
+  // Simulator — average transaction value (cents). Updated monthly from POS data.
+  avgTransactionValueCents Int?
+
   // Reporting summaries
   dailySummaries          MerchantDailySummary[]
   promotionDailySummaries PromotionDailySummary[]
@@ -1040,6 +1043,9 @@ model Promotion {
   /// Promotion type for simulator context: stamp | bundle | tiered | conditional | referral
   promotionType String  @default("stamp") @db.VarChar(20)
 
+  /// Growth Studio objective: bring-back | grow-base | drive-revenue | fill-slow | reward-best
+  objective     String? @db.VarChar(30)
+
   // Reward definition
   rewardType  PromoRewardType
   /// discount_pct: 1–100; discount_fixed: cents; null for free_item/custom.
@@ -1866,6 +1872,7 @@ model PromotionBaselineSnapshot {
 
 /// Aggregated promotion effectiveness metrics.
 /// Computed async from PromotionEvent + PromotionBaselineSnapshot.
+/// Extended with simulator learning-loop fields for objective-driven projections.
 model PromotionOutcome {
   id                 Int       @id @default(autoincrement())
   promotionId        Int
@@ -1893,6 +1900,19 @@ model PromotionOutcome {
   baselineAovCents     Int?
   baselineVisits       Float?
   baselineRevenueCents Int?
+
+  // Simulator learning loop — projected vs actual comparison
+  objective                String?   // bring-back | grow-base | drive-revenue | fill-slow | reward-best
+  primaryMetricProjected   Float?    // what simulator predicted
+  primaryMetricActual      Float?    // what actually happened
+  revenueProjectedCents    Int?
+  revenueActualCents       Int?
+  costProjectedCents       Int?
+  costActualCents          Int?
+  enrollmentProjected      Int?
+  enrollmentActual         Int?
+  attributionRateAvg       Float?    // avg attribution rate during promotion
+  durationDays             Int?
 
   computedAt         DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
