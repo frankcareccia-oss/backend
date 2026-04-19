@@ -364,7 +364,7 @@ router.get("/merchant/reporting/simulator/:promotionId", async (req, res) => {
     });
 
     // Objective (from promotion or query param or default)
-    const objective = promotion.objective || req.query.objective || "bring-back";
+    const objective = req.query.objective || promotion.objective || "bring-back";
 
     // Compute projection
     const params = {
