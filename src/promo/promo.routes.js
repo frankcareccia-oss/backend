@@ -426,6 +426,7 @@ router.post(
         categoryId, storeId,
         promoItemIds,
         startAt, endAt,
+        objective, rewardExpiryDays,
       } = req.body || {};
 
       if (!name || !String(name).trim())
@@ -486,6 +487,8 @@ router.post(
           status: "draft",
           startAt: startAt ? new Date(startAt) : null,
           endAt: endAt ? new Date(endAt) : null,
+          objective: objective || null,
+          rewardExpiryDays: rewardExpiryDays ? parseInt(rewardExpiryDays, 10) : 90,
           items: {
             create: itemIds.map((id) => ({ promoItemId: id })),
           },
