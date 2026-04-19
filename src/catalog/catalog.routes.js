@@ -6,7 +6,7 @@ const { parseIntParam } = require("../utils/helpers");
 const { requireJwt, requireAdmin, requireMerchantRole } = require("../middleware/auth");
 const { emitPvHook } = require("../utils/hooks");
 const { generateSku } = require("./catalog.service");
-const { draftProductInfo } = require("../utils/aiDraft");
+const { draftProductInfo, draftProductDescription } = require("../utils/aiDraft");
 const { pushProductToPos, pushCategoryToPos } = require("../pos/pos.catalog.push");
 
 const router = express.Router();
@@ -387,6 +387,37 @@ router.post(
   }
 );
 
+// POST /merchant/products/generate-description
+// Generates an enticing consumer-facing description (2-3 sentences).
+router.post(
+  "/merchant/products/generate-description",
+  requireJwt,
+  requireMerchantRole("owner", "merchant_admin"),
+  async (req, res) => {
+    try {
+      const { productName, categoryName } = req.body || {};
+      if (!productName) return sendError(res, 400, "VALIDATION_ERROR", "productName is required");
+
+      const merchant = await prisma.merchant.findUnique({
+        where: { id: req.merchantId },
+        select: { name: true },
+      });
+
+      const draft = await draftProductDescription({
+        merchantName: merchant?.name || null,
+        productName,
+        categoryName,
+      });
+
+      return res.json({ draft });
+    } catch (err) {
+      if (err.code === "AI_UNAVAILABLE") return sendError(res, 503, "AI_UNAVAILABLE", err.message);
+      console.error("[product generate-description]", err?.message || err);
+      return sendError(res, 500, "AI_ERROR", "Failed to generate product description");
+    }
+  }
+);
+
 // GET /admin/merchants/:merchantId/products — pv_admin oversight
 router.get(
   "/admin/merchants/:merchantId/products",
@@ -706,6 +737,38 @@ router.post(
       if (err.code === "AI_UNAVAILABLE") return sendError(res, 503, "AI_UNAVAILABLE", err.message);
       console.error("[admin product generate-info]", err?.message || err);
       return sendError(res, 500, "AI_ERROR", "Failed to generate product info draft");
+    }
+  }
+);
+
+// POST /admin/merchants/:merchantId/products/generate-description
+router.post(
+  "/admin/merchants/:merchantId/products/generate-description",
+  requireJwt,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const merchantId = parseIntParam(req.params.merchantId);
+      if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantId");
+      const { productName, categoryName } = req.body || {};
+      if (!productName) return sendError(res, 400, "VALIDATION_ERROR", "productName is required");
+
+      const merchant = await prisma.merchant.findUnique({
+        where: { id: merchantId },
+        select: { name: true },
+      });
+
+      const draft = await draftProductDescription({
+        merchantName: merchant?.name || null,
+        productName,
+        categoryName,
+      });
+
+      return res.json({ draft });
+    } catch (err) {
+      if (err.code === "AI_UNAVAILABLE") return sendError(res, 503, "AI_UNAVAILABLE", err.message);
+      console.error("[admin product generate-description]", err?.message || err);
+      return sendError(res, 500, "AI_ERROR", "Failed to generate product description");
     }
   }
 );

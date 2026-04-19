@@ -207,4 +207,28 @@ Write the summary now. No greeting, no sign-off.`;
   }
 }
 
-module.exports = { draftPromoTerms, draftBundleTerms, draftProductInfo, draftGrowthSummary };
+// ── Product Description (consumer-facing, enticing) ─────────────────────────
+
+/**
+ * Draft a short, enticing product description for consumer-facing display.
+ * 2-3 sentences that make you want to try it.
+ */
+async function draftProductDescription({
+  merchantName, productName, categoryName,
+}) {
+  requireKey();
+
+  const prompt = `You are a menu copywriter for an independent ${categoryName || "food & beverage"} shop called "${merchantName || "the shop"}". Write a 2-sentence product description for "${productName}" that makes a customer want to order it right now. Be warm, sensory, and specific — mention texture, flavor, or experience. No hype words like "amazing" or "best". No headings, no bullets. Just two vivid sentences.
+
+Write the description now:`;
+
+  const msg = await getClient().messages.create({
+    model: MODEL,
+    max_tokens: 100,
+    messages: [{ role: "user", content: prompt }],
+  });
+
+  return msg.content?.[0]?.text?.trim() || "";
+}
+
+module.exports = { draftPromoTerms, draftBundleTerms, draftProductInfo, draftProductDescription, draftGrowthSummary };
