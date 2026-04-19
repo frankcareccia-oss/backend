@@ -11,7 +11,7 @@ const { sendError, handlePrismaError } = require("../utils/errors");
 const { parseIntParam } = require("../utils/helpers");
 const { requireJwt, requireAdmin, requireMerchantRole } = require("../middleware/auth");
 const { prisma } = require("../db/prisma");
-const { draftBundleTerms } = require("../utils/aiDraft");
+const { draftBundleTerms, draftBundleDescription } = require("../utils/aiDraft");
 const service = require("./bundle.service");
 
 const router = express.Router();
@@ -147,6 +147,38 @@ router.post(
       if (err.code === "AI_UNAVAILABLE") return sendError(res, 503, "AI_UNAVAILABLE", err.message);
       console.error("[bundle generate-terms]", err?.message || err);
       return sendError(res, 500, "AI_ERROR", "Failed to generate terms draft");
+    }
+  }
+);
+
+// POST /merchant/bundles/generate-description
+// Generates an enticing consumer-facing pitch (2 sentences) for a bundle.
+router.post(
+  "/merchant/bundles/generate-description",
+  requireJwt,
+  requireMerchantRole("owner", "merchant_admin"),
+  async (req, res) => {
+    try {
+      const { bundleName, componentsDesc, price } = req.body || {};
+      if (!bundleName) return sendError(res, 400, "VALIDATION_ERROR", "bundleName is required");
+
+      const merchant = await prisma.merchant.findUnique({
+        where: { id: req.merchantId },
+        select: { name: true },
+      });
+
+      const draft = await draftBundleDescription({
+        merchantName: merchant?.name || null,
+        bundleName,
+        componentsDesc,
+        price,
+      });
+
+      return res.json({ draft });
+    } catch (err) {
+      if (err.code === "AI_UNAVAILABLE") return sendError(res, 503, "AI_UNAVAILABLE", err.message);
+      console.error("[bundle generate-description]", err?.message || err);
+      return sendError(res, 500, "AI_ERROR", "Failed to generate bundle description");
     }
   }
 );

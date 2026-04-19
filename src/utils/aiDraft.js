@@ -231,4 +231,89 @@ Write the description now:`;
   return msg.content?.[0]?.text?.trim() || "";
 }
 
-module.exports = { draftPromoTerms, draftBundleTerms, draftProductInfo, draftProductDescription, draftGrowthSummary };
+// ── Promotion Description (consumer-facing pitch) ───────────────────────────
+
+/**
+ * Draft a short, compelling promotion description for consumer-facing display.
+ * 2 sentences that make joining feel like a no-brainer.
+ */
+async function draftPromoDescription({
+  merchantName, promoName, categoryName,
+  rewardType, rewardValue, rewardSku, rewardNote,
+  threshold, timeframeDays,
+  promotionType, bundleComponents,
+}) {
+  requireKey();
+
+  // Build reward description
+  let rewardDesc;
+  if (rewardType === "free_item")      rewardDesc = `a free ${rewardSku || "item"}`;
+  else if (rewardType === "discount_pct")   rewardDesc = `${rewardValue}% off your order`;
+  else if (rewardType === "discount_fixed") rewardDesc = `$${((rewardValue || 0) / 100).toFixed(2)} off`;
+  else                                 rewardDesc = rewardNote || "a special reward";
+
+  // Build context based on promotion type
+  let typeContext;
+  if (promotionType === "bundle" && bundleComponents) {
+    typeContext = `This is a combo/bundle deal: ${bundleComponents}. The consumer gets all items together.`;
+  } else {
+    typeContext = `This is a stamp/loyalty program. The consumer earns 1 stamp per qualifying ${categoryName || "purchase"}. After ${threshold} stamps, they earn ${rewardDesc}.`;
+  }
+
+  const urgencyLine = timeframeDays
+    ? `Stamps expire after ${timeframeDays} days, so there is a gentle urgency.`
+    : "";
+
+  const prompt = `You are a loyalty program copywriter for "${merchantName || "a local shop"}". Write exactly 2 sentences that make a consumer want to join this program RIGHT NOW. Be warm and specific — mention the actual reward, the number of visits, and make it feel effortless. No hype words like "amazing" or "incredible". No headings, no bullets. Make the consumer think "why wouldn't I do this?"
+
+Program: ${promoName || "Loyalty Program"}
+${typeContext}
+${urgencyLine}
+
+Write the 2-sentence pitch now:`;
+
+  const msg = await getClient().messages.create({
+    model: MODEL,
+    max_tokens: 120,
+    messages: [{ role: "user", content: prompt }],
+  });
+
+  return msg.content?.[0]?.text?.trim() || "";
+}
+
+// ── Bundle Description (consumer-facing pitch) ──────────────────────────────
+
+/**
+ * Draft a short, compelling bundle description for consumer-facing display.
+ * 2 sentences that sell the value + convenience.
+ */
+async function draftBundleDescription({
+  merchantName, bundleName, componentsDesc, price,
+}) {
+  requireKey();
+
+  const priceDesc = price != null ? `$${Number(price).toFixed(2)}` : "one easy price";
+
+  const prompt = `You are a menu copywriter for "${merchantName || "a local shop"}". Write exactly 2 sentences that make a consumer want to grab this combo deal. Focus on convenience, value, and how the items go together. Be warm and specific. No hype words. No headings, no bullets.
+
+Bundle: ${bundleName || "Combo Deal"}
+What's included: ${componentsDesc || "a curated selection"}
+Price: ${priceDesc}
+
+Write the 2-sentence pitch now:`;
+
+  const msg = await getClient().messages.create({
+    model: MODEL,
+    max_tokens: 100,
+    messages: [{ role: "user", content: prompt }],
+  });
+
+  return msg.content?.[0]?.text?.trim() || "";
+}
+
+module.exports = {
+  draftPromoTerms, draftBundleTerms,
+  draftProductInfo, draftProductDescription,
+  draftPromoDescription, draftBundleDescription,
+  draftGrowthSummary,
+};

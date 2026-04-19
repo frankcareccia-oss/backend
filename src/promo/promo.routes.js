@@ -16,7 +16,7 @@ const { sendError, handlePrismaError } = require("../utils/errors");
 const { parseIntParam } = require("../utils/helpers");
 const { requireJwt, requireAdmin, requireMerchantRole } = require("../middleware/auth");
 const { emitPvHook } = require("../utils/hooks");
-const { draftPromoTerms } = require("../utils/aiDraft");
+const { draftPromoTerms, draftPromoDescription } = require("../utils/aiDraft");
 const { capturePromotionBaseline } = require("../growth/promotionOutcome.baseline");
 
 const router = express.Router();
@@ -549,6 +549,45 @@ router.post(
       if (err.code === "AI_UNAVAILABLE") return sendError(res, 503, "AI_UNAVAILABLE", err.message);
       console.error("[promo generate-terms]", err?.message || err);
       return sendError(res, 500, "AI_ERROR", "Failed to generate terms draft");
+    }
+  }
+);
+
+// POST /merchant/promotions/generate-description
+// Generates an enticing consumer-facing pitch (2 sentences).
+router.post(
+  "/merchant/promotions/generate-description",
+  requireJwt,
+  requireMerchantRole("owner", "merchant_admin"),
+  async (req, res) => {
+    try {
+      const {
+        name, categoryName, promotionType,
+        threshold, rewardType, rewardValue, rewardSku, rewardNote,
+        timeframeDays,
+      } = req.body || {};
+
+      if (!name) return sendError(res, 400, "VALIDATION_ERROR", "name is required");
+
+      const merchant = await prisma.merchant.findUnique({
+        where: { id: req.merchantId },
+        select: { name: true },
+      });
+
+      const draft = await draftPromoDescription({
+        merchantName: merchant?.name || null,
+        promoName: name,
+        categoryName,
+        rewardType, rewardValue, rewardSku, rewardNote,
+        threshold, timeframeDays,
+        promotionType: promotionType || "stamp",
+      });
+
+      return res.json({ draft });
+    } catch (err) {
+      if (err.code === "AI_UNAVAILABLE") return sendError(res, 503, "AI_UNAVAILABLE", err.message);
+      console.error("[promo generate-description]", err?.message || err);
+      return sendError(res, 500, "AI_ERROR", "Failed to generate promotion description");
     }
   }
 );
