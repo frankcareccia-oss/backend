@@ -231,16 +231,18 @@ Write the description now:`;
   return msg.content?.[0]?.text?.trim() || "";
 }
 
-// ── Promotion Description (consumer-facing pitch) ───────────────────────────
+// ── Promotion Description (consumer-facing pitch, two versions) ─────────────
 
 /**
- * Draft a short, compelling promotion description for consumer-facing display.
- * 2 sentences that make joining feel like a no-brainer.
+ * Draft two versions of consumer-facing promotion copy.
+ * Version A: Reward-led — opens with what you get.
+ * Version B: Experience-led — opens with the moment or the habit.
+ * Returns { versionA, versionB }.
  */
 async function draftPromoDescription({
-  merchantName, promoName, categoryName,
+  merchantName, promoName, categoryName, merchantType,
   rewardType, rewardValue, rewardSku, rewardNote,
-  threshold, timeframeDays,
+  threshold, timeframeDays, timeCondition,
   promotionType, bundleComponents,
 }) {
   requireKey();
@@ -252,33 +254,76 @@ async function draftPromoDescription({
   else if (rewardType === "discount_fixed") rewardDesc = `$${((rewardValue || 0) / 100).toFixed(2)} off`;
   else                                 rewardDesc = rewardNote || "a special reward";
 
-  // Build context based on promotion type
-  let typeContext;
-  if (promotionType === "bundle" && bundleComponents) {
-    typeContext = `This is a combo/bundle deal: ${bundleComponents}. The consumer gets all items together.`;
-  } else {
-    typeContext = `This is a stamp/loyalty program. The consumer earns 1 stamp per qualifying ${categoryName || "purchase"}. After ${threshold} stamps, they earn ${rewardDesc}.`;
-  }
+  // Tone guidance by promotion type
+  const toneGuide = {
+    stamp: "Motivational, habit-affirming. The customer's routine is already working for them. Make the milestone feel achievable, not distant.",
+    bundle: "Value + convenience. Two great things together. Make it feel like an obvious upgrade, not an upsell.",
+    tiered: "Aspirational but attainable. The journey gets more rewarding. Acknowledge loyalty without making new customers feel behind.",
+    conditional: timeCondition
+      ? "Make the time window feel like a moment, not a schedule. 'Tuesday mornings just got better' not 'double stamps 7-10am Tuesdays.'"
+      : "Warm, welcoming. Frame as an easy upgrade or a welcome back.",
+    referral: "Social proof + shared reward. Keep it personal, not transactional.",
+  };
 
-  const urgencyLine = timeframeDays
-    ? `Stamps expire after ${timeframeDays} days, so there is a gentle urgency.`
-    : "";
+  const tone = toneGuide[promotionType] || toneGuide.stamp;
 
-  const prompt = `You are a loyalty program copywriter for "${merchantName || "a local shop"}". Write exactly 2 sentences that make a consumer want to join this program RIGHT NOW. Be warm and specific — mention the actual reward, the number of visits, and make it feel effortless. No hype words like "amazing" or "incredible". No headings, no bullets. Make the consumer think "why wouldn't I do this?"
+  // Category-specific sensory cues
+  const sensoryCue = {
+    coffee_shop: "Use sensory language — the smell, the warmth, the ritual. Tap into morning routines and neighborhood identity.",
+    restaurant: "Invoke flavors, the table, the experience of a meal well shared.",
+    fitness: "Energy, progress, showing up for yourself. The reward mirrors the effort.",
+    salon_spa: "Self-care, feeling good, treating yourself. The reward extends the pampering.",
+    retail: "Discovery, style, finding something you love. The reward is the next find.",
+  };
+  const sensory = sensoryCue[merchantType] || "";
 
-Program: ${promoName || "Loyalty Program"}
-${typeContext}
-${urgencyLine}
+  const prompt = `You are writing consumer-facing loyalty promotion copy for a small business. Your job is to make joining feel like a no-brainer — not a transaction.
 
-Write the 2-sentence pitch now:`;
+Business: "${merchantName || "a local shop"}"${merchantType ? ` (${merchantType.replace("_", " ")})` : ""}
+Program: "${promoName || "Loyalty Program"}"
+Type: ${promotionType || "stamp"}
+Threshold: ${threshold || "?"} visits/purchases
+Reward: ${rewardDesc}
+${timeCondition ? `Time condition: ${timeCondition}` : ""}
+${timeframeDays ? `Stamps expire after ${timeframeDays} days.` : ""}
+
+Tone: ${tone}
+${sensory ? `Sensory guidance: ${sensory}` : ""}
+
+Write TWO versions, each exactly 2 sentences:
+Version A: Lead with the reward. Make the math feel effortless.
+Version B: Lead with the experience or the habit. Make joining feel like belonging.
+
+Rules:
+- Maximum 2 sentences per version
+- Never use the word "loyalty" — it's corporate
+- Never use "points" unless that's the actual mechanic
+- Never say "terms and conditions apply"
+- No "unlimited", "always free", or "guaranteed"
+- Write for someone who already loves this place
+
+Return ONLY a JSON object, no markdown, no code fences:
+{"versionA": "...", "versionB": "..."}`;
 
   const msg = await getClient().messages.create({
     model: MODEL,
-    max_tokens: 120,
+    max_tokens: 200,
     messages: [{ role: "user", content: prompt }],
   });
 
-  return msg.content?.[0]?.text?.trim() || "";
+  const raw = msg.content?.[0]?.text?.trim() || "";
+
+  // Parse JSON response
+  try {
+    const parsed = JSON.parse(raw);
+    return {
+      versionA: parsed.versionA || "",
+      versionB: parsed.versionB || "",
+    };
+  } catch {
+    // If AI didn't return valid JSON, use the raw text as version A
+    return { versionA: raw, versionB: "" };
+  }
 }
 
 // ── Bundle Description (consumer-facing pitch) ──────────────────────────────

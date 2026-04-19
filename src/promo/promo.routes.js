@@ -564,26 +564,27 @@ router.post(
       const {
         name, categoryName, promotionType,
         threshold, rewardType, rewardValue, rewardSku, rewardNote,
-        timeframeDays,
+        timeframeDays, timeCondition,
       } = req.body || {};
 
       if (!name) return sendError(res, 400, "VALIDATION_ERROR", "name is required");
 
       const merchant = await prisma.merchant.findUnique({
         where: { id: req.merchantId },
-        select: { name: true },
+        select: { name: true, merchantType: true },
       });
 
-      const draft = await draftPromoDescription({
+      const result = await draftPromoDescription({
         merchantName: merchant?.name || null,
+        merchantType: merchant?.merchantType || null,
         promoName: name,
         categoryName,
         rewardType, rewardValue, rewardSku, rewardNote,
-        threshold, timeframeDays,
+        threshold, timeframeDays, timeCondition,
         promotionType: promotionType || "stamp",
       });
 
-      return res.json({ draft });
+      return res.json(result);
     } catch (err) {
       if (err.code === "AI_UNAVAILABLE") return sendError(res, 503, "AI_UNAVAILABLE", err.message);
       console.error("[promo generate-description]", err?.message || err);
