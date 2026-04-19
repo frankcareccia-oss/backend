@@ -313,15 +313,21 @@ Return ONLY a JSON object, no markdown, no code fences:
 
   const raw = msg.content?.[0]?.text?.trim() || "";
 
+  // Strip markdown code fences if AI wrapped the JSON
+  const cleaned = raw
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```\s*$/, "")
+    .trim();
+
   // Parse JSON response
   try {
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(cleaned);
     return {
       versionA: parsed.versionA || "",
       versionB: parsed.versionB || "",
     };
   } catch {
-    // If AI didn't return valid JSON, use the raw text as version A
+    // If AI didn't return valid JSON, use the cleaned text as version A
     return { versionA: raw, versionB: "" };
   }
 }
