@@ -277,4 +277,59 @@ router.post("/api/support/ticket", requireJwt, async (req, res) => {
   }
 });
 
+// ──────────────────────────────────────────────
+// GET /admin/support/tickets
+// List all tickets (pv_admin only)
+// ──────────────────────────────────────────────
+router.get("/admin/support/tickets", requireJwt, async (req, res) => {
+  try {
+    if (req.systemRole !== "pv_admin") return sendError(res, 403, "FORBIDDEN", "Admin only");
+
+    const tickets = await prisma.supportTicket.findMany({
+      orderBy: [{ status: "asc" }, { priority: "asc" }, { createdAt: "desc" }],
+      include: { merchant: { select: { name: true } } },
+    });
+
+    return res.json({
+      tickets: tickets.map(t => ({
+        ...t,
+        merchantName: t.merchant?.name,
+        merchant: undefined,
+      })),
+    });
+  } catch (err) {
+    return sendError(res, 500, "SERVER_ERROR", err.message);
+  }
+});
+
+// ──────────────────────────────────────────────
+// PATCH /admin/support/tickets/:id
+// Update ticket status (pv_admin only)
+// ──────────────────────────────────────────────
+router.patch("/admin/support/tickets/:id", requireJwt, async (req, res) => {
+  try {
+    if (req.systemRole !== "pv_admin") return sendError(res, 403, "FORBIDDEN", "Admin only");
+
+    const id = parseInt(req.params.id, 10);
+    if (!id) return sendError(res, 400, "VALIDATION_ERROR", "Invalid ticket ID");
+
+    const { status, resolutionNote } = req.body || {};
+    const data = {};
+    if (status) data.status = status;
+    if (resolutionNote) data.resolutionNote = resolutionNote;
+    if (status === "resolved") data.resolvedAt = new Date();
+
+    const ticket = await prisma.supportTicket.update({ where: { id }, data });
+
+    emitPvHook("support.ticket.updated", {
+      tc: "TC-SUPPORT-TICKET-02", sev: "info", stable: "support:ticket:updated",
+      ticketId: id, status: ticket.status,
+    });
+
+    return res.json({ ticket });
+  } catch (err) {
+    return sendError(res, 500, "SERVER_ERROR", err.message);
+  }
+});
+
 module.exports = router;
