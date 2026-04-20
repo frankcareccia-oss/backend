@@ -16,6 +16,7 @@ const { sendError, handlePrismaError } = require("../utils/errors");
 const { parseIntParam } = require("../utils/helpers");
 const { requireJwt, requireAdmin, requireMerchantRole } = require("../middleware/auth");
 const { emitPvHook } = require("../utils/hooks");
+const { detectConflicts } = require("./promo.conflict");
 const { draftPromoTerms, draftPromoDescription } = require("../utils/aiDraft");
 const { capturePromotionBaseline } = require("../growth/promotionOutcome.baseline");
 
@@ -538,7 +539,16 @@ router.post(
       });
       await logPromoAudit(promotion.id, req.userId, "created", null);
 
-      return res.status(201).json({ promotion });
+      // Check for conflicts with existing active promos
+      const conflicts = await detectConflicts({
+        id: promotion.id,
+        merchantId: req.merchantId,
+        promotionType: promotion.promotionType,
+        storeId: promotion.storeId,
+        categoryId: promotion.categoryId,
+      }, "draft").catch(() => []);
+
+      return res.status(201).json({ promotion, conflicts });
     } catch (err) {
       return handlePrismaError(err, res);
     }
@@ -620,6 +630,38 @@ router.post(
       if (err.code === "AI_UNAVAILABLE") return sendError(res, 503, "AI_UNAVAILABLE", err.message);
       console.error("[promo generate-description]", err?.message || err);
       return sendError(res, 500, "AI_ERROR", "Failed to generate promotion description");
+    }
+  }
+);
+
+// GET /merchant/promotions/:promotionId/conflicts
+// Pre-check for conflicts before activation
+router.get(
+  "/merchant/promotions/:promotionId/conflicts",
+  requireJwt,
+  requireMerchantRole("owner", "merchant_admin"),
+  async (req, res) => {
+    try {
+      const promotionId = parseIntParam(req.params.promotionId);
+      if (!promotionId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid promotionId");
+
+      const promo = await prisma.promotion.findFirst({
+        where: { id: promotionId, merchantId: req.merchantId },
+        select: { id: true, promotionType: true, storeId: true, categoryId: true },
+      });
+      if (!promo) return sendError(res, 404, "NOT_FOUND", "Promotion not found");
+
+      const conflicts = await detectConflicts({
+        id: promo.id,
+        merchantId: req.merchantId,
+        promotionType: promo.promotionType,
+        storeId: promo.storeId,
+        categoryId: promo.categoryId,
+      }, "activation");
+
+      return res.json({ conflicts, count: conflicts.length });
+    } catch (err) {
+      return handlePrismaError(err, res);
     }
   }
 );
@@ -753,7 +795,19 @@ router.patch(
         });
       }
 
-      return res.json({ promotion });
+      // Conflict check on activation
+      let conflicts = [];
+      if (data.status === "active") {
+        conflicts = await detectConflicts({
+          id: promotionId,
+          merchantId: req.merchantId,
+          promotionType: promotion.promotionType,
+          storeId: promotion.storeId,
+          categoryId: promotion.categoryId,
+        }, "activation").catch(() => []);
+      }
+
+      return res.json({ promotion, ...(conflicts.length > 0 ? { conflicts } : {}) });
     } catch (err) {
       return handlePrismaError(err, res);
     }
