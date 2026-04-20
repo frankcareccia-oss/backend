@@ -369,9 +369,75 @@ Write the 2-sentence pitch now:`;
   return msg.content?.[0]?.text?.trim() || "";
 }
 
+// ── Validation Insight (projected vs actual) ────────────────────────────────
+
+/**
+ * Generate an actionable insight comparing projected vs actual promotion performance.
+ * Returns 2-3 sentences — warm, specific, actionable. Never blame the merchant.
+ */
+async function draftValidationInsight({
+  merchantName, promotionName, objective,
+  projectedValue, actualValue, divergencePct,
+  attributionRate, durationDays,
+  direction, // "over" or "under"
+}) {
+  requireKey();
+
+  const prompt = `You are a friendly business advisor for "${merchantName || "a local shop"}". Their promotion "${promotionName}" has been running for ${durationDays} days.
+
+Objective: ${objective || "bring customers back"}
+Projected performance: ${projectedValue}
+Actual performance: ${actualValue}
+Difference: ${divergencePct > 0 ? "+" : ""}${divergencePct}% ${direction === "over" ? "above" : "below"} projection
+Attribution rate: ${attributionRate ? Math.round(attributionRate * 100) + "%" : "unknown"}
+
+Write 2-3 sentences of actionable, warm advice. Rules:
+- If underperforming: suggest concrete actions (staff training, signage, timing adjustments) — never blame the merchant
+- If overperforming: celebrate briefly, then mention budget implications
+- Reference the actual numbers, not abstract percentages
+- End with one specific next step
+- Be encouraging, not alarming
+- Never use "unfortunately" or "disappointing"
+
+Write the insight now:`;
+
+  const msg = await getClient().messages.create({
+    model: MODEL,
+    max_tokens: 150,
+    messages: [{ role: "user", content: prompt }],
+  });
+
+  return msg.content?.[0]?.text?.trim() || "";
+}
+
+/**
+ * Generate validation insights without AI (deterministic fallback).
+ * Used when ANTHROPIC_API_KEY is not set or AI call fails.
+ */
+function generateDeterministicInsight({
+  promotionName, divergencePct, direction, attributionRate, durationDays,
+}) {
+  const insights = [];
+
+  if (direction === "under") {
+    insights.push(`${promotionName} is performing ${Math.abs(divergencePct)}% below projection after ${durationDays} days.`);
+    if (attributionRate && attributionRate < 0.6) {
+      insights.push(`Your attribution rate is ${Math.round(attributionRate * 100)}% — try having your team ask every customer for their phone number to improve tracking.`);
+    } else {
+      insights.push("Consider adding counter signage or having staff mention the program at checkout to boost visibility.");
+    }
+  } else {
+    insights.push(`Great news — ${promotionName} is ${divergencePct}% ahead of projection after ${durationDays} days.`);
+    insights.push("You may want to review your budget to ensure it covers the increased activity.");
+  }
+
+  return insights.join(" ");
+}
+
 module.exports = {
   draftPromoTerms, draftBundleTerms,
   draftProductInfo, draftProductDescription,
   draftPromoDescription, draftBundleDescription,
   draftGrowthSummary,
+  draftValidationInsight, generateDeterministicInsight,
 };

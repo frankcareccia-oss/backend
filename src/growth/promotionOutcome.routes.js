@@ -12,6 +12,8 @@ const { prisma } = require("../db/prisma");
 const { sendError, handlePrismaError } = require("../utils/errors");
 const { requireJwt, requireMerchantRole } = require("../middleware/auth");
 const { computePromotionOutcome, computeAllPromotionOutcomes } = require("./promotionOutcome.aggregate");
+const { draftValidationInsight, generateDeterministicInsight } = require("../utils/aiDraft");
+const { checkDivergence } = require("../merchant/simulator.projections");
 
 const router = express.Router();
 
@@ -125,6 +127,100 @@ router.post(
     try {
       await computeAllPromotionOutcomes(prisma);
       return res.json({ ok: true, message: "Outcomes recomputed" });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  }
+);
+
+// GET /merchant/promotions/:promotionId/validation
+// Returns projected vs actual comparison + AI insight for a promotion
+router.get(
+  "/merchant/promotions/:promotionId/validation",
+  requireJwt,
+  requireMerchantRole("owner", "merchant_admin"),
+  async (req, res) => {
+    try {
+      const promotionId = parseInt(req.params.promotionId, 10);
+      if (!promotionId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid promotionId");
+
+      const promotion = await prisma.promotion.findFirst({
+        where: { id: promotionId, merchantId: req.merchantId },
+        select: { id: true, name: true, objective: true, firstActivatedAt: true, merchant: { select: { name: true } } },
+      });
+      if (!promotion) return sendError(res, 404, "NOT_FOUND", "Promotion not found");
+
+      // Get outcome data
+      const outcome = await prisma.promotionOutcome.findFirst({
+        where: { promotionId },
+        orderBy: { computedAt: "desc" },
+      });
+
+      if (!outcome || !outcome.durationDays || outcome.durationDays < 14) {
+        const daysActive = promotion.firstActivatedAt
+          ? Math.ceil((Date.now() - new Date(promotion.firstActivatedAt).getTime()) / (1000 * 60 * 60 * 24))
+          : 0;
+        return res.json({
+          ready: false,
+          daysActive,
+          daysNeeded: Math.max(0, 14 - daysActive),
+          message: `Need ${Math.max(0, 14 - daysActive)} more days of data for validation.`,
+        });
+      }
+
+      // Check divergence
+      const divergence = checkDivergence(
+        outcome.costProjectedCents || outcome.revenueProjectedCents,
+        outcome.costActualCents || outcome.revenueActualCents
+      );
+
+      // Generate insight
+      let insight = null;
+      if (divergence) {
+        try {
+          insight = await draftValidationInsight({
+            merchantName: promotion.merchant.name,
+            promotionName: promotion.name,
+            objective: outcome.objective,
+            projectedValue: outcome.primaryMetricProjected,
+            actualValue: outcome.primaryMetricActual,
+            divergencePct: divergence.divergencePct,
+            attributionRate: outcome.attributionRateAvg,
+            durationDays: outcome.durationDays,
+            direction: divergence.direction,
+          });
+        } catch {
+          insight = generateDeterministicInsight({
+            promotionName: promotion.name,
+            divergencePct: divergence.divergencePct,
+            direction: divergence.direction,
+            attributionRate: outcome.attributionRateAvg,
+            durationDays: outcome.durationDays,
+          });
+        }
+      }
+
+      return res.json({
+        ready: true,
+        outcome: {
+          objective: outcome.objective,
+          durationDays: outcome.durationDays,
+          primaryMetricProjected: outcome.primaryMetricProjected,
+          primaryMetricActual: outcome.primaryMetricActual,
+          revenueProjectedCents: outcome.revenueProjectedCents,
+          revenueActualCents: outcome.revenueActualCents,
+          costProjectedCents: outcome.costProjectedCents,
+          costActualCents: outcome.costActualCents,
+          enrollmentProjected: outcome.enrollmentProjected,
+          enrollmentActual: outcome.enrollmentActual,
+          attributionRateAvg: outcome.attributionRateAvg,
+          redemptionRate: outcome.redemptionRate,
+          aovLift: outcome.aovLift,
+          repeatVisitLift: outcome.repeatVisitLift,
+        },
+        divergence,
+        insight,
+      });
     } catch (err) {
       return handlePrismaError(err, res);
     }

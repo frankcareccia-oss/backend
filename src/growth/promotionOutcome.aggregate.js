@@ -1,9 +1,12 @@
 // src/growth/promotionOutcome.aggregate.js
 //
 // Async aggregation — computes PromotionOutcome from PromotionEvent + baseline.
+// Populates learning loop fields (projected vs actual) for the simulator.
 // Called on-demand or by cron. Never in the POS hot path.
 
 "use strict";
+
+const { projectByObjective } = require("../merchant/simulator.projections");
 
 /**
  * Compute and upsert PromotionOutcome for a single promotion.
@@ -104,6 +107,80 @@ async function computePromotionOutcome(prisma, { promotionId }) {
     }
   }
 
+  // ── Learning loop: projected vs actual via simulator engine ──
+  let learningLoop = {};
+  try {
+    const promo = await prisma.promotion.findUnique({
+      where: { id: promotionId },
+      select: {
+        objective: true, threshold: true, rewardValue: true,
+        promotionType: true, rewardType: true,
+        merchant: { select: { merchantType: true, avgTransactionValueCents: true } },
+      },
+    });
+
+    const objective = promo?.objective || "bring-back";
+    const daySpan = Math.max(1, Math.ceil((endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24)));
+
+    // Build baseline for projection
+    const summaries = await prisma.merchantDailySummary.findMany({
+      where: { merchantId: promotion.merchantId, storeId: null },
+      orderBy: { date: "desc" },
+      take: 30,
+    });
+    const dataAgeDays = summaries.length;
+    const avgDailyVisitors = dataAgeDays > 0
+      ? Math.round(summaries.reduce((s, r) => s + r.totalTransactions, 0) / dataAgeDays) : 0;
+    const attributionRate = dataAgeDays > 0
+      ? summaries.reduce((s, r) => s + r.attributionRate, 0) / dataAgeDays : 0;
+
+    const enrolled = await prisma.consumerPromoProgress.count({ where: { promotionId } });
+
+    const projBaseline = {
+      avgDailyVisitors,
+      attributionRate,
+      avgVisitsPerConsumerPerMonth: 2.5,
+      currentEnrolled: enrolled,
+      enrollmentConversionRate: 0.15,
+      avgTransactionValueCents: promo?.merchant?.avgTransactionValueCents || 0,
+      dataAgeDays,
+    };
+
+    const params = {
+      stampThreshold: promo?.threshold || 8,
+      rewardValueCents: promo?.rewardValue || 500,
+      promotionType: promo?.promotionType || "stamp",
+    };
+
+    const projection = projectByObjective(objective, projBaseline, params, promo?.merchant?.merchantType);
+
+    // Actual metrics from summary data during promo period
+    const promoSummaries = await prisma.promotionDailySummary.findMany({
+      where: { promotionId, date: { gte: startDate, lte: endDate } },
+    });
+    const actualRedemptionValue = promoSummaries.reduce((s, r) => s + (r.redemptionValueCents || 0), 0);
+    const actualEnrollments = promoSummaries.reduce((s, r) => s + (r.newEnrollments || 0), 0);
+
+    // Scale projected monthly values to the actual duration
+    const monthFraction = daySpan / 30;
+
+    learningLoop = {
+      objective,
+      primaryMetricProjected: parseFloat(projection.projectedValue) || null,
+      primaryMetricActual: null, // Objective-specific — set below
+      revenueProjectedCents: Math.round((projection.projectedMonthlyRevenueCents || 0) * monthFraction),
+      revenueActualCents: actualRedemptionValue > 0 ? Math.round(actualRedemptionValue * 2.5) : null, // rough revenue proxy
+      costProjectedCents: Math.round((projection.projectedMonthlyCostCents || 0) * monthFraction),
+      costActualCents: actualRedemptionValue,
+      enrollmentProjected: Math.round((enrolled * 0.15) * monthFraction), // projected new enrollments
+      enrollmentActual: actualEnrollments,
+      attributionRateAvg: Math.round(attributionRate * 100) / 100,
+      durationDays: daySpan,
+    };
+  } catch (e) {
+    console.error(`[outcome.aggregate] learning loop error promo=${promotionId}:`, e?.message || String(e));
+  }
+
   // Upsert outcome
   const existing = await prisma.promotionOutcome.findFirst({
     where: { promotionId },
@@ -126,6 +203,7 @@ async function computePromotionOutcome(prisma, { promotionId }) {
     baselineAovCents: baseline?.avgOrderValueCents || null,
     baselineVisits: baseline?.repeatRate !== null ? baseline?.repeatRate : null,
     baselineRevenueCents: baseline?.dailyRevenueCents || null,
+    ...learningLoop,
     computedAt: new Date(),
   };
 
