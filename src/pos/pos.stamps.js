@@ -17,6 +17,7 @@ const { writeOutboxEvent } = require("../events/event.outbox.service");
 const { issueGiftCardReward } = require("./pos.giftcard");
 const { recordCloverRewardEarned } = require("./pos.clover.discount");
 const { checkReferralReward } = require("../promo/promo.referral");
+const { processBundleItems } = require("../promo/promo.bundle");
 const { selectWinningPromotion, buildNotificationText, applyMultiplier } = require("./pos.precedence.engine");
 
 /**
@@ -426,6 +427,21 @@ async function accumulateStamps(prisma, { consumerId, merchantId, storeId, visit
       `[stamps] accumulate failed — consumerId=${consumerId} promotionId=${promo.id}:`,
       e?.message || String(e)
     );
+  }
+
+  // ── Process bundle items (fire-and-forget) ──────────────────
+  // If the order has line items, check them against active bundle promos
+  if (orderId) {
+    prisma.posOrderItem.findMany({
+      where: { posOrderId: parseInt(orderId, 10) || undefined },
+      select: { itemName: true },
+    }).then(items => {
+      if (items.length > 0) {
+        processBundleItems({ consumerId, merchantId, orderItems: items }).catch(e => {
+          console.error("[pos.stamps] bundle processing error:", e?.message || String(e));
+        });
+      }
+    }).catch(() => {});
   }
 
   // ── Check for referral rewards (fire-and-forget) ────────────

@@ -1094,9 +1094,10 @@ model Promotion {
   dailySummaries PromotionDailySummary[]
 
   // Advanced promotion types
-  tiers         PromotionTier[]
-  conditions    PromotionCondition[]
-  referralCodes ReferralCode[]
+  tiers            PromotionTier[]
+  conditions       PromotionCondition[]
+  referralCodes    ReferralCode[]
+  bundleDefinition BundleDefinition?
 
   @@index([merchantId, status])
 }
@@ -1146,6 +1147,37 @@ model PromotionCondition {
   createdAt       DateTime @default(now())
 
   @@index([promotionId])
+}
+
+/// Bundle promotion definition — which items are in the bundle and pricing.
+/// Items stored as JSON array: [{ sku, name, quantity }]
+model BundleDefinition {
+  id               Int       @id @default(autoincrement())
+  promotionId      Int       @unique
+  promotion        Promotion @relation(fields: [promotionId], references: [id])
+  items            Json      // [{ sku: "LATTE", name: "Latte", quantity: 1 }, ...]
+  bundlePriceCents Int       // what the consumer pays for the complete bundle
+  savingsCents     Int       // how much they save vs individual prices
+  validityDays     Int       @default(30) // days to complete the bundle
+  createdAt        DateTime  @default(now())
+}
+
+/// Tracks per-consumer bundle completion progress.
+/// checkedItems is a JSON array of item SKUs that have been purchased.
+model BundleProgress {
+  id            Int      @id @default(autoincrement())
+  consumerId    Int
+  promotionId   Int
+  merchantId    Int
+  checkedItems  Json     @default("[]") // ["LATTE", "MUFFIN"] — items purchased so far
+  complete      Boolean  @default(false)
+  startedAt     DateTime @default(now())
+  completedAt   DateTime?
+
+  @@unique([consumerId, promotionId])
+  @@index([consumerId])
+  @@index([promotionId])
+  @@index([merchantId])
 }
 
 /// Referral code — unique per consumer per referral promotion.
