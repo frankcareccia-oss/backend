@@ -188,4 +188,102 @@ async function computeVisitFrequency(prisma, { merchantId, since, now, consumerI
   return gapCount > 0 ? Math.round((totalGap / gapCount) * 10) / 10 : null;
 }
 
-module.exports = { getMerchantGrowthMetrics };
+/**
+ * Enrich base metrics with v2 data for advanced pattern detection.
+ * Uses pre-aggregated summary tables — fast.
+ */
+async function enrichWithV2Metrics(prisma, baseMetrics, { merchantId }) {
+  try {
+    const now = new Date();
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 86400000);
+    const fourteenDaysAgo = new Date(now.getTime() - 14 * 86400000);
+
+    // Attribution trend: last 7d vs prior 7d
+    const [recentSummaries, priorSummaries] = await Promise.all([
+      prisma.merchantDailySummary.findMany({
+        where: { merchantId, storeId: null, date: { gte: sevenDaysAgo } },
+      }),
+      prisma.merchantDailySummary.findMany({
+        where: { merchantId, storeId: null, date: { gte: fourteenDaysAgo, lt: sevenDaysAgo } },
+      }),
+    ]);
+
+    const avgAttr = (rows) => rows.length > 0 ? rows.reduce((s, r) => s + r.attributionRate, 0) / rows.length : null;
+    const recentAttr = avgAttr(recentSummaries);
+    const priorAttr = avgAttr(priorSummaries);
+    if (recentAttr != null && priorAttr != null) {
+      baseMetrics.attributionTrend = { current: recentAttr, prior: priorAttr };
+    }
+
+    // Revenue week-over-week
+    const sumRevenue = (rows) => rows.reduce((s, r) => s + (r.totalTransactions || 0), 0);
+    const recentRev = sumRevenue(recentSummaries);
+    const priorRev = sumRevenue(priorSummaries);
+    if (priorRev > 0) {
+      baseMetrics.revenueWeekOverWeek = { current: recentRev, prior: priorRev };
+    }
+
+    // Promo stall rate: consumers enrolled but not progressing (stampCount unchanged for 14+ days)
+    const allProgress = await prisma.consumerPromoProgress.findMany({
+      where: { merchantId, stampCount: { gt: 0 } },
+      select: { lastEarnedAt: true, stampCount: true, promotion: { select: { name: true, threshold: true } } },
+    });
+    if (allProgress.length > 0) {
+      const stalled = allProgress.filter(p => p.lastEarnedAt && (now.getTime() - new Date(p.lastEarnedAt).getTime()) > 14 * 86400000);
+      baseMetrics.promoStallRate = stalled.length / allProgress.length;
+      if (stalled.length > 0) {
+        baseMetrics.stalledPromoName = stalled[0].promotion?.name || null;
+      }
+    }
+
+    // Tier bottleneck: check if consumers cluster at a tier level
+    const tieredPromos = await prisma.promotion.findMany({
+      where: { merchantId, promotionType: "tiered", status: "active" },
+      include: { tiers: { orderBy: { tierLevel: "asc" } } },
+    });
+    for (const tp of tieredPromos) {
+      if (tp.tiers.length < 2) continue;
+      const progress = await prisma.consumerPromoProgress.findMany({
+        where: { promotionId: tp.id, currentTierLevel: { gt: 0 } },
+        select: { currentTierLevel: true },
+      });
+      if (progress.length < 5) continue;
+
+      // Count per tier
+      const tierCounts = {};
+      for (const p of progress) tierCounts[p.currentTierLevel] = (tierCounts[p.currentTierLevel] || 0) + 1;
+
+      // Find bottleneck: tier with most consumers where next tier has significantly fewer
+      for (let i = 0; i < tp.tiers.length - 1; i++) {
+        const currentTier = tp.tiers[i];
+        const nextTier = tp.tiers[i + 1];
+        const atCurrent = tierCounts[currentTier.tierLevel] || 0;
+        const atNext = tierCounts[nextTier.tierLevel] || 0;
+        if (atCurrent > 3 && atNext < atCurrent * 0.3) {
+          baseMetrics.tierBottleneck = {
+            promoName: tp.name,
+            tierName: currentTier.tierName,
+            nextTierName: nextTier.tierName,
+            countAtTier: atCurrent,
+            countAtNext: atNext,
+            nextThreshold: nextTier.threshold,
+          };
+          break;
+        }
+      }
+    }
+
+    // Referral opportunity check
+    const hasReferral = await prisma.promotion.findFirst({
+      where: { merchantId, promotionType: "referral", status: "active" },
+    });
+    baseMetrics.hasReferralPromo = !!hasReferral;
+
+  } catch (e) {
+    console.error("[growth.metrics] v2 enrichment error:", e?.message || String(e));
+  }
+
+  return baseMetrics;
+}
+
+module.exports = { getMerchantGrowthMetrics, enrichWithV2Metrics };

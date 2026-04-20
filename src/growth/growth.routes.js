@@ -9,7 +9,7 @@ const express = require("express");
 const { prisma } = require("../db/prisma");
 const { sendError, handlePrismaError } = require("../utils/errors");
 const { requireJwt, requireMerchantRole } = require("../middleware/auth");
-const { getMerchantGrowthMetrics } = require("./growth.metrics.service");
+const { getMerchantGrowthMetrics, enrichWithV2Metrics } = require("./growth.metrics.service");
 const { detectGrowthPatterns } = require("./growth.patterns");
 const { selectPlaybooks } = require("./growth.playbooks");
 const { buildGrowthSummary } = require("./growth.summary");
@@ -27,10 +27,11 @@ router.get(
       const merchantId = req.merchantId;
       const storeId = req.query.storeId ? parseInt(req.query.storeId, 10) : undefined;
 
-      // Step 1: Aggregate metrics
-      const metrics = await getMerchantGrowthMetrics(prisma, { merchantId, storeId });
+      // Step 1: Aggregate metrics + v2 enrichment
+      const baseMetrics = await getMerchantGrowthMetrics(prisma, { merchantId, storeId });
+      const metrics = await enrichWithV2Metrics(prisma, baseMetrics, { merchantId });
 
-      // Step 2: Detect patterns
+      // Step 2: Detect patterns (v1 + v2)
       const patterns = detectGrowthPatterns(metrics);
 
       // Step 3: Select and personalize playbooks

@@ -100,6 +100,62 @@ function detectGrowthPatterns(metrics) {
     });
   }
 
+  // ── V2 patterns (use enriched metrics) ────────────────────
+
+  // 6. Attribution rate declining — team may not be asking for phone numbers
+  if (metrics.attributionTrend) {
+    const { current, prior } = metrics.attributionTrend;
+    if (current < 0.5 && current < prior * 0.85) {
+      patterns.push({
+        type: "attribution_declining",
+        severity: current < 0.4 ? "high" : "medium",
+        detail: { current: Math.round(current * 100), prior: Math.round(prior * 100), dropPct: Math.round((1 - current / prior) * 100) },
+      });
+    }
+  }
+
+  // 7. Promotion stalling — enrolled consumers not progressing
+  if (metrics.promoStallRate != null && metrics.promoStallRate > 0.60) {
+    patterns.push({
+      type: "promo_stalling",
+      severity: metrics.promoStallRate > 0.80 ? "high" : "medium",
+      detail: { stallRate: Math.round(metrics.promoStallRate * 100), promoName: metrics.stalledPromoName },
+    });
+  }
+
+  // 8. Tiered bottleneck — consumers cluster at a specific tier
+  if (metrics.tierBottleneck) {
+    patterns.push({
+      type: "tier_bottleneck",
+      severity: "medium",
+      detail: metrics.tierBottleneck,
+    });
+  }
+
+  // 9. Referral opportunity — high repeat rate but no referral program
+  if (metrics.repeatRate > 0.40 && !metrics.hasReferralPromo) {
+    patterns.push({
+      type: "referral_opportunity",
+      severity: "medium",
+      detail: { repeatRate: Math.round(metrics.repeatRate * 100) },
+    });
+  }
+
+  // 10. Revenue momentum — compare last 7d to prior 7d
+  if (metrics.revenueWeekOverWeek) {
+    const { current, prior } = metrics.revenueWeekOverWeek;
+    if (prior > 0) {
+      const changePct = Math.round(((current - prior) / prior) * 100);
+      if (Math.abs(changePct) > 15) {
+        patterns.push({
+          type: changePct > 0 ? "revenue_momentum_up" : "revenue_momentum_down",
+          severity: Math.abs(changePct) > 30 ? "high" : "info",
+          detail: { changePct, currentWeekCents: current, priorWeekCents: prior },
+        });
+      }
+    }
+  }
+
   return patterns;
 }
 
