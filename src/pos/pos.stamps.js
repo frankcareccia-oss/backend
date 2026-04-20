@@ -60,6 +60,8 @@ async function accumulateStamps(prisma, { consumerId, merchantId, storeId, visit
       rewardExpiryDays: true,
       storeId: true,
       timeframeDays: true,
+      promotionType: true,
+      tiers: { orderBy: { tierLevel: "asc" } },
     },
   });
 
@@ -78,13 +80,14 @@ async function accumulateStamps(prisma, { consumerId, merchantId, storeId, visit
     include: { promotion: true },
   });
 
-  // Build progress map: promotionId → progress record (with promotion attached)
+  // Build progress map: promotionId → progress record
   const progressMap = new Map(existingProgress.map(p => [p.promotionId, p]));
 
   // For promos without progress yet, create virtual records for the engine
+  // Always use the promotion from our initial query (which includes tiers)
   const allProgress = promotions.map(promo => {
     const existing = progressMap.get(promo.id);
-    if (existing) return existing;
+    if (existing) return { ...existing, promotion: promo };
     // Virtual record for a promo the consumer hasn't started yet
     return {
       id: null,
@@ -135,9 +138,11 @@ async function accumulateStamps(prisma, { consumerId, merchantId, storeId, visit
   const results = [];
 
   try {
+    const isTiered = promo.promotionType === "tiered" && promo.tiers && promo.tiers.length > 0;
+
     const result = await prisma.$transaction(async (tx) => {
-      // Check if non-repeatable promo already earned a reward
-      if (!promo.repeatable) {
+      // Check if non-repeatable stamp promo already earned a reward
+      if (!isTiered && !promo.repeatable) {
         const existing = await tx.consumerPromoProgress.findUnique({
           where: { consumerId_promotionId: { consumerId, promotionId: promo.id } },
           select: { lifetimeEarned: true },
@@ -159,6 +164,7 @@ async function accumulateStamps(prisma, { consumerId, merchantId, storeId, visit
           lastEarnedAt: now,
           lastPrecedenceReason: reason,
           lastPrecedenceAt: now,
+          currentTierLevel: 0,
         },
         update: {
           stampCount: { increment: stampsToAward },
@@ -167,59 +173,122 @@ async function accumulateStamps(prisma, { consumerId, merchantId, storeId, visit
           lastPrecedenceReason: reason,
           lastPrecedenceAt: now,
         },
-        select: { id: true, stampCount: true },
+        select: { id: true, stampCount: true, lifetimeEarned: true, currentTierLevel: true },
       });
 
-      const milestoneEarned = upserted.stampCount % promo.threshold === 0 && upserted.stampCount > 0;
+      let milestoneEarned = false;
+      let tierCrossed = null;
 
-      if (milestoneEarned) {
-        // Reset stampCount to 0 (new card) and increment milestonesAvailable
-        await tx.consumerPromoProgress.update({
-          where: { id: upserted.id },
-          data: { stampCount: 0, milestonesAvailable: { increment: 1 } },
-        });
+      if (isTiered) {
+        // ── Tiered: check if any new tier thresholds were crossed ──
+        const newTiers = promo.tiers.filter(t =>
+          t.tierLevel > (upserted.currentTierLevel || 0) &&
+          upserted.lifetimeEarned >= t.threshold
+        );
 
-        // Create PromoRedemption so wallet can resolve promotion details
-        const redemption = await tx.promoRedemption.create({
-          data: {
-            progressId: upserted.id,
-            promotionId: promo.id,
-            consumerId,
-            merchantId,
-            pointsDecremented: promo.threshold,
-            balanceBefore: promo.threshold,
-            balanceAfter: 0,
-            status: "granted",
-            grantedAt: now,
-            grantedByStoreId: storeId || null,
-          },
-        });
+        if (newTiers.length > 0) {
+          // Take the highest tier crossed (consumer may skip tiers on bonus stamps)
+          tierCrossed = newTiers[newTiers.length - 1];
+          milestoneEarned = true;
 
-        await tx.entitlement.create({
-          data: {
-            consumerId,
-            merchantId,
-            storeId: storeId || null,
-            type: "reward",
-            sourceId: redemption.id,
-            status: "active",
-            metadataJson: {
-              displayLabel: buildDisplayLabel(promo),
-              rewardProgramId: promo.id,
-              issuedVisitId: visitId || null,
+          // Update tier level (permanent — never resets)
+          await tx.consumerPromoProgress.update({
+            where: { id: upserted.id },
+            data: {
+              currentTierLevel: tierCrossed.tierLevel,
+              milestonesAvailable: { increment: newTiers.length },
             },
-          },
-        });
+          });
+
+          // Grant reward for each tier crossed (all available on next visit)
+          for (const tier of newTiers) {
+            const tierPromo = { ...promo, rewardType: tier.rewardType, rewardValue: tier.rewardValue, rewardNote: tier.rewardNote };
+            const redemption = await tx.promoRedemption.create({
+              data: {
+                progressId: upserted.id,
+                promotionId: promo.id,
+                consumerId,
+                merchantId,
+                pointsDecremented: 0, // tiered doesn't decrement
+                balanceBefore: upserted.lifetimeEarned,
+                balanceAfter: upserted.lifetimeEarned,
+                status: "granted",
+                grantedAt: now,
+                grantedByStoreId: storeId || null,
+              },
+            });
+
+            await tx.entitlement.create({
+              data: {
+                consumerId,
+                merchantId,
+                storeId: storeId || null,
+                type: "reward",
+                sourceId: redemption.id,
+                status: "active",
+                metadataJson: {
+                  displayLabel: `${tier.tierName}: ${buildDisplayLabel(tierPromo)}`,
+                  rewardProgramId: promo.id,
+                  tierName: tier.tierName,
+                  tierLevel: tier.tierLevel,
+                  issuedVisitId: visitId || null,
+                },
+              },
+            });
+          }
+        }
+        // Tiered promos don't reset stampCount — lifetimeEarned is the progress metric
+      } else {
+        // ── Standard stamp: check threshold crossing ──
+        milestoneEarned = upserted.stampCount % promo.threshold === 0 && upserted.stampCount > 0;
+
+        if (milestoneEarned) {
+          await tx.consumerPromoProgress.update({
+            where: { id: upserted.id },
+            data: { stampCount: 0, milestonesAvailable: { increment: 1 } },
+          });
+
+          const redemption = await tx.promoRedemption.create({
+            data: {
+              progressId: upserted.id,
+              promotionId: promo.id,
+              consumerId,
+              merchantId,
+              pointsDecremented: promo.threshold,
+              balanceBefore: promo.threshold,
+              balanceAfter: 0,
+              status: "granted",
+              grantedAt: now,
+              grantedByStoreId: storeId || null,
+            },
+          });
+
+          await tx.entitlement.create({
+            data: {
+              consumerId,
+              merchantId,
+              storeId: storeId || null,
+              type: "reward",
+              sourceId: redemption.id,
+              status: "active",
+              metadataJson: {
+                displayLabel: buildDisplayLabel(promo),
+                rewardProgramId: promo.id,
+                issuedVisitId: visitId || null,
+              },
+            },
+          });
+        }
       }
 
-      // Write outbox event in same transaction as business truth
+      // Write outbox event
       try {
         await writeOutboxEvent(tx, {
           eventType: milestoneEarned ? "reward_granted" : "stamp_recorded",
           aggregateType: "reward",
           aggregateId: String(upserted.id),
           idempotencyKey: milestoneEarned
-            ? `reward_granted:${consumerId}:${promo.id}:${upserted.stampCount}:${visitId || Date.now()}`
+            ? `reward_granted:${consumerId}:${promo.id}:${upserted.lifetimeEarned}:${visitId || Date.now()}`
             : `stamp_recorded:${consumerId}:${promo.id}:${upserted.stampCount}:${visitId || Date.now()}`,
           merchantId,
           storeId: storeId || null,
@@ -227,9 +296,11 @@ async function accumulateStamps(prisma, { consumerId, merchantId, storeId, visit
           payload: {
             promotionId: promo.id,
             promotionName: promo.name,
-            stampCount: milestoneEarned ? 0 : upserted.stampCount,
+            promotionType: promo.promotionType || "stamp",
+            stampCount: isTiered ? upserted.lifetimeEarned : (milestoneEarned ? 0 : upserted.stampCount),
             threshold: promo.threshold,
             milestoneEarned,
+            tierCrossed: tierCrossed ? { name: tierCrossed.tierName, level: tierCrossed.tierLevel } : null,
             precedenceReason: reason,
             stampsAwarded: stampsToAward,
             visitId: visitId || null,
@@ -242,8 +313,9 @@ async function accumulateStamps(prisma, { consumerId, merchantId, storeId, visit
       return {
         progressId: upserted.id,
         promotionId: promo.id,
-        stampCount: milestoneEarned ? 0 : upserted.stampCount,
+        stampCount: isTiered ? upserted.lifetimeEarned : (milestoneEarned ? 0 : upserted.stampCount),
         milestoneEarned,
+        tierCrossed: tierCrossed ? { name: tierCrossed.tierName, level: tierCrossed.tierLevel } : null,
         precedenceReason: reason,
         stampsAwarded: stampsToAward,
       };
@@ -289,12 +361,21 @@ async function accumulateStamps(prisma, { consumerId, merchantId, storeId, visit
       });
 
       // Issue reward for NEXT visit (fire-and-forget — never blocks the pipeline)
+      // For tiered promos, use the tier's reward details
+      const rewardPromo = result.tierCrossed
+        ? {
+            ...promo,
+            rewardType: promo.tiers?.find(t => t.tierLevel === result.tierCrossed.level)?.rewardType || promo.rewardType,
+            rewardValue: promo.tiers?.find(t => t.tierLevel === result.tierCrossed.level)?.rewardValue || promo.rewardValue,
+          }
+        : promo;
+
       if (posType === "clover") {
-        recordCloverRewardEarned({ consumerId, merchantId, promo, entitlementId: null }).catch(e => {
+        recordCloverRewardEarned({ consumerId, merchantId, promo: rewardPromo, entitlementId: null }).catch(e => {
           console.error("[pos.stamps] clover reward earned error:", e?.message || String(e));
         });
       } else {
-        issueGiftCardReward({ consumerId, merchantId, promo }).catch(e => {
+        issueGiftCardReward({ consumerId, merchantId, promo: rewardPromo }).catch(e => {
           console.error("[pos.stamps] gift card reward error:", e?.message || String(e));
         });
       }

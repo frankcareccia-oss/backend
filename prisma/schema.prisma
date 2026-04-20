@@ -1093,7 +1093,28 @@ model Promotion {
   // Reporting summaries
   dailySummaries PromotionDailySummary[]
 
+  // Advanced promotion types
+  tiers PromotionTier[]
+
   @@index([merchantId, status])
+}
+
+/// Tiered reward levels for tiered promotions.
+/// Each tier has its own threshold and reward. Consumer progresses through tiers
+/// as lifetime visits accumulate. Tier status is permanent — never resets.
+model PromotionTier {
+  id            Int    @id @default(autoincrement())
+  promotionId   Int
+  promotion     Promotion @relation(fields: [promotionId], references: [id])
+  tierName      String @db.VarChar(50)  // "Bronze", "Silver", "Gold"
+  tierLevel     Int    // 1, 2, 3 — ordering
+  threshold     Int    // lifetime visits to reach this tier
+  rewardType    String @db.VarChar(20)  // discount_fixed, discount_pct, free_item, custom
+  rewardValue   Int?   // cents for discount_fixed, percent for discount_pct
+  rewardNote    String? @db.VarChar(500) // description for free_item or custom
+
+  @@unique([promotionId, tierLevel])
+  @@index([promotionId])
 }
 
 /// Junction: which PromoItems trigger a Promotion.
@@ -1188,6 +1209,9 @@ model ConsumerPromoProgress {
   promotion   Promotion         @relation(fields: [promotionId], references: [id])
   merchant    Merchant          @relation(fields: [merchantId], references: [id])
   redemptions PromoRedemption[]
+
+  /// Tiered promotions: current tier level reached (permanent, never resets)
+  currentTierLevel     Int       @default(0) // 0 = no tier yet, 1 = Bronze, etc.
 
   /// Precedence engine: why this promo was selected last time
   lastPrecedenceReason String?   // closest_to_expiry, closest_to_milestone, highest_value, only_one_promo

@@ -81,6 +81,8 @@ router.get("/me/promotions", requireConsumerJwt, async (req, res) => {
         rewardNote: true,
         startAt: true,
         endAt: true,
+        promotionType: true,
+        tiers: { orderBy: { tierLevel: "asc" }, select: { tierName: true, tierLevel: true, threshold: true, rewardType: true, rewardValue: true, rewardNote: true } },
         category: {
           select: { id: true, name: true, categoryType: true },
         },
@@ -110,32 +112,36 @@ router.get("/me/promotions", requireConsumerJwt, async (req, res) => {
       : [];
     const progressMap = Object.fromEntries(progressRows.map(r => [r.promotionId, r]));
 
-    const result = live.map(p => ({
-      id: p.id,
-      merchantId: p.merchantId,
-      merchantName: p.merchant.name,
-      stores: (p.merchant.stores || []).map(st => ({
-        id: st.id,
-        name: st.name,
-        city: st.city,
-        state: st.state,
-      })),
-      name: p.name,
-      description: p.description,
-      legalText: p.legalText || null,
-      mechanic: p.mechanic,
-      threshold: p.threshold,
-      earnPerUnit: p.earnPerUnit,
-      timeframeDays: p.timeframeDays,
-      rewardLabel: rewardLabel(p),
-      rewardType: p.rewardType,
-      category: p.category
-        ? { id: p.category.id, name: p.category.name, isVisit: p.category.categoryType === "visit" }
-        : null,
-      startAt: p.startAt,
-      endAt: p.endAt,
-      progress: progressSummary(progressMap[p.id], p.threshold),
-    }));
+    const result = live.map(p => {
+      const prog = progressMap[p.id];
+      const isTiered = p.promotionType === "tiered" && p.tiers?.length > 0;
+      return {
+        id: p.id,
+        merchantId: p.merchantId,
+        merchantName: p.merchant.name,
+        stores: (p.merchant.stores || []).map(st => ({
+          id: st.id, name: st.name, city: st.city, state: st.state,
+        })),
+        name: p.name,
+        description: p.description,
+        legalText: p.legalText || null,
+        mechanic: p.mechanic,
+        threshold: p.threshold,
+        earnPerUnit: p.earnPerUnit,
+        timeframeDays: p.timeframeDays,
+        rewardLabel: rewardLabel(p),
+        rewardType: p.rewardType,
+        promotionType: p.promotionType || "stamp",
+        tiers: isTiered ? p.tiers : undefined,
+        currentTierLevel: isTiered && prog ? prog.currentTierLevel : undefined,
+        category: p.category
+          ? { id: p.category.id, name: p.category.name, isVisit: p.category.categoryType === "visit" }
+          : null,
+        startAt: p.startAt,
+        endAt: p.endAt,
+        progress: progressSummary(prog, p.threshold),
+      };
+    });
 
     return res.json({ promotions: result, total: result.length });
   } catch (err) {
