@@ -226,9 +226,9 @@ describe("POST /merchant/promotions (conditional)", () => {
   beforeAll(async () => {
     app = getApp();
     // Don't resetDb — other tests may have run. Just create our own merchant.
-    merchant = await createMerchant({ name: "Cond Test Shop" });
+    merchant = await createMerchant({ name: "Cond Test Shop " + Date.now() });
     const cat = await prisma.productCategory.create({ data: { merchantId: merchant.id, name: "Drinks" } });
-    const owner = await createUser({ email: "cond-owner@test.com" });
+    const owner = await createUser({ email: `cond-owner-${Date.now()}@test.com` });
     await addMerchantUser({ merchantId: merchant.id, userId: owner.id, role: "owner" });
     auth = authHeader(merchantToken({ userId: owner.id, merchantId: merchant.id }));
   }, 10000);

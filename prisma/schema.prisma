@@ -1094,8 +1094,9 @@ model Promotion {
   dailySummaries PromotionDailySummary[]
 
   // Advanced promotion types
-  tiers      PromotionTier[]
-  conditions PromotionCondition[]
+  tiers         PromotionTier[]
+  conditions    PromotionCondition[]
+  referralCodes ReferralCode[]
 
   @@index([merchantId, status])
 }
@@ -1145,6 +1146,44 @@ model PromotionCondition {
   createdAt       DateTime @default(now())
 
   @@index([promotionId])
+}
+
+/// Referral code — unique per consumer per referral promotion.
+/// Referrer shares code, referee uses it at signup or first visit.
+/// Both get rewarded when referee makes first purchase.
+model ReferralCode {
+  id            Int      @id @default(autoincrement())
+  promotionId   Int
+  promotion     Promotion @relation(fields: [promotionId], references: [id])
+  consumerId    Int      // the referrer
+  code          String   @unique @db.VarChar(20) // e.g. "JANE-BLVD-X7K2"
+  usedCount     Int      @default(0)
+  maxUses       Int      @default(10) // cap per referrer
+  createdAt     DateTime @default(now())
+
+  redemptions   ReferralRedemption[]
+
+  @@index([consumerId])
+  @@index([promotionId])
+}
+
+/// Tracks each successful referral — one row per referee.
+model ReferralRedemption {
+  id              Int      @id @default(autoincrement())
+  referralCodeId  Int
+  referralCode    ReferralCode @relation(fields: [referralCodeId], references: [id])
+  referrerId      Int      // who referred
+  refereeId       Int      // who was referred
+  merchantId      Int
+  firstPurchaseAt DateTime? // when referee made first purchase (triggers rewards)
+  referrerRewarded Boolean @default(false)
+  refereeRewarded  Boolean @default(false)
+  createdAt       DateTime @default(now())
+
+  @@unique([referralCodeId, refereeId])
+  @@index([referralCodeId])
+  @@index([refereeId])
+  @@index([merchantId])
 }
 
 /// Junction: which PromoItems trigger a Promotion.
@@ -1279,7 +1318,7 @@ model PromotionPrecedenceLog {
 /// One reward grant event — created when consumer confirms intent to redeem.
 model PromoRedemption {
   id          Int @id @default(autoincrement())
-  progressId  Int
+  progressId  Int?  // null for referral rewards (no stamp progress)
   promotionId Int
   consumerId  Int
   merchantId  Int // denormalized
@@ -1305,7 +1344,7 @@ model PromoRedemption {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  progress   ConsumerPromoProgress @relation(fields: [progressId], references: [id])
+  progress   ConsumerPromoProgress? @relation(fields: [progressId], references: [id])
   promotion  Promotion             @relation(fields: [promotionId], references: [id])
   consumer   Consumer              @relation(fields: [consumerId], references: [id])
   grantedBy  User?                 @relation("GrantedByUser", fields: [grantedByUserId], references: [id])

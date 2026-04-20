@@ -12,6 +12,7 @@ const express = require("express");
 const { prisma } = require("../db/prisma");
 const { sendError, handlePrismaError } = require("../utils/errors");
 const { requireConsumerJwt } = require("../middleware/auth");
+const { getOrCreateReferralCode, applyReferralCode } = require("../promo/promo.referral");
 
 const router = express.Router();
 
@@ -336,6 +337,73 @@ router.post("/me/scan", requireConsumerJwt, async (req, res) => {
       storeName: store.name || null,
       merchantId: store.merchantId,
       merchantName: store.merchant?.name || null,
+    });
+  } catch (err) {
+    return handlePrismaError(err, res);
+  }
+});
+
+// ──────────────────────────────────────────────
+// GET /me/referral-code/:promotionId
+// Get or create the consumer's referral code for a referral promotion.
+// ──────────────────────────────────────────────
+router.get("/me/referral-code/:promotionId", requireConsumerJwt, async (req, res) => {
+  try {
+    const promotionId = parseInt(req.params.promotionId, 10);
+    if (!promotionId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid promotionId");
+
+    const promo = await prisma.promotion.findUnique({
+      where: { id: promotionId },
+      select: { id: true, promotionType: true, status: true },
+    });
+    if (!promo || promo.promotionType !== "referral") {
+      return sendError(res, 400, "INVALID_TYPE", "This is not a referral promotion");
+    }
+    if (promo.status !== "active") {
+      return sendError(res, 400, "PROMO_INACTIVE", "This referral program is not active");
+    }
+
+    const referralCode = await getOrCreateReferralCode(req.consumerId, promotionId);
+
+    // Get stats
+    const redemptions = await prisma.referralRedemption.findMany({
+      where: { referralCodeId: referralCode.id },
+      select: { firstPurchaseAt: true },
+    });
+
+    return res.json({
+      code: referralCode.code,
+      usedCount: referralCode.usedCount,
+      maxUses: referralCode.maxUses,
+      successfulReferrals: redemptions.filter(r => r.firstPurchaseAt).length,
+      pendingReferrals: redemptions.filter(r => !r.firstPurchaseAt).length,
+    });
+  } catch (err) {
+    return handlePrismaError(err, res);
+  }
+});
+
+// ──────────────────────────────────────────────
+// POST /me/referral/apply
+// Apply a referral code — called when a new consumer enters a referral code.
+// Body: { code }
+// ──────────────────────────────────────────────
+router.post("/me/referral/apply", requireConsumerJwt, async (req, res) => {
+  try {
+    const { code } = req.body || {};
+    if (!code || !String(code).trim()) {
+      return sendError(res, 400, "VALIDATION_ERROR", "Referral code is required");
+    }
+
+    const result = await applyReferralCode(req.consumerId, String(code).trim().toUpperCase());
+
+    if (!result.success) {
+      return sendError(res, 400, result.error, result.message);
+    }
+
+    return res.json({
+      success: true,
+      message: "Referral applied! You'll both earn a reward after your first purchase.",
     });
   } catch (err) {
     return handlePrismaError(err, res);

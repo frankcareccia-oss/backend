@@ -16,6 +16,7 @@ const { recordPromotionEvent } = require("../growth/promotionOutcome.events");
 const { writeOutboxEvent } = require("../events/event.outbox.service");
 const { issueGiftCardReward } = require("./pos.giftcard");
 const { recordCloverRewardEarned } = require("./pos.clover.discount");
+const { checkReferralReward } = require("../promo/promo.referral");
 const { selectWinningPromotion, buildNotificationText, applyMultiplier } = require("./pos.precedence.engine");
 
 /**
@@ -408,6 +409,13 @@ async function accumulateStamps(prisma, { consumerId, merchantId, storeId, visit
       e?.message || String(e)
     );
   }
+
+  // ── Check for referral rewards (fire-and-forget) ────────────
+  // If this consumer was referred and this is their first purchase,
+  // both referrer and referee get rewarded for their next visit.
+  checkReferralReward(consumerId, merchantId).catch(e => {
+    console.error("[pos.stamps] referral reward check error:", e?.message || String(e));
+  });
 
   return results;
 }
