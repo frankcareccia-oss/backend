@@ -35,7 +35,7 @@ router.get("/admin/system/cron-logs", async (req, res) => {
     });
 
     // Also get latest run per job name for the summary view
-    const jobNames = ["growth-advisor", "gift-card-reconcile", "reward-expiry", "seed-morning", "seed-afternoon", "reporting"];
+    const jobNames = ["growth-advisor", "gift-card-reconcile", "reward-expiry", "seed-morning", "seed-afternoon", "reporting", "stamp-expiry", "knowledge-snapshot"];
     const latest = [];
     for (const name of jobNames) {
       const last = await prisma.cronJobLog.findFirst({
@@ -177,6 +177,72 @@ router.post("/admin/system/test-run", async (req, res) => {
 
     return res.json({ success: false, message: "No results file generated" });
   } catch (err) {
+    return sendError(res, 500, "SERVER_ERROR", err.message);
+  }
+});
+
+// ──────────────────────────────────────────────
+// POST /admin/system/deploy-hook
+// Trigger Agent 1 (code reader) after deploy
+// Can also be called manually by pv_admin
+// ──────────────────────────────────────────────
+router.post("/admin/system/deploy-hook", async (req, res) => {
+  try {
+    // Allow unauthenticated calls from Render deploy hook (with secret)
+    // Or authenticated pv_admin calls
+    const deploySecret = req.headers["x-deploy-secret"] || req.query.secret;
+    const isAdmin = req.systemRole === "pv_admin";
+    const isDeployHook = deploySecret === (process.env.DEPLOY_HOOK_SECRET || "pv-deploy-2026");
+
+    if (!isAdmin && !isDeployHook) {
+      return sendError(res, 403, "FORBIDDEN", "Unauthorized");
+    }
+
+    const { runAgent1 } = require("../agents/agent.1.reader");
+    const { gate } = require("../agents/lib/gate");
+    const { runSnapshot } = require("../agents/agent.4.validator");
+    const path = require("path");
+
+    const outputPath = path.join(__dirname, "../agents/output/knowledge-raw.json");
+
+    // Run Agent 1 with gate logic
+    const { changed, durationMs } = await gate(outputPath, runAgent1);
+
+    // Log to PlatformAgentLog
+    await prisma.platformAgentLog.create({
+      data: {
+        agentName: "agent.1.reader",
+        triggeredBy: isDeployHook ? "deploy" : "manual",
+        status: "complete",
+        outputChanged: changed,
+        durationMs,
+        buildVersion: process.env.RENDER_GIT_COMMIT || null,
+      },
+    });
+
+    // If output changed, take a snapshot
+    if (changed) {
+      await runSnapshot();
+      await prisma.platformAgentLog.create({
+        data: {
+          agentName: "agent.4.validator",
+          triggeredBy: "agent1",
+          status: "complete",
+          outputChanged: true,
+          buildVersion: process.env.RENDER_GIT_COMMIT || null,
+        },
+      });
+    }
+
+    return res.json({
+      agent: "agent.1.reader",
+      status: "complete",
+      changed,
+      durationMs,
+      message: changed ? "Knowledge base updated — snapshot saved" : "No code changes detected",
+    });
+  } catch (err) {
+    console.error("[deploy-hook] error:", err?.message || err);
     return sendError(res, 500, "SERVER_ERROR", err.message);
   }
 });

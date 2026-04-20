@@ -830,6 +830,14 @@ if (require.main === module) app.listen(PORT, () => {
   const { runStampExpiry } = require("./src/cron/stamp.expiry.cron");
   cron.schedule("0 4 * * *", withCronLog("stamp-expiry", () => runStampExpiry()), { timezone: "UTC" });
 
+  // Knowledge Snapshot — 2:30 AM UTC (after reporting, before anyone's awake)
+  const { runAgent1 } = require("./src/agents/agent.1.reader");
+  const { runSnapshot } = require("./src/agents/agent.4.validator");
+  cron.schedule("30 2 * * *", withCronLog("knowledge-snapshot", async () => {
+    await runAgent1();
+    return runSnapshot();
+  }), { timezone: "UTC" });
+
   // Event Publisher — poll outbox and dispatch to consumers
   const { bootstrapEventPublisher } = require("./src/events/event.bootstrap");
   const eventPublisher = bootstrapEventPublisher(prisma, emitPvHook);
