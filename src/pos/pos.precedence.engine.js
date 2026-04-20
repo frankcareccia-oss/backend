@@ -147,7 +147,80 @@ function buildNotificationText({
   return { stampText, milestoneText };
 }
 
+/**
+ * Check active conditional modifiers and compute the stamp multiplier.
+ * Multipliers don't stack — take the highest applicable one.
+ *
+ * @param {Array} conditions — PromotionCondition records for this merchant
+ * @param {{ transactionTime: Date, orderTotalCents?: number, lastVisitAt?: Date }} ctx
+ * @returns {{ multiplier: number, bonusLabel?: string }}
+ */
+function applyMultiplier(conditions, { transactionTime, orderTotalCents, lastVisitAt }) {
+  if (!conditions || conditions.length === 0) {
+    return { multiplier: 1, bonusLabel: null };
+  }
+
+  let bestMultiplier = 1;
+  let bestLabel = null;
+
+  for (const cond of conditions) {
+    let matches = false;
+
+    if (cond.conditionType === "time") {
+      matches = isWithinTimeWindow(transactionTime, cond);
+    } else if (cond.conditionType === "lapse" && lastVisitAt) {
+      const daysSince = Math.floor((transactionTime - new Date(lastVisitAt)) / (1000 * 60 * 60 * 24));
+      matches = cond.lapseDays && daysSince >= cond.lapseDays;
+    } else if (cond.conditionType === "lapse" && !lastVisitAt) {
+      // First visit ever — lapse condition applies (welcome bonus)
+      matches = true;
+    } else if (cond.conditionType === "spend") {
+      matches = orderTotalCents && cond.minimumSpendCents && orderTotalCents >= cond.minimumSpendCents;
+    }
+
+    if (matches && cond.bonusMultiplier > bestMultiplier) {
+      bestMultiplier = cond.bonusMultiplier;
+      bestLabel = cond.bonusLabel || null;
+    }
+  }
+
+  return {
+    multiplier: bestMultiplier,
+    bonusLabel: bestLabel,
+  };
+}
+
+/**
+ * Check if a timestamp falls within a time-window condition.
+ */
+function isWithinTimeWindow(timestamp, condition) {
+  const { activeDays, activeStartHour, activeEndHour } = condition;
+
+  // Day check
+  if (activeDays && Array.isArray(activeDays) && activeDays.length > 0) {
+    const dayNames = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+    const dayOfWeek = dayNames[timestamp.getDay()];
+    if (!activeDays.includes(dayOfWeek)) return false;
+  }
+
+  // Hour check
+  if (activeStartHour != null && activeEndHour != null) {
+    const hour = timestamp.getHours();
+    if (activeStartHour <= activeEndHour) {
+      // Normal range: e.g. 14-17
+      if (hour < activeStartHour || hour >= activeEndHour) return false;
+    } else {
+      // Overnight range: e.g. 22-6
+      if (hour < activeStartHour && hour >= activeEndHour) return false;
+    }
+  }
+
+  return true;
+}
+
 module.exports = {
   selectWinningPromotion,
   buildNotificationText,
+  applyMultiplier,
+  isWithinTimeWindow,
 };

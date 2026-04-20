@@ -16,7 +16,7 @@ const { recordPromotionEvent } = require("../growth/promotionOutcome.events");
 const { writeOutboxEvent } = require("../events/event.outbox.service");
 const { issueGiftCardReward } = require("./pos.giftcard");
 const { recordCloverRewardEarned } = require("./pos.clover.discount");
-const { selectWinningPromotion, buildNotificationText } = require("./pos.precedence.engine");
+const { selectWinningPromotion, buildNotificationText, applyMultiplier } = require("./pos.precedence.engine");
 
 /**
  * Build the human-readable reward label for Entitlement metadata.
@@ -114,7 +114,27 @@ async function accumulateStamps(prisma, { consumerId, merchantId, storeId, visit
   if (!winner) return [];
 
   const promo = winner.promotion;
-  const stampsToAward = 1; // Multiplier stub — will be dynamic when conditional promos exist
+
+  // ── Apply conditional multipliers ───────────────────────────
+  // Load all active conditions for this merchant's promotions
+  const conditions = await prisma.promotionCondition.findMany({
+    where: { promotion: { merchantId, status: "active" } },
+  }).catch(() => []);
+
+  // Get consumer's last visit for lapse detection
+  const lastVisit = await prisma.visit.findFirst({
+    where: { consumerId, merchantId, createdAt: { lt: new Date() } },
+    orderBy: { createdAt: "desc" },
+    select: { createdAt: true },
+  }).catch(() => null);
+
+  const { multiplier, bonusLabel } = applyMultiplier(conditions, {
+    transactionTime: new Date(),
+    orderTotalCents: null, // Will be populated when POS provides order total
+    lastVisitAt: lastVisit?.createdAt || null,
+  });
+
+  const stampsToAward = Math.round(1 * multiplier);
 
   // Log precedence decision (fire-and-forget)
   if (allProgress.length > 1) {
@@ -125,6 +145,8 @@ async function accumulateStamps(prisma, { consumerId, merchantId, storeId, visit
         visitId: visitId || null,
         winnerPromotionId: promo.id,
         reason,
+        multiplierApplied: multiplier > 1,
+        multiplier,
         stampsAwarded: stampsToAward,
         candidateCount: allProgress.length,
       },

@@ -370,6 +370,7 @@ router.get(
           items: { include: { promoItem: { include: { skus: true } } } },
           category: true,
           tiers: { orderBy: { tierLevel: "asc" } },
+          conditions: true,
         },
         orderBy: { id: "asc" },
       });
@@ -427,7 +428,7 @@ router.post(
         categoryId, storeId,
         promoItemIds,
         startAt, endAt,
-        objective, rewardExpiryDays, promotionType, tiers,
+        objective, rewardExpiryDays, promotionType, tiers, conditions,
       } = req.body || {};
 
       if (!name || !String(name).trim())
@@ -506,11 +507,26 @@ router.post(
               })),
             },
           } : {}),
+          ...(Array.isArray(conditions) && conditions.length > 0 ? {
+            conditions: {
+              create: conditions.map(c => ({
+                conditionType: c.conditionType || "time",
+                activeDays: c.activeDays || null,
+                activeStartHour: c.activeStartHour != null ? parseInt(c.activeStartHour, 10) : null,
+                activeEndHour: c.activeEndHour != null ? parseInt(c.activeEndHour, 10) : null,
+                lapseDays: c.lapseDays ? parseInt(c.lapseDays, 10) : null,
+                minimumSpendCents: c.minimumSpendCents ? parseInt(c.minimumSpendCents, 10) : null,
+                bonusMultiplier: c.bonusMultiplier ? parseFloat(c.bonusMultiplier) : 2.0,
+                bonusLabel: c.bonusLabel || null,
+              })),
+            },
+          } : {}),
         },
         include: {
           items: { include: { promoItem: { include: { skus: true } } } },
           category: true,
           tiers: { orderBy: { tierLevel: "asc" } },
+          conditions: true,
         },
       });
 
@@ -839,7 +855,7 @@ router.post(
           endAt: null,
           items: { create: existing.items.map(i => ({ promoItemId: i.promoItemId })) },
         },
-        include: { items: { include: { promoItem: { include: { skus: true } } } }, category: true, tiers: { orderBy: { tierLevel: "asc" } } },
+        include: { items: { include: { promoItem: { include: { skus: true } } } }, category: true, tiers: { orderBy: { tierLevel: "asc" } }, conditions: true },
       });
 
       emitPvHook("promo.promotion.duplicated", {
@@ -1307,7 +1323,7 @@ router.get("/admin/merchants/:merchantId/promotions", requireJwt, requireAdmin, 
     if (VALID_PROMOTION_STATUSES.includes(status)) where.status = status;
     const promotions = await prisma.promotion.findMany({
       where,
-      include: { items: { include: { promoItem: { include: { skus: true } } } }, category: true, tiers: { orderBy: { tierLevel: "asc" } } },
+      include: { items: { include: { promoItem: { include: { skus: true } } } }, category: true, tiers: { orderBy: { tierLevel: "asc" } }, conditions: true },
       orderBy: { id: "asc" },
     });
     return res.json({ promotions });
@@ -1351,7 +1367,7 @@ router.post("/admin/merchants/:merchantId/promotions", requireJwt, requireAdmin,
         endAt: endAt ? new Date(endAt) : null,
         items: { create: itemIds.map((id) => ({ promoItemId: id })) },
       },
-      include: { items: { include: { promoItem: { include: { skus: true } } } }, category: true, tiers: { orderBy: { tierLevel: "asc" } } },
+      include: { items: { include: { promoItem: { include: { skus: true } } } }, category: true, tiers: { orderBy: { tierLevel: "asc" } }, conditions: true },
     });
     emitPvHook("promo.promotion.created", { tc: "TC-PROMO-PROMO-CREATE-ADMIN-01", sev: "info", stable: "promo:promotion:created", merchantId, promotionId: promotion.id, promotionName: promotion.name, mechanic, rewardType, threshold, actorUserId: req.userId, actorRole: "pv_admin" });
     await logPromoAudit(promotion.id, req.userId, "created", null);
@@ -1405,7 +1421,7 @@ router.patch("/admin/merchants/:merchantId/promotions/:promotionId", requireJwt,
     const promotion = await prisma.promotion.update({
       where: { id: promotionId },
       data: { ...data, ...(itemOps ? { items: itemOps } : {}) },
-      include: { items: { include: { promoItem: { include: { skus: true } } } }, category: true, tiers: { orderBy: { tierLevel: "asc" } } },
+      include: { items: { include: { promoItem: { include: { skus: true } } } }, category: true, tiers: { orderBy: { tierLevel: "asc" } }, conditions: true },
     });
     emitPvHook("promo.promotion.updated", { tc: "TC-PROMO-PROMO-UPDATE-ADMIN-01", sev: "info", stable: "promo:promotion:updated", merchantId, promotionId: promotion.id, promotionName: promotion.name, changedFields: [...Object.keys(data), ...(itemOps ? ["items"] : [])], actorUserId: req.userId, actorRole: "pv_admin" });
     await logPromoAudit(promotionId, req.userId, data.status && data.status !== existing.status ? `status_changed:${existing.status}→${data.status}` : "updated", Object.keys(data).length ? Object.keys(data) : null);
@@ -1473,7 +1489,7 @@ router.post("/admin/merchants/:merchantId/promotions/:promotionId/duplicate", re
         categoryId: existing.categoryId, status: "draft", startAt: null, endAt: null,
         items: { create: existing.items.map(i => ({ promoItemId: i.promoItemId })) },
       },
-      include: { items: { include: { promoItem: { include: { skus: true } } } }, category: true, tiers: { orderBy: { tierLevel: "asc" } } },
+      include: { items: { include: { promoItem: { include: { skus: true } } } }, category: true, tiers: { orderBy: { tierLevel: "asc" } }, conditions: true },
     });
 
     emitPvHook("promo.promotion.duplicated", {

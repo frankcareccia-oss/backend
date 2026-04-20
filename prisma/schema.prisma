@@ -1094,7 +1094,8 @@ model Promotion {
   dailySummaries PromotionDailySummary[]
 
   // Advanced promotion types
-  tiers PromotionTier[]
+  tiers      PromotionTier[]
+  conditions PromotionCondition[]
 
   @@index([merchantId, status])
 }
@@ -1114,6 +1115,35 @@ model PromotionTier {
   rewardNote    String? @db.VarChar(500) // description for free_item or custom
 
   @@unique([promotionId, tierLevel])
+  @@index([promotionId])
+}
+
+/// Conditional modifiers for promotions.
+/// These don't compete — they multiply the winning promo's stamp award.
+/// Sub-types: time (day/hour window), lapse (win-back), spend (minimum order).
+model PromotionCondition {
+  id              Int    @id @default(autoincrement())
+  promotionId     Int
+  promotion       Promotion @relation(fields: [promotionId], references: [id])
+  conditionType   String @db.VarChar(20) // "time", "lapse", "spend"
+
+  // Time-based: bonus during specific days/hours
+  activeDays      Json?  // ["mon","tue","wed"] or null for all days
+  activeStartHour Int?   // 0-23, e.g. 14 = 2pm
+  activeEndHour   Int?   // 0-23, e.g. 17 = 5pm
+
+  // Lapse-based: win-back after N days inactive
+  lapseDays       Int?   // days of inactivity to trigger
+
+  // Spend-based: minimum order value
+  minimumSpendCents Int? // minimum order total
+
+  // Reward: multiplier (most common) or instant reward
+  bonusMultiplier Float  @default(2.0) // 2x, 3x stamps
+  bonusLabel      String? @db.VarChar(100) // "Tuesday afternoon bonus", "Welcome back"
+
+  createdAt       DateTime @default(now())
+
   @@index([promotionId])
 }
 
