@@ -199,50 +199,142 @@ router.post("/admin/system/deploy-hook", async (req, res) => {
     }
 
     const { runAgent1 } = require("../agents/agent.1.reader");
+    const { runAgent2 } = require("../agents/agent.2.structurer");
+    const { runAgent3 } = require("../agents/agent.3.writer");
     const { gate } = require("../agents/lib/gate");
     const { runSnapshot } = require("../agents/agent.4.validator");
     const path = require("path");
 
-    const outputPath = path.join(__dirname, "../agents/output/knowledge-raw.json");
+    const rawPath = path.join(__dirname, "../agents/output/knowledge-raw.json");
+    const graphPath = path.join(__dirname, "../agents/output/knowledge-graph.json");
+    const triggeredBy = isDeployHook ? "deploy" : "manual";
+    const results = { agents: [] };
 
-    // Run Agent 1 with gate logic
-    const { changed, durationMs } = await gate(outputPath, runAgent1);
-
-    // Log to PlatformAgentLog
+    // ── Step 1: Code Reader ─────────────────────────────────
+    const step1 = await gate(rawPath, runAgent1);
     await prisma.platformAgentLog.create({
       data: {
-        agentName: "agent.1.reader",
-        triggeredBy: isDeployHook ? "deploy" : "manual",
-        status: "complete",
-        outputChanged: changed,
-        durationMs,
+        agentName: "agent.1.reader", triggeredBy, status: "complete",
+        outputChanged: step1.changed, durationMs: step1.durationMs,
         buildVersion: process.env.RENDER_GIT_COMMIT || null,
       },
     });
+    results.agents.push({ agent: "agent.1.reader", changed: step1.changed, durationMs: step1.durationMs });
 
-    // If output changed, take a snapshot
-    if (changed) {
-      await runSnapshot();
+    if (!step1.changed) {
+      return res.json({ ...results, message: "No code changes detected — pipeline stopped at Agent 1" });
+    }
+
+    // ── Step 2: Knowledge Structurer ────────────────────────
+    const step2 = await gate(graphPath, runAgent2);
+    await prisma.platformAgentLog.create({
+      data: {
+        agentName: "agent.2.structurer", triggeredBy: "agent1", status: step2.changed ? "complete" : "skipped",
+        outputChanged: step2.changed, durationMs: step2.durationMs,
+        buildVersion: process.env.RENDER_GIT_COMMIT || null,
+      },
+    });
+    results.agents.push({ agent: "agent.2.structurer", changed: step2.changed, durationMs: step2.durationMs });
+
+    // ── Step 3: Doc Writer ──────────────────────────────────
+    if (step2.changed) {
+      const start3 = Date.now();
+      const step3Result = await runAgent3();
+      const duration3 = Date.now() - start3;
       await prisma.platformAgentLog.create({
         data: {
-          agentName: "agent.4.validator",
-          triggeredBy: "agent1",
-          status: "complete",
-          outputChanged: true,
+          agentName: "agent.3.writer", triggeredBy: "agent2", status: step3Result.skipped ? "skipped" : "complete",
+          outputChanged: !step3Result.skipped, durationMs: duration3,
           buildVersion: process.env.RENDER_GIT_COMMIT || null,
         },
       });
+      results.agents.push({ agent: "agent.3.writer", changed: !step3Result.skipped, durationMs: duration3 });
     }
 
-    return res.json({
-      agent: "agent.1.reader",
-      status: "complete",
-      changed,
-      durationMs,
-      message: changed ? "Knowledge base updated — snapshot saved" : "No code changes detected",
+    // ── Step 4: Snapshot ────────────────────────────────────
+    await runSnapshot();
+    await prisma.platformAgentLog.create({
+      data: {
+        agentName: "agent.4.validator", triggeredBy: "agent1", status: "complete",
+        outputChanged: true, buildVersion: process.env.RENDER_GIT_COMMIT || null,
+      },
     });
+    results.agents.push({ agent: "agent.4.validator", changed: true });
+
+    return res.json({ ...results, message: "Full pipeline complete — knowledge base + docs updated" });
   } catch (err) {
     console.error("[deploy-hook] error:", err?.message || err);
+    return sendError(res, 500, "SERVER_ERROR", err.message);
+  }
+});
+
+// ──────────────────────────────────────────────
+// GET /admin/system/agent-logs
+// View agent pipeline run history
+// ──────────────────────────────────────────────
+router.get("/admin/system/agent-logs", async (req, res) => {
+  try {
+    if (req.systemRole !== "pv_admin") return sendError(res, 403, "FORBIDDEN", "Admin only");
+
+    const logs = await prisma.platformAgentLog.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 50,
+    });
+
+    return res.json({ logs });
+  } catch (err) {
+    return sendError(res, 500, "SERVER_ERROR", err.message);
+  }
+});
+
+// ──────────────────────────────────────────────
+// GET /admin/system/generated-docs
+// View generated help documentation
+// ──────────────────────────────────────────────
+router.get("/admin/system/generated-docs", async (req, res) => {
+  try {
+    if (req.systemRole !== "pv_admin") return sendError(res, 403, "FORBIDDEN", "Admin only");
+
+    const fs = require("fs");
+    const path = require("path");
+    const docsDir = path.join(__dirname, "../../docs/generated");
+
+    const docs = {};
+    if (fs.existsSync(docsDir)) {
+      for (const file of fs.readdirSync(docsDir)) {
+        if (file.endsWith(".md")) {
+          docs[file] = fs.readFileSync(path.join(docsDir, file), "utf8");
+        }
+      }
+    }
+
+    // Knowledge graph stats
+    const kgPath = path.join(__dirname, "../agents/output/knowledge-graph.json");
+    let kgStats = null;
+    if (fs.existsSync(kgPath)) {
+      const kg = JSON.parse(fs.readFileSync(kgPath, "utf8"));
+      kgStats = {
+        generatedAt: kg.generated_at,
+        version: kg.version,
+        source: kg.source,
+        pages: kg.pages?.length || 0,
+        flows: kg.flows?.length || 0,
+        errorCodes: kg.error_codes?.length || 0,
+      };
+    }
+
+    // Snapshot history
+    const snapshotDir = path.join(__dirname, "../agents/output/snapshots");
+    let snapshots = [];
+    if (fs.existsSync(snapshotDir)) {
+      snapshots = fs.readdirSync(snapshotDir)
+        .filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d))
+        .sort()
+        .reverse();
+    }
+
+    return res.json({ docs, kgStats, snapshots });
+  } catch (err) {
     return sendError(res, 500, "SERVER_ERROR", err.message);
   }
 });
