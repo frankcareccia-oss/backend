@@ -102,6 +102,24 @@ async function accumulateStamps(prisma, { consumerId, merchantId, storeId, visit
     };
   });
 
+  // ── Stamp expiry enforcement ─────────────────────────────────
+  // If a promotion has timeframeDays set and the consumer's last stamp
+  // is older than that, reset their stampCount to 0 (expired).
+  for (const prog of allProgress) {
+    if (prog.id && prog.promotion.timeframeDays && prog.stampCount > 0 && prog.lastEarnedAt) {
+      const daysSinceLastStamp = Math.floor((now - new Date(prog.lastEarnedAt)) / (1000 * 60 * 60 * 24));
+      if (daysSinceLastStamp > prog.promotion.timeframeDays) {
+        // Stamps expired — reset
+        await prisma.consumerPromoProgress.update({
+          where: { id: prog.id },
+          data: { stampCount: 0 },
+        });
+        prog.stampCount = 0;
+        console.log(`[pos.stamps] expired stamps: consumer=${consumerId} promo=${prog.promotionId} days=${daysSinceLastStamp}/${prog.promotion.timeframeDays}`);
+      }
+    }
+  }
+
   // Check for ready rewards from prior visits (for notification, not blocking)
   const readyRewards = await prisma.posRewardDiscount.findMany({
     where: { consumerId, merchantId, status: "activated" },

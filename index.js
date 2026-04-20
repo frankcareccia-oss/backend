@@ -822,6 +822,10 @@ if (require.main === module) app.listen(PORT, () => {
   // Reporting Aggregation — 2 AM UTC
   cron.schedule("0 2 * * *", withCronLog("reporting", () => runReportingAggregation()), { timezone: "UTC" });
 
+  // Stamp Expiry — 4 AM UTC (safety net, inline check handles real-time)
+  const { runStampExpiry } = require("./src/cron/stamp.expiry.cron");
+  cron.schedule("0 4 * * *", withCronLog("stamp-expiry", () => runStampExpiry()), { timezone: "UTC" });
+
   // Event Publisher — poll outbox and dispatch to consumers
   const { bootstrapEventPublisher } = require("./src/events/event.bootstrap");
   const eventPublisher = bootstrapEventPublisher(prisma, emitPvHook);
