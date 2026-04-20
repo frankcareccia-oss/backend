@@ -679,6 +679,8 @@ const merchantReportingRouter = require("./src/merchant/merchant.reporting.route
 app.use(merchantReportingRouter);
 const merchantDashboardRouter = require("./src/merchant/merchant.dashboard.routes");
 app.use(merchantDashboardRouter);
+const supportAiRouter = require("./src/agents/support.ai.handler");
+app.use(supportAiRouter);
 const merchantOnboardingRouter = require("./src/merchant/merchant.onboarding.routes");
 app.use(merchantOnboardingRouter);
 const promotionOutcomeRouter = require("./src/growth/promotionOutcome.routes");

@@ -136,6 +136,9 @@ model Merchant {
 
   // Onboarding
   onboardingSession OnboardingSession?
+
+  // AI Support
+  supportTickets SupportTicket[]
 }
 
 model Store {
@@ -2448,4 +2451,54 @@ model SettlementBatchItem {
   @@index([batchId])
   @@index([merchantId])
   @@index([accrualId])
+}
+
+// ═══════════════════════════════════════════════════════════════
+// AI Support Pipeline
+// ═══════════════════════════════════════════════════════════════
+
+/// Logs every agent pipeline step — every run, every result.
+model PlatformAgentLog {
+  id              Int      @id @default(autoincrement())
+  agentName       String   // agent.1.reader, agent.2.structurer, etc.
+  triggeredBy     String   // deploy, agent1, schedule, manual
+  status          String   // running, complete, failed, skipped
+  inputHash       String?
+  outputHash      String?
+  outputChanged   Boolean  @default(false)
+  durationMs      Int?
+  errorMessage    String?
+  buildVersion    String?
+  createdAt       DateTime @default(now())
+
+  @@index([agentName, createdAt])
+  @@index([status, createdAt])
+}
+
+/// Pre-populated support ticket — zero merchant input required.
+/// AI diagnosis + full platform context captured automatically.
+model SupportTicket {
+  id                  Int      @id @default(autoincrement())
+  merchantId          Int
+  merchant            Merchant @relation(fields: [merchantId], references: [id])
+  page                String   // route where issue occurred
+  action              String?  // what they were trying to do
+  lastError           Json?    // API error details
+  aiDiagnosis         String?  // AI's diagnosis text
+  aiConfidence        String?  // high, medium, low
+  resolutionAttempted Json?    // steps AI suggested
+  platformSnapshot    Json     // full support context at time of issue
+  eventLog            Json     // recent pvHook events
+  posType             String?
+  daysOnPlatform      Int?
+  billingStage        String?
+  status              String   @default("open") // open, in_progress, resolved
+  priority            String   @default("normal") // critical, high, normal
+  resolvedAt          DateTime?
+  resolutionNote      String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([status, priority, createdAt])
+  @@index([merchantId])
 }

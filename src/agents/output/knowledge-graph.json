@@ -1,0 +1,194 @@
+{
+  "generated_at": "2026-04-20T00:00:00Z",
+  "version": "manual-seed-v1",
+  "source": "Manually seeded from PerkValet spec documents — institutional knowledge",
+
+  "pages": [
+    {
+      "id": "merchant_dashboard",
+      "route": "/merchant/dashboard",
+      "description": "Your home page — quick access to all sections of your account",
+      "common_issues": []
+    },
+    {
+      "id": "merchant_weekly",
+      "route": "/merchant/weekly",
+      "description": "Last week recap, this week events, and alerts that need your attention",
+      "common_issues": [
+        {
+          "id": "no_last_week_data",
+          "trigger": "lastWeek section empty",
+          "cause": "Your loyalty program hasn't been running for a full week yet",
+          "resolution": ["Your first weekly summary will appear after 7 days of data", "Make sure your POS is connected and processing transactions"],
+          "merchant_fixable": true
+        }
+      ]
+    },
+    {
+      "id": "pos_connection",
+      "route": "/merchant/onboarding",
+      "description": "Connect your Clover or Square account to PerkValet",
+      "common_issues": [
+        {
+          "id": "clover_session_conflict",
+          "trigger": "OAuth fails with 500, pvHook: onboarding.oauth.failed",
+          "cause": "Your browser had a Clover tab open when you tried to connect",
+          "resolution": ["Close all Clover tabs in your browser", "Come back to PerkValet and tap Connect again", "Sign in with your normal Clover email and password"],
+          "merchant_fixable": true
+        },
+        {
+          "id": "clover_sandbox_account",
+          "trigger": "OAuth fails, environment mismatch",
+          "cause": "You signed in with a Clover test account instead of your real business account",
+          "resolution": ["Tap Connect again", "Sign in with the email you use at your register every day", "If unsure, check your register — go to Settings and look for the account email"],
+          "merchant_fixable": true
+        },
+        {
+          "id": "clover_no_admin",
+          "trigger": "OAuth fails with 403",
+          "cause": "The account you signed in with doesn't have owner-level access",
+          "resolution": ["You need the main owner login for your Clover account", "This is usually the email used when the account was first created", "If someone else set up your system, ask them for the owner email and password"],
+          "merchant_fixable": true,
+          "escalate_if": "Merchant cannot obtain owner credentials"
+        },
+        {
+          "id": "square_oauth_failed",
+          "trigger": "Square OAuth callback error",
+          "cause": "The connection to Square didn't complete — could be a temporary Square issue",
+          "resolution": ["Try connecting again — most Square connection issues are temporary", "Make sure you're signing in with your Square business account, not a personal account"],
+          "merchant_fixable": true
+        },
+        {
+          "id": "pos_connection_lost",
+          "trigger": "No webhooks received for 48+ hours",
+          "cause": "Your POS stopped sending data to PerkValet",
+          "resolution": ["Check that your register is powered on and connected to WiFi", "If it's running normally, go to Setup Guide and tap Reconnect"],
+          "merchant_fixable": true,
+          "escalate_if": "Device is online but data still not flowing after reconnect"
+        }
+      ]
+    },
+    {
+      "id": "merchant_promotions",
+      "route": "/merchant/promotions",
+      "description": "Create and manage your loyalty programs — stamp cards, tiered rewards, referrals",
+      "common_issues": [
+        {
+          "id": "no_categories",
+          "trigger": "Create button disabled",
+          "cause": "You need to set up product categories before creating a promotion",
+          "resolution": ["Go to Products first", "Add at least one category (e.g. Coffee, Pastry)", "Then come back to Promotions"],
+          "merchant_fixable": true
+        },
+        {
+          "id": "promo_stalling",
+          "trigger": "Growth Advisor alerts: promo_stalling pattern",
+          "cause": "Most enrolled customers haven't earned stamps recently",
+          "resolution": ["Consider lowering the stamp threshold so customers reach rewards sooner", "Try adding a bonus-stamp promotion (double stamps on slow days)", "Make sure your team is asking for phone numbers at checkout"],
+          "merchant_fixable": true
+        },
+        {
+          "id": "stamps_not_accumulating",
+          "trigger": "Consumer enrolled but stampCount stays at 0",
+          "cause": "The consumer's purchases aren't being matched to their loyalty profile",
+          "resolution": ["Make sure your team enters the customer's phone number with each transaction", "The phone number must match what the customer used to sign up"],
+          "merchant_fixable": true
+        }
+      ]
+    },
+    {
+      "id": "merchant_products",
+      "route": "/merchant/products",
+      "description": "Set up your product catalog — items, categories, descriptions",
+      "common_issues": [
+        {
+          "id": "image_not_showing",
+          "trigger": "Product avatar shows initials instead of image",
+          "cause": "The image URL might be a webpage link, not a direct image link",
+          "resolution": ["Use the Browse Unsplash button to find an image", "Right-click the image and choose 'Copy image address' (not 'Copy link address')", "Paste that direct URL into the Image URL field"],
+          "merchant_fixable": true
+        }
+      ]
+    },
+    {
+      "id": "merchant_analytics",
+      "route": "/merchant/analytics",
+      "description": "Your business performance — KPIs, trends, consumer engagement",
+      "common_issues": [
+        {
+          "id": "no_data",
+          "trigger": "Charts empty or showing zeros",
+          "cause": "Not enough transaction data yet — analytics need at least a week of data",
+          "resolution": ["Make sure your POS is connected and processing transactions", "Analytics update overnight — check back tomorrow for today's numbers"],
+          "merchant_fixable": true
+        }
+      ]
+    },
+    {
+      "id": "merchant_growth_studio",
+      "route": "/merchant/growth-studio",
+      "description": "Build the right loyalty program for your goal — guided step by step",
+      "common_issues": []
+    }
+  ],
+
+  "flows": [
+    {
+      "id": "stamp_accumulation",
+      "description": "Customer visits, pays, gets a stamp",
+      "prerequisites": ["POS connected", "At least one active promotion", "Customer phone number captured"],
+      "steps": ["Customer pays at register", "POS sends payment to PerkValet (automatic)", "PerkValet identifies customer by phone", "Stamp added to best loyalty card (automatic)", "Customer sees stamp in their app"],
+      "failure_points": ["Phone not captured → no stamp", "POS disconnected → no data", "Customer not enrolled → no stamp card"]
+    },
+    {
+      "id": "reward_earned",
+      "description": "Customer hits the milestone and earns a reward",
+      "steps": ["Customer reaches stamp threshold", "Reward created automatically", "Available on customer's NEXT visit", "Customer tells associate at checkout", "Associate applies discount or gift card"],
+      "important_note": "Rewards are always for the NEXT visit — the current transaction earns the stamps, the reward waits for next time"
+    },
+    {
+      "id": "tiered_progression",
+      "description": "Customer progresses through Bronze → Silver → Gold",
+      "steps": ["Customer earns stamps normally", "When visits reach tier threshold, tier unlocks automatically", "Each tier grants its own reward (for next visit)", "Tier status is permanent — never resets"],
+      "important_note": "Customers never lose their tier — once Gold, always Gold"
+    },
+    {
+      "id": "referral_flow",
+      "description": "Customer refers a friend, both get rewarded",
+      "steps": ["Customer gets unique referral code from the app", "Shares code with friend", "Friend enters code when signing up", "Friend makes first purchase", "BOTH get a reward for their next visit"]
+    }
+  ],
+
+  "error_codes": [
+    { "code": 401, "cause": "Session expired — log out and log back in", "merchant_fixable": true },
+    { "code": 403, "cause": "You don't have permission for this action — you may need owner access", "merchant_fixable": true },
+    { "code": 404, "cause": "The page or item you're looking for doesn't exist or has been removed", "merchant_fixable": true },
+    { "code": 500, "cause": "Something went wrong on our end — try refreshing the page", "merchant_fixable": false, "escalation": "If this keeps happening, tap Get Help and we'll look into it" }
+  ],
+
+  "pos_connection_states": [
+    { "state": "active", "description": "Everything working — transactions flowing", "action_needed": false },
+    { "state": "error", "description": "Connection has an issue — may need reconnection", "action_needed": true, "resolution": "Go to Setup Guide → Reconnect POS" },
+    { "state": "disconnected", "description": "Not connected — no transactions being captured", "action_needed": true, "resolution": "Go to Setup Guide → Connect your POS" }
+  ],
+
+  "promotion_types": [
+    { "type": "stamp", "description": "Visit N times, earn a reward", "display": "Stamp dots with progress bar" },
+    { "type": "tiered", "description": "Bronze → Silver → Gold with escalating rewards", "display": "Tier badges with progress to next" },
+    { "type": "conditional", "description": "Bonus stamps during specific times or after absence", "display": "Multiplier on stamp notification" },
+    { "type": "referral", "description": "Refer a friend, both get rewarded", "display": "Referral code + stats" },
+    { "type": "bundle", "description": "Collect items across visits for a combo deal", "display": "Checklist with checkmarks" }
+  ],
+
+  "precedence_engine": {
+    "description": "When a customer has multiple loyalty programs, PerkValet automatically picks the one that benefits them most",
+    "levels": [
+      "Bundle purchase → bundle always wins",
+      "Reward ready from prior visit → surface it",
+      "Stamps closest to expiry → protect what they're about to lose",
+      "Closest to earning a reward → get them there faster",
+      "Highest reward value → give them the best deal"
+    ],
+    "merchant_explanation": "Your customers never have to choose between programs. PerkValet handles it automatically, always in the customer's favor."
+  }
+}
