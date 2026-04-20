@@ -1189,10 +1189,35 @@ model ConsumerPromoProgress {
   merchant    Merchant          @relation(fields: [merchantId], references: [id])
   redemptions PromoRedemption[]
 
+  /// Precedence engine: why this promo was selected last time
+  lastPrecedenceReason String?   // closest_to_expiry, closest_to_milestone, highest_value, only_one_promo
+  lastPrecedenceAt     DateTime?
+
   @@unique([consumerId, promotionId])
   @@index([merchantId])
   @@index([promotionId])
   @@index([consumerId, milestonesAvailable])
+}
+
+/// Audit log for precedence engine decisions.
+/// One row per transaction where multiple promos were evaluated.
+model PromotionPrecedenceLog {
+  id                Int      @id @default(autoincrement())
+  consumerId        Int
+  merchantId        Int
+  visitId           Int?
+  winnerPromotionId Int?
+  reason            String   // bundle_governs, reward_ready, closest_to_expiry,
+                             // closest_to_milestone, highest_value, only_one_promo
+  multiplierApplied Boolean  @default(false)
+  multiplier        Float    @default(1.0)
+  stampsAwarded     Int      @default(0)
+  candidateCount    Int      @default(1)
+  createdAt         DateTime @default(now())
+
+  @@index([consumerId, merchantId])
+  @@index([merchantId, createdAt])
+  @@index([reason, createdAt])
 }
 
 // ── Redemption ──────────────────────────────────────────────────
