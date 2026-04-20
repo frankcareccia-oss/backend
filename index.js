@@ -684,7 +684,9 @@ app.use(promotionOutcomeRouter);
 
 const buildAdminRouter = require("./src/admin/admin.routes");
 const adminSystemRouter = require("./src/admin/admin.system.routes");
+const adminOversightRouter = require("./src/admin/admin.oversight.routes");
 app.use(requireJwt, adminSystemRouter);
+app.use(adminOversightRouter);
 
 app.use(
   requireJwt,
