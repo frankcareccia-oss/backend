@@ -16,6 +16,7 @@ const { prisma } = require("../db/prisma");
 const { sendError } = require("../utils/errors");
 const { requireJwt, requireMerchantRole } = require("../middleware/auth");
 const { getMerchantCapabilities } = require("./merchant.capabilities");
+const { syncTeamFromPos } = require("../pos/pos.team.sync");
 
 const router = express.Router();
 
@@ -43,6 +44,75 @@ router.get(
     } catch (err) {
       console.error("[merchant.capabilities] error:", err?.message || err);
       return sendError(res, 500, "SERVER_ERROR", "Failed to load capabilities");
+    }
+  }
+);
+
+// ──────────────────────────────────────────────
+// POST /merchant/team/sync — Manual team sync from POS
+// ──────────────────────────────────────────────
+router.post(
+  "/merchant/team/sync",
+  requireJwt,
+  requireMerchantRole("owner", "merchant_admin"),
+  async (req, res) => {
+    try {
+      const merchantId = req.merchantId;
+
+      // Find active POS connection
+      const conn = await prisma.posConnection.findFirst({
+        where: { merchantId, status: "active", posType: { in: ["clover", "square"] } },
+      });
+      if (!conn) {
+        return sendError(res, 400, "NO_POS_CONNECTION", "No active POS connection found. Connect your POS first.");
+      }
+
+      const stats = await syncTeamFromPos(conn.id);
+
+      // Enable team sync on the merchant if not already
+      await prisma.merchant.update({
+        where: { id: merchantId },
+        data: { teamSyncEnabled: true, teamSyncedAt: new Date() },
+      });
+
+      return res.json({ success: true, ...stats });
+    } catch (err) {
+      console.error("[merchant.team.sync] error:", err?.message || err);
+      return sendError(res, 500, "SYNC_FAILED", err?.message || "Team sync failed");
+    }
+  }
+);
+
+// ──────────────────────────────────────────────
+// GET /merchant/team/sync-status — Last sync info
+// ──────────────────────────────────────────────
+router.get(
+  "/merchant/team/sync-status",
+  requireJwt,
+  requireMerchantRole("owner", "merchant_admin"),
+  async (req, res) => {
+    try {
+      const conn = await prisma.posConnection.findFirst({
+        where: { merchantId: req.merchantId, status: "active", posType: { in: ["clover", "square"] } },
+        select: { id: true, posType: true, lastTeamSyncAt: true, lastTeamSyncSummary: true },
+      });
+
+      const merchant = await prisma.merchant.findUnique({
+        where: { id: req.merchantId },
+        select: { teamSyncEnabled: true, teamSyncedAt: true, teamSetupMode: true },
+      });
+
+      return res.json({
+        hasPosConnection: !!conn,
+        posType: conn?.posType || null,
+        lastSyncAt: conn?.lastTeamSyncAt || null,
+        lastSyncSummary: conn?.lastTeamSyncSummary || null,
+        teamSyncEnabled: merchant?.teamSyncEnabled || false,
+        teamSetupMode: merchant?.teamSetupMode || null,
+      });
+    } catch (err) {
+      console.error("[merchant.team.sync-status] error:", err?.message || err);
+      return sendError(res, 500, "SERVER_ERROR", "Failed to load sync status");
     }
   }
 );

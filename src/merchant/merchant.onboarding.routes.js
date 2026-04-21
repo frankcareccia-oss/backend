@@ -114,7 +114,7 @@ router.patch("/merchant/onboarding", async (req, res) => {
 
     const { currentStage, currentStep, posType, setupPersona, credentialStatus,
             storesFound, storesMapped, firstPromoId, firstPromoStatus,
-            completedSteps, stuckAtStep, stuckReason } = req.body || {};
+            completedSteps, stuckAtStep, stuckReason, teamSetupMode } = req.body || {};
 
     const data = { lastActivityAt: new Date() };
 
@@ -128,6 +128,19 @@ router.patch("/merchant/onboarding", async (req, res) => {
     if (firstPromoId) data.firstPromoId = firstPromoId;
     if (firstPromoStatus) data.firstPromoStatus = firstPromoStatus;
     if (completedSteps) data.completedSteps = completedSteps;
+
+    // Save team setup mode to merchant record
+    if (teamSetupMode && ["individual", "shared", "solo", "external"].includes(teamSetupMode)) {
+      await prisma.merchant.update({
+        where: { id: mu.merchantId },
+        data: {
+          teamSetupMode,
+          teamSetupComplete: true,
+          // Enable nightly sync only for individual mode with POS
+          teamSyncEnabled: teamSetupMode === "individual",
+        },
+      });
+    }
 
     // Mark stuck
     if (stuckAtStep) {

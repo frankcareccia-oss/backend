@@ -534,6 +534,32 @@ function buildAdminRouter(deps) {
     }
   });
 
+  // POST /admin/merchants/:merchantId/team-sync — trigger POS employee sync (pv_admin)
+  router.post("/admin/merchants/:merchantId/team-sync", requireAdmin, async (req, res) => {
+    try {
+      const merchantId = parseIntParam(req.params.merchantId);
+      if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantId");
+
+      const { syncTeamFromPos } = require("../pos/pos.team.sync");
+
+      const conn = await prisma.posConnection.findFirst({
+        where: { merchantId, status: "active", posType: { in: ["clover", "square"] } },
+      });
+      if (!conn) return sendError(res, 400, "NO_POS_CONNECTION", "No active POS connection for this merchant");
+
+      const stats = await syncTeamFromPos(conn.id);
+
+      await prisma.merchant.update({
+        where: { id: merchantId },
+        data: { teamSyncEnabled: true, teamSyncedAt: new Date() },
+      });
+
+      return res.json({ success: true, ...stats });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
   // PATCH /admin/merchants/:merchantId/users/:userId — edit user profile (pv_admin)
   router.patch("/admin/merchants/:merchantId/users/:userId", requireAdmin, async (req, res) => {
     try {

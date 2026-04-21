@@ -38,6 +38,11 @@ model User {
   phoneE164    String? @db.VarChar(20)
   phoneCountry String  @default("US")
 
+  /// POS employee mapping (read-only sync — never write back to POS)
+  cloverEmployeeId   String? @db.VarChar(64)
+  squareTeamMemberId String? @db.VarChar(128)
+  posRole            String? @db.VarChar(64)  // role name from POS (e.g. "EMPLOYEE", "ADMIN", "MANAGER")
+
   tokenVersion      Int                  @default(0)
   passwordUpdatedAt DateTime?
   resetTokens       PasswordResetToken[]
@@ -1584,6 +1589,10 @@ model PosConnection {
   // Catalog sync tracking
   lastCatalogSyncAt      DateTime?
   lastCatalogSyncSummary Json?     // { categoriesCreated, categoriesUpdated, productsCreated, productsUpdated }
+
+  // Employee/team sync tracking
+  lastTeamSyncAt      DateTime?
+  lastTeamSyncSummary Json?     // { created, updated, deactivated, total, error? }
 
   locationMaps   PosLocationMap[]
   products       Product[]

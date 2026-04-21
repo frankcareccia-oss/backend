@@ -830,6 +830,10 @@ if (require.main === module) app.listen(PORT, () => {
   const { runStampExpiry } = require("./src/cron/stamp.expiry.cron");
   cron.schedule("0 4 * * *", withCronLog("stamp-expiry", () => runStampExpiry()), { timezone: "UTC" });
 
+  // POS Team Sync — 5 AM UTC (nightly read-only employee pull from Clover/Square)
+  const { runTeamSyncCron } = require("./src/cron/pos.team.sync.cron");
+  cron.schedule("0 5 * * *", withCronLog("team-sync", () => runTeamSyncCron()), { timezone: "UTC" });
+
   // Knowledge Pipeline — 2:30 AM UTC (full Agent 1→3→4 chain)
   const { runAgent1 } = require("./src/agents/agent.1.reader");
   const { runAgent3 } = require("./src/agents/agent.3.writer");
