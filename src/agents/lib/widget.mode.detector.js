@@ -14,15 +14,19 @@ const PAGE_ID_MAP = {
   "/admin/support": "admin_support",
   "/admin/oversight": "admin_oversight",
   "/admin/platform/config": "admin_settings",
+  "/admin/merchants": "admin_merchants",
   "/merchant/dashboard": "merchant_dashboard",
   "/merchant/weekly": "merchant_weekly",
   "/merchant/promotions": "merchant_promotions",
   "/merchant/products": "merchant_products",
   "/merchant/stores": "merchant_stores",
+  "/merchant/bundles": "merchant_bundles",
   "/merchant/analytics": "merchant_analytics",
   "/merchant/growth-studio": "merchant_growth_studio",
   "/merchant/settings": "merchant_settings",
+  "/merchant/invoices": "merchant_invoices",
   "/merchant/onboarding": "pos_connection",
+  "/account/change-password": "change_password",
 };
 
 function resolvePageId(route) {

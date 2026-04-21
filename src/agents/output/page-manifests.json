@@ -225,5 +225,66 @@
         "plain_description": "Add products with a name, description, and image. Use 'Write for me' to generate an appealing description. Use 'Browse Unsplash' to find a photo — right-click the image and choose 'Copy image address' to get the direct link."
       }
     ]
+  },
+  "merchant_stores": {
+    "id": "merchant_stores",
+    "route": "/merchant/stores",
+    "intended_roles": ["owner", "merchant_admin"],
+    "title": "My Stores",
+    "summary": "Manage your store locations — addresses, phone numbers, hours, and QR codes for each location.",
+    "sections": [
+      { "id": "locations", "label": "Store locations", "plain_description": "Each store is a physical location where customers can earn stamps. Add your address, phone, and hours. Customers see this info in the Discover tab of the app." },
+      { "id": "qr_codes", "label": "QR codes", "plain_description": "Each store gets a unique QR code that customers scan to check in. Print it and place it at the counter or on a table tent." }
+    ]
+  },
+  "merchant_bundles": {
+    "id": "merchant_bundles",
+    "route": "/merchant/bundles",
+    "intended_roles": ["owner", "merchant_admin"],
+    "title": "Bundles",
+    "summary": "Package products together at a discount — customers collect items across visits and save when they complete the bundle.",
+    "sections": [
+      { "id": "create", "label": "Creating a bundle", "plain_description": "Pick the items to include, set the bundle price and savings amount. Customers see a checklist of items to collect. When all items are purchased, they get the savings as a reward on their next visit." }
+    ]
+  },
+  "merchant_invoices": {
+    "id": "merchant_invoices",
+    "route": "/merchant/invoices",
+    "intended_roles": ["owner", "merchant_admin"],
+    "title": "Billing",
+    "summary": "View your PerkValet invoices and payment history.",
+    "sections": [
+      { "id": "invoices", "label": "Invoice list", "plain_description": "Shows all your invoices with amount, status, and due date. Click any invoice to see the full breakdown." }
+    ]
+  },
+  "merchant_settings": {
+    "id": "merchant_settings",
+    "route": "/merchant/settings",
+    "intended_roles": ["owner", "merchant_admin"],
+    "title": "Settings",
+    "summary": "Manage your account profile, email, and password.",
+    "sections": [
+      { "id": "profile", "label": "Account profile", "plain_description": "Update your name, email, and contact info. This is the account used to log into the PerkValet merchant portal." }
+    ]
+  },
+  "change_password": {
+    "id": "change_password",
+    "route": "/account/change-password",
+    "intended_roles": ["owner", "merchant_admin", "pv_admin"],
+    "title": "Change Password",
+    "summary": "Update your login password. After changing, you'll be signed out and need to log in again with your new password.",
+    "sections": [
+      { "id": "change", "label": "Changing your password", "plain_description": "Enter your current password, then your new password twice. Your new password should be at least 8 characters. After saving, you'll be signed out automatically — just log back in with the new password." }
+    ]
+  },
+  "admin_merchants": {
+    "id": "admin_merchants",
+    "route": "/admin/merchants",
+    "intended_roles": ["pv_admin"],
+    "title": "Merchants",
+    "summary": "Manage all merchant accounts on the platform — onboarding, stores, teams, products, promotions, and billing.",
+    "sections": [
+      { "id": "list", "label": "Merchant list", "plain_description": "Shows all merchants with their status, store count, and POS connection type. Click any merchant to manage their account." }
+    ]
   }
 }
