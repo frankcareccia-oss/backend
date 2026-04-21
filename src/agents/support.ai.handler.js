@@ -201,16 +201,19 @@ router.post("/api/support/mode", requireJwt, async (req, res) => {
     const currentPage = context.session?.pathname || "";
     const hasActiveError = context.apiEvents?.some(e => e.direction === "in" && e.status >= 400 && (Date.now() - new Date(e.ts).getTime()) < 60000) || false;
 
+    const forceOrientation = context.forceOrientation || false;
+
     const modeResult = detectWidgetMode({
       userRole: req.systemRole || "user",
       currentPage,
-      hasActiveError,
+      hasActiveError: forceOrientation ? false : hasActiveError,
       userInitiated: true,
     });
 
-    if (modeResult.mode === "orientation") {
+    if (modeResult.mode === "orientation" || forceOrientation) {
+      const pageId = forceOrientation ? resolvePageId(currentPage) : modeResult.pageId;
       const manifests = loadPageManifests();
-      const manifest = manifests[modeResult.pageId];
+      const manifest = manifests[pageId];
 
       if (manifest) {
         return res.json({
@@ -218,7 +221,7 @@ router.post("/api/support/mode", requireJwt, async (req, res) => {
           title: manifest.title,
           summary: manifest.summary,
           sections: manifest.sections.map(s => ({ id: s.id, label: s.label })),
-          pageId: modeResult.pageId,
+          pageId,
         });
       }
 

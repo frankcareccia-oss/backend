@@ -140,6 +140,54 @@
       }
     ]
   },
+  "merchant_growth_studio": {
+    "id": "merchant_growth_studio",
+    "route": "/merchant/growth-studio",
+    "intended_roles": ["owner", "merchant_admin"],
+    "title": "Growth Studio",
+    "summary": "Build the right loyalty program for your goal — we guide you step by step. Pick a goal, configure the program, preview the projected impact, then launch.",
+    "sections": [
+      {
+        "id": "goals",
+        "label": "Choosing a goal",
+        "plain_description": "Five goals to choose from: Bring customers back, Grow your loyal base, Drive more revenue, Fill slow periods, and Reward your best customers. Each one creates a different type of loyalty program tailored to that goal."
+      },
+      {
+        "id": "configure",
+        "label": "Configuring your program",
+        "plain_description": "After picking a goal, you set the visit threshold (how many visits to earn a reward), the reward value, and how long stamps stay active. We recommend settings based on your goal, but you can adjust everything."
+      },
+      {
+        "id": "simulator",
+        "label": "Projected impact",
+        "plain_description": "The simulator shows what your program could look like — projected revenue vs cost, enrollment growth, and data sufficiency. If we don't have enough of your transaction data yet, we'll tell you honestly and use industry averages."
+      },
+      {
+        "id": "launch",
+        "label": "Launching",
+        "plain_description": "Your program is saved as a Draft. Go to Promotions to review, stage, and go live when you're ready. You can add start/end dates and the program follows the normal draft → staged → active flow."
+      }
+    ]
+  },
+  "merchant_analytics": {
+    "id": "merchant_analytics",
+    "route": "/merchant/analytics",
+    "intended_roles": ["owner", "merchant_admin"],
+    "title": "Analytics",
+    "summary": "Your business performance dashboard — KPIs, loyalty flywheel, consumer engagement, and promotion performance over time.",
+    "sections": [
+      {
+        "id": "kpis",
+        "label": "KPI tiles",
+        "plain_description": "Six tiles showing your key metrics — transactions, attribution rate, active members, rewards redeemed, budget consumed, and new enrollments. Each shows the current value and trend vs the prior period."
+      },
+      {
+        "id": "charts",
+        "label": "Charts",
+        "plain_description": "Visual charts showing visit volume, attribution rate trends, the loyalty flywheel (stamps → enrollments → redemptions), consumer engagement distribution, and store-level breakdowns."
+      }
+    ]
+  },
   "merchant_products": {
     "id": "merchant_products",
     "route": "/merchant/products",
