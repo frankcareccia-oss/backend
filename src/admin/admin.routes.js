@@ -416,6 +416,7 @@ function buildAdminRouter(deps) {
           status: mu.user?.status ?? null,
           firstName: mu.user?.firstName ?? null,
           lastName: mu.user?.lastName ?? null,
+          phoneRaw: mu.user?.phoneRaw ?? null,
           phoneE164: mu.user?.phoneE164 ?? null,
         },
       });
