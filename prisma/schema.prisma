@@ -2475,6 +2475,18 @@ model PlatformAgentLog {
   @@index([status, createdAt])
 }
 
+/// Generated help content — persists across deploys (Render filesystem is ephemeral).
+model GeneratedHelpPage {
+  id        Int      @id @default(autoincrement())
+  pageId    String   @unique // e.g. "merchant_dashboard", "admin_system"
+  content   String   @db.Text
+  charCount Int      @default(0)
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  @@index([pageId])
+}
+
 /// Pre-populated support ticket — zero merchant input required.
 /// AI diagnosis + full platform context captured automatically.
 model SupportTicket {

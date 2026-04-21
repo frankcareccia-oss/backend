@@ -838,10 +838,9 @@ if (require.main === module) app.listen(PORT, () => {
   const agentPath = require("path");
   cron.schedule("30 2 * * *", withCronLog("knowledge-pipeline", async () => {
     const rawPath = agentPath.join(__dirname, "src/agents/output/knowledge-raw.json");
-    const step1 = await pipelineGate(rawPath, runAgent1);
-    if (step1.changed) {
-      await runAgent3().catch(e => console.error("[knowledge-pipeline] Agent 3 error:", e?.message));
-    }
+    await pipelineGate(rawPath, runAgent1);
+    // Always run Agent 3 — generates help pages from manifests into DB
+    await runAgent3().catch(e => console.error("[knowledge-pipeline] Agent 3 error:", e?.message));
     return runSnapshot();
   }), { timezone: "UTC" });
 

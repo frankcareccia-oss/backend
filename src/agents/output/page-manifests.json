@@ -45,6 +45,25 @@
       }
     ]
   },
+  "admin_settings": {
+    "id": "admin_settings",
+    "route": "/admin/platform/config",
+    "intended_roles": ["pv_admin"],
+    "title": "Platform Settings",
+    "summary": "System-wide configuration that applies to all merchants and consumers. Changes take effect immediately for new sessions.",
+    "sections": [
+      {
+        "id": "consumer_session",
+        "label": "Consumer session length",
+        "plain_description": "How long a consumer stays logged into the mobile app before needing to sign in again. Default is 90 days. Shorter = more secure but more friction. Longer = easier for consumers but less secure."
+      },
+      {
+        "id": "sms_validity",
+        "label": "SMS code validity",
+        "plain_description": "How long an SMS verification code stays valid. Default is 15 minutes. If consumers complain about codes expiring too fast, increase this. If you're concerned about security, keep it short."
+      }
+    ]
+  },
   "admin_oversight": {
     "id": "admin_oversight",
     "route": "/admin/oversight",

@@ -284,8 +284,15 @@ router.get("/api/support/section/:pageId/:sectionId", requireJwt, async (req, re
 router.get("/api/support/help/:pageId", requireJwt, async (req, res) => {
   try {
     const { pageId } = req.params;
-    const helpPath = path.join(__dirname, "../../docs/generated/help", `${pageId}.md`);
 
+    // Try DB first (persists across Render deploys)
+    const dbPage = await prisma.generatedHelpPage.findUnique({ where: { pageId } });
+    if (dbPage) {
+      return res.json({ pageId, content: dbPage.content, generated: true });
+    }
+
+    // Fallback to filesystem (local dev)
+    const helpPath = path.join(__dirname, "../../docs/generated/help", `${pageId}.md`);
     if (fs.existsSync(helpPath)) {
       const content = fs.readFileSync(helpPath, "utf8");
       return res.json({ pageId, content, generated: true });

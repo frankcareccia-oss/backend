@@ -16,6 +16,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { prisma } = require("../db/prisma");
 
 const GRAPH_PATH = path.join(__dirname, "output", "knowledge-graph.json");
 const OUTPUT_DIR = path.join(__dirname, "../../docs/generated");
@@ -174,7 +175,13 @@ Write the complete help article in Markdown:`;
 
       const pageHelp = pageMsg.content?.[0]?.text?.trim() || "";
       if (pageHelp.length > 100) {
+        // Write to filesystem (local dev) + database (persists on Render)
         fs.writeFileSync(path.join(HELP_DIR, `${pageId}.md`), pageHelp);
+        await prisma.generatedHelpPage.upsert({
+          where: { pageId },
+          create: { pageId, content: pageHelp, charCount: pageHelp.length },
+          update: { content: pageHelp, charCount: pageHelp.length },
+        });
         pagesGenerated++;
         console.log(`[Agent 3] Help page: ${pageId} (${pageHelp.length} chars)`);
       }
