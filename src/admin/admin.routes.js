@@ -585,7 +585,7 @@ function buildAdminRouter(deps) {
         );
       }
 
-      if (String(currentMembership.role || "").toLowerCase() !== "merchant_admin") {
+      if (!["owner", "merchant_admin"].includes(String(currentMembership.role || "").toLowerCase())) {
         return sendError(
           res,
           409,
@@ -608,7 +608,7 @@ function buildAdminRouter(deps) {
           ? await tx.merchantUser.update({
             where: { id: newMembership.id },
             data: {
-              role: "merchant_admin",
+              role: "owner",
               status: "active",
               statusReason: null,
             },
@@ -617,7 +617,7 @@ function buildAdminRouter(deps) {
             data: {
               merchantId,
               userId: newUser.id,
-              role: "merchant_admin",
+              role: "owner",
               status: "active",
               statusReason: null,
             },

@@ -628,6 +628,12 @@ function buildMerchantRouter(deps) {
         return sendError(res, 400, "VALIDATION_ERROR", `merchantType must be one of: ${VALID_MERCHANT_TYPES.join(", ")}`);
       }
 
+      // Optional owner info — create user + membership in one flow
+      const ownerEmail = req.body?.ownerEmail ? String(req.body.ownerEmail).trim().toLowerCase() : null;
+      const ownerFirstName = req.body?.ownerFirstName ? String(req.body.ownerFirstName).trim() : null;
+      const ownerLastName = req.body?.ownerLastName ? String(req.body.ownerLastName).trim() : null;
+      const ownerPhone = req.body?.ownerPhone ? String(req.body.ownerPhone).trim() : null;
+
       const merchant = await prisma.merchant.create({
         data: {
           name,
@@ -644,13 +650,59 @@ function buildMerchantRouter(deps) {
         data: { merchantId: merchant.id, name: "Store Visit", categoryType: "visit", status: "active" },
       });
 
+      // Create owner if email provided
+      let ownerResult = null;
+      if (ownerEmail) {
+        let user = await prisma.user.findFirst({ where: { email: ownerEmail } });
+        let tempPassword = null;
+
+        if (!user) {
+          tempPassword = crypto.randomBytes(6).toString("base64url");
+          const bcryptLib = require("bcryptjs");
+          const passwordHash = await bcryptLib.hash(tempPassword, 12);
+          user = await prisma.user.create({
+            data: {
+              email: ownerEmail,
+              passwordHash,
+              systemRole: "user",
+              status: "active",
+              ...(ownerFirstName ? { firstName: ownerFirstName } : {}),
+              ...(ownerLastName ? { lastName: ownerLastName } : {}),
+              ...(ownerPhone ? { phoneRaw: ownerPhone } : {}),
+            },
+          });
+        }
+
+        await prisma.merchantUser.create({
+          data: {
+            merchantId: merchant.id,
+            userId: user.id,
+            role: "owner",
+            status: "active",
+          },
+        });
+
+        ownerResult = {
+          userId: user.id,
+          email: ownerEmail,
+          firstName: ownerFirstName,
+          lastName: ownerLastName,
+          tempPassword,
+          created: !!tempPassword,
+        };
+      }
+
       emitPvHook("admin.merchant.created", {
         actorUserId: req.userId,
         merchantId: merchant.id,
         name: merchant.name,
+        ownerEmail: ownerEmail || null,
       });
 
-      return res.status(201).json(applyNormalizedMerchantStatus(merchant));
+      return res.status(201).json({
+        ...applyNormalizedMerchantStatus(merchant),
+        owner: ownerResult,
+      });
     } catch (err) {
       return handlePrismaError(err, res);
     }
