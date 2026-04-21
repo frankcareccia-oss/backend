@@ -501,6 +501,43 @@ function buildAdminRouter(deps) {
     }
   });
 
+  // PATCH /admin/merchants/:merchantId/users/:userId — edit user profile (pv_admin)
+  router.patch("/admin/merchants/:merchantId/users/:userId", requireAdmin, async (req, res) => {
+    try {
+      const merchantId = parseIntParam(req.params.merchantId);
+      const userId = parseIntParam(req.params.userId);
+      if (!merchantId || !userId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantId or userId");
+
+      // Verify user belongs to this merchant
+      const mu = await prisma.merchantUser.findFirst({
+        where: { merchantId, userId },
+      });
+      if (!mu) return sendError(res, 404, "NOT_FOUND", "User not found in this merchant");
+
+      const { firstName, lastName, phoneRaw } = req.body || {};
+      const data = {};
+      if (firstName !== undefined) data.firstName = String(firstName).trim() || null;
+      if (lastName !== undefined) data.lastName = String(lastName).trim() || null;
+      if (phoneRaw !== undefined) data.phoneRaw = String(phoneRaw).trim() || null;
+
+      if (Object.keys(data).length === 0) {
+        return sendError(res, 400, "VALIDATION_ERROR", "No fields to update");
+      }
+
+      const updated = await prisma.user.update({ where: { id: userId }, data });
+
+      return res.json({
+        userId: updated.id,
+        email: updated.email,
+        firstName: updated.firstName,
+        lastName: updated.lastName,
+        phoneRaw: updated.phoneRaw,
+      });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
   router.post("/admin/merchant/ownership-transfer", requireAdmin, async (req, res) => {
     try {
       const merchantId = parseIntParam(req.body?.merchantId);

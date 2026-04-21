@@ -277,6 +277,38 @@
       { "id": "change", "label": "Changing your password", "plain_description": "Enter your current password, then your new password twice. Your new password should be at least 8 characters. After saving, you'll be signed out automatically — just log back in with the new password." }
     ]
   },
+  "admin_merchant_users": {
+    "id": "admin_merchant_users",
+    "route": "/merchants/:id/users",
+    "intended_roles": ["pv_admin"],
+    "title": "Team Management",
+    "summary": "Manage this merchant's team — owner, admins, and employees. Set who has access and what role they play.",
+    "sections": [
+      { "id": "owner", "label": "Current Owner", "plain_description": "The business owner who has full control of the merchant account. Click 'Edit' next to any team member to update their name, or use 'Change Owner' to transfer ownership to a different person." },
+      { "id": "team", "label": "All Team Members", "plain_description": "Everyone with access to this merchant's PerkValet account. Each person has a role (Owner, Admin, Employee) and a status (Active, Suspended). Click 'Edit' to change a team member's name or phone number." },
+      { "id": "create", "label": "Adding team members", "plain_description": "Enter an email address at the top to add someone to the team. If they don't have a PerkValet account yet, one is created with a temporary password you share with them." }
+    ]
+  },
+  "admin_merchant_detail": {
+    "id": "admin_merchant_detail",
+    "route": "/merchants/:id",
+    "intended_roles": ["pv_admin"],
+    "title": "Merchant Detail",
+    "summary": "Overview of this merchant — stores, team, products, promotions, billing, and POS connections.",
+    "sections": [
+      { "id": "overview", "label": "Merchant overview", "plain_description": "Quick access to every section of this merchant's account. Click any card to manage that area." }
+    ]
+  },
+  "admin_ownership_transfer": {
+    "id": "admin_ownership_transfer",
+    "route": "/merchants/:id/ownership",
+    "intended_roles": ["pv_admin"],
+    "title": "Ownership Transfer",
+    "summary": "Transfer merchant ownership from one person to another. The new owner gets full control. You choose what happens to the previous owner (keep, demote, or suspend).",
+    "sections": [
+      { "id": "transfer", "label": "Transfer process", "plain_description": "Select the current owner, the new owner, a reason for the transfer, and what to do with the previous owner's access. This is a one-step process — confirm and it's done." }
+    ]
+  },
   "admin_merchants": {
     "id": "admin_merchants",
     "route": "/admin/merchants",

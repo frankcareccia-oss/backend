@@ -15,6 +15,7 @@ const PAGE_ID_MAP = {
   "/admin/oversight": "admin_oversight",
   "/admin/platform/config": "admin_settings",
   "/admin/merchants": "admin_merchants",
+  "/merchants/": "admin_merchant_detail",
   "/merchant/dashboard": "merchant_dashboard",
   "/merchant/weekly": "merchant_weekly",
   "/merchant/promotions": "merchant_promotions",
@@ -34,15 +35,24 @@ function resolvePageId(route) {
   // Normalize: strip hash, normalize merchant IDs
   const clean = route
     .replace(/^#/, "")
-    .replace(/\/merchants\/\d+/, "/merchant")
     .replace(/\/stores\/\d+/, "/stores/:id");
 
+  // Check for admin merchant sub-pages BEFORE normalizing merchant IDs
+  if (/\/merchants\/\d+\/users/.test(clean)) return "admin_merchant_users";
+  if (/\/merchants\/\d+\/products/.test(clean)) return "merchant_products";
+  if (/\/merchants\/\d+\/promotions/.test(clean)) return "merchant_promotions";
+  if (/\/merchants\/\d+\/stores/.test(clean)) return "merchant_stores";
+  if (/\/merchants\/\d+\/ownership/.test(clean)) return "admin_ownership_transfer";
+  if (/\/merchants\/\d+/.test(clean)) return "admin_merchant_detail";
+
+  const normalized = clean.replace(/\/merchants\/\d+/, "/merchant");
+
   // Exact match first
-  if (PAGE_ID_MAP[clean]) return PAGE_ID_MAP[clean];
+  if (PAGE_ID_MAP[normalized]) return PAGE_ID_MAP[normalized];
 
   // Prefix match
   for (const [pattern, id] of Object.entries(PAGE_ID_MAP)) {
-    if (clean.startsWith(pattern)) return id;
+    if (normalized.startsWith(pattern)) return id;
   }
 
   return "unknown";
