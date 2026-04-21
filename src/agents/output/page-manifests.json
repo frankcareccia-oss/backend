@@ -1,0 +1,162 @@
+{
+  "admin_system": {
+    "id": "admin_system",
+    "route": "/admin/system",
+    "intended_roles": ["pv_admin"],
+    "title": "System",
+    "summary": "Platform operations — monitor scheduled jobs, run tests, and manage the AI documentation pipeline.",
+    "sections": [
+      {
+        "id": "cron_jobs",
+        "label": "Cron Jobs",
+        "plain_description": "Shows all scheduled background jobs that run automatically. Each row shows the job name, when it last ran, whether it succeeded, and how long it took. Green means healthy. Red means the job failed and needs attention.",
+        "what_to_do_if_red": "Check the error message in the row. Most cron failures are temporary — tap Refresh to see if it resolved."
+      },
+      {
+        "id": "test_health",
+        "label": "Test Health",
+        "plain_description": "Shows the platform test suite organized by feature area. 65 test files across 8 categories — POS integration, promotions, consumer app, security, and more. Tests run locally via the QA dashboard.",
+        "what_to_do_if_failing": "A failing test category means something in that feature area may have a bug. Note which category failed and check recent code changes."
+      },
+      {
+        "id": "ai_pipeline",
+        "label": "AI Pipeline",
+        "plain_description": "The five-agent documentation pipeline. On every deployment, it reads the codebase, builds a knowledge graph, and writes updated help content automatically. The table shows each agent's last run — whether output changed and how long it took.",
+        "additional": "'Run Full Pipeline' forces a full refresh even if nothing changed in the code."
+      }
+    ]
+  },
+  "admin_support": {
+    "id": "admin_support",
+    "route": "/admin/support",
+    "intended_roles": ["pv_admin"],
+    "title": "Support Tickets",
+    "summary": "AI-diagnosed support requests from merchants. Every ticket is pre-populated with full platform context — no need to ask the merchant to describe their problem.",
+    "sections": [
+      {
+        "id": "ticket_list",
+        "label": "Ticket list",
+        "plain_description": "Each ticket shows the merchant name, priority, status, AI diagnosis, and page where the issue occurred. Expand any ticket to see the full platform snapshot, resolution steps the AI already suggested, and recent events leading up to the issue."
+      },
+      {
+        "id": "ticket_actions",
+        "label": "Managing tickets",
+        "plain_description": "Mark a ticket 'In Progress' when you're investigating. 'Resolve' with an optional note when the issue is fixed. The merchant doesn't see these status changes — they're for internal tracking."
+      }
+    ]
+  },
+  "admin_oversight": {
+    "id": "admin_oversight",
+    "route": "/admin/oversight",
+    "intended_roles": ["pv_admin"],
+    "title": "Platform Oversight",
+    "summary": "Real-time platform health across all merchants. Transaction volume, attribution rates, merchant health scores, and system alerts at a glance.",
+    "sections": [
+      {
+        "id": "kpi_tiles",
+        "label": "Platform KPIs",
+        "plain_description": "Six tiles showing platform-wide metrics for the last 7 days. Trend arrows show week-over-week change. Green = improving, red = declining."
+      },
+      {
+        "id": "merchant_health",
+        "label": "Merchant Health",
+        "plain_description": "One row per merchant showing POS type, active promotions, 7-day transaction volume, attribution rate, and a health score (0-100). Score below 70 needs attention. Score below 40 needs proactive outreach."
+      },
+      {
+        "id": "alerts",
+        "label": "Alerts",
+        "plain_description": "System alerts sorted by severity — errors first, then warnings. Shows merchants with no recent transactions, failed cron jobs, and disconnected POS connections."
+      }
+    ]
+  },
+  "admin_home": {
+    "id": "admin_home",
+    "route": "/admin",
+    "intended_roles": ["pv_admin"],
+    "title": "Admin Dashboard",
+    "summary": "Your home base. Each card links to a section of the platform — merchants, billing, system health, support tickets, and more.",
+    "sections": [
+      {
+        "id": "cards",
+        "label": "Navigation cards",
+        "plain_description": "Each card represents a section of the PerkValet admin platform. Click any card to go to that section. The cards you'll use most: Merchants (manage accounts), Support Tickets (help merchants), Platform Oversight (see how everything is running), and System (monitor background jobs)."
+      }
+    ]
+  },
+  "merchant_dashboard": {
+    "id": "merchant_dashboard",
+    "route": "/merchant/dashboard",
+    "intended_roles": ["owner", "merchant_admin"],
+    "title": "Dashboard",
+    "summary": "Your home page — quick access to every section of your PerkValet account. The cards link to your stores, products, promotions, analytics, and settings.",
+    "sections": [
+      {
+        "id": "cards",
+        "label": "Navigation cards",
+        "plain_description": "Each card links to a section of your account. Weekly Summary shows last week's performance. Analytics shows detailed charts. Products and Promotions are where you set up your loyalty programs."
+      }
+    ]
+  },
+  "merchant_weekly": {
+    "id": "merchant_weekly",
+    "route": "/merchant/weekly",
+    "intended_roles": ["owner", "merchant_admin"],
+    "title": "Weekly Summary",
+    "summary": "Last week's performance, this week's events, and anything that needs your attention — all in one view.",
+    "sections": [
+      {
+        "id": "last_week",
+        "label": "Last week",
+        "plain_description": "Final numbers from last week — transactions, phone captures, stamps earned, and new members. The capture rate by location shows how each store is doing at identifying customers."
+      },
+      {
+        "id": "this_week",
+        "label": "This week",
+        "plain_description": "What's happening this week — promotions going live, rewards about to expire, and your active programs with enrollment counts."
+      },
+      {
+        "id": "alerts",
+        "label": "Needs your attention",
+        "plain_description": "Items that need action from you. Each alert has a direct link to where you can take action. 'All clear' means everything is running smoothly."
+      }
+    ]
+  },
+  "merchant_promotions": {
+    "id": "merchant_promotions",
+    "route": "/merchant/promotions",
+    "intended_roles": ["owner", "merchant_admin"],
+    "title": "Promotions",
+    "summary": "Create and manage your loyalty programs — stamp cards, tiered rewards, referral programs, time-based bonuses, and combo bundles.",
+    "sections": [
+      {
+        "id": "create",
+        "label": "Creating a promotion",
+        "plain_description": "Click '+ Add Program' to create a new loyalty program. Choose a type (Stamp Card, Tiered, Conditional, or Bundle), set the reward, and use 'Write for me' to generate a consumer-facing description."
+      },
+      {
+        "id": "manage",
+        "label": "Managing promotions",
+        "plain_description": "Use the status filter pills to see Draft, Active, or Archived programs. Edit names and descriptions, change status (Draft → Staged → Active), or archive programs you no longer need."
+      }
+    ]
+  },
+  "merchant_products": {
+    "id": "merchant_products",
+    "route": "/merchant/products",
+    "intended_roles": ["owner", "merchant_admin"],
+    "title": "Products",
+    "summary": "Your product catalog — the items and categories that your loyalty programs are built around.",
+    "sections": [
+      {
+        "id": "categories",
+        "label": "Categories",
+        "plain_description": "Categories group your products (Coffee, Pastry, Tea). You need at least one category before you can create a promotion. Use the suggestion chips for quick setup."
+      },
+      {
+        "id": "products",
+        "label": "Adding products",
+        "plain_description": "Add products with a name, description, and image. Use 'Write for me' to generate an appealing description. Use 'Browse Unsplash' to find a photo — right-click the image and choose 'Copy image address' to get the direct link."
+      }
+    ]
+  }
+}

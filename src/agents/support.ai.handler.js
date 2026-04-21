@@ -20,8 +20,17 @@ const { prisma } = require("../db/prisma");
 const { sendError } = require("../utils/errors");
 const { requireJwt } = require("../middleware/auth");
 const { emitPvHook } = require("../utils/hooks");
+const { detectWidgetMode, resolvePageId } = require("./lib/widget.mode.detector");
 
 const router = express.Router();
+
+// Load page manifests
+function loadPageManifests() {
+  try {
+    const manifestPath = path.join(__dirname, "output", "page-manifests.json");
+    return JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  } catch { return {}; }
+}
 
 // Load knowledge graph
 function loadKnowledgeGraph() {
@@ -181,6 +190,89 @@ async function resolveMerchantId(userId) {
   });
   return mu?.merchantId || null;
 }
+
+// ──────────────────────────────────────────────
+// POST /api/support/mode
+// Detect widget mode based on context
+// ──────────────────────────────────────────────
+router.post("/api/support/mode", requireJwt, async (req, res) => {
+  try {
+    const context = req.body || {};
+    const currentPage = context.session?.pathname || "";
+    const hasActiveError = context.apiEvents?.some(e => e.direction === "in" && e.status >= 400 && (Date.now() - new Date(e.ts).getTime()) < 60000) || false;
+
+    const modeResult = detectWidgetMode({
+      userRole: req.systemRole || "user",
+      currentPage,
+      hasActiveError,
+      userInitiated: true,
+    });
+
+    if (modeResult.mode === "orientation") {
+      const manifests = loadPageManifests();
+      const manifest = manifests[modeResult.pageId];
+
+      if (manifest) {
+        return res.json({
+          mode: "orientation",
+          title: manifest.title,
+          summary: manifest.summary,
+          sections: manifest.sections.map(s => ({ id: s.id, label: s.label })),
+          pageId: modeResult.pageId,
+        });
+      }
+
+      // Unknown page — fall back to ask_first
+      return res.json({
+        mode: "ask_first",
+        options: [
+          { id: "explain", label: "Explain what's on this page" },
+          { id: "broken", label: "Something isn't working" },
+        ],
+      });
+    }
+
+    if (modeResult.mode === "ask_first") {
+      return res.json({
+        mode: "ask_first",
+        options: [
+          { id: "explain", label: "Explain what's on this page" },
+          { id: "broken", label: "Something isn't working" },
+        ],
+      });
+    }
+
+    // Diagnosis mode — redirect to diagnose endpoint
+    return res.json({ mode: "diagnosis", reason: modeResult.reason });
+  } catch (err) {
+    return sendError(res, 500, "SERVER_ERROR", err.message);
+  }
+});
+
+// ──────────────────────────────────────────────
+// GET /api/support/section/:pageId/:sectionId
+// Section detail on tap (from manifest)
+// ──────────────────────────────────────────────
+router.get("/api/support/section/:pageId/:sectionId", requireJwt, async (req, res) => {
+  try {
+    const { pageId, sectionId } = req.params;
+    const manifests = loadPageManifests();
+    const manifest = manifests[pageId];
+    const section = manifest?.sections?.find(s => s.id === sectionId);
+
+    if (section) {
+      return res.json({
+        label: section.label,
+        description: section.plain_description,
+        additionalInfo: section.what_to_do_if_red || section.what_to_do_if_failing || section.additional || null,
+      });
+    }
+
+    return res.json({ label: sectionId, description: "No details available for this section yet.", additionalInfo: null });
+  } catch (err) {
+    return sendError(res, 500, "SERVER_ERROR", err.message);
+  }
+});
 
 // ──────────────────────────────────────────────
 // POST /api/support/diagnose
