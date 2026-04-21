@@ -830,11 +830,18 @@ if (require.main === module) app.listen(PORT, () => {
   const { runStampExpiry } = require("./src/cron/stamp.expiry.cron");
   cron.schedule("0 4 * * *", withCronLog("stamp-expiry", () => runStampExpiry()), { timezone: "UTC" });
 
-  // Knowledge Snapshot — 2:30 AM UTC (after reporting, before anyone's awake)
+  // Knowledge Pipeline — 2:30 AM UTC (full Agent 1→3→4 chain)
   const { runAgent1 } = require("./src/agents/agent.1.reader");
+  const { runAgent3 } = require("./src/agents/agent.3.writer");
   const { runSnapshot } = require("./src/agents/agent.4.validator");
-  cron.schedule("30 2 * * *", withCronLog("knowledge-snapshot", async () => {
-    await runAgent1();
+  const { gate: pipelineGate } = require("./src/agents/lib/gate");
+  const agentPath = require("path");
+  cron.schedule("30 2 * * *", withCronLog("knowledge-pipeline", async () => {
+    const rawPath = agentPath.join(__dirname, "src/agents/output/knowledge-raw.json");
+    const step1 = await pipelineGate(rawPath, runAgent1);
+    if (step1.changed) {
+      await runAgent3().catch(e => console.error("[knowledge-pipeline] Agent 3 error:", e?.message));
+    }
     return runSnapshot();
   }), { timezone: "UTC" });
 

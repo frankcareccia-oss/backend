@@ -116,13 +116,81 @@ Write the complete consumer help document in Markdown. Keep it SHORT:`;
   fs.writeFileSync(path.join(OUTPUT_DIR, "consumer-help.md"), consumerHelp);
   console.log(`[Agent 3] Consumer help: ${consumerHelp.length} chars`);
 
+  // ── Per-page help articles ──────────────────────────────────
+
+  const HELP_DIR = path.join(OUTPUT_DIR, "help");
+  if (!fs.existsSync(HELP_DIR)) fs.mkdirSync(HELP_DIR, { recursive: true });
+
+  // Load page manifests
+  const manifestPath = path.join(__dirname, "output", "page-manifests.json");
+  let manifests = {};
+  try { manifests = JSON.parse(fs.readFileSync(manifestPath, "utf8")); } catch {}
+
+  let pagesGenerated = 0;
+
+  for (const [pageId, manifest] of Object.entries(manifests)) {
+    if (!manifest.sections?.length) continue;
+
+    const sectionsText = manifest.sections.map(s => {
+      let text = `Section: ${s.label}\nDescription: ${s.plain_description}`;
+      if (s.what_to_do_if_red) text += `\nTroubleshooting: ${s.what_to_do_if_red}`;
+      if (s.what_to_do_if_failing) text += `\nTroubleshooting: ${s.what_to_do_if_failing}`;
+      if (s.additional) text += `\nNote: ${s.additional}`;
+      return text;
+    }).join("\n\n");
+
+    const audience = manifest.intended_roles?.includes("pv_admin") ? "PerkValet platform administrator" : "small business owner using PerkValet";
+
+    const pagePrompt = `You are writing a complete help guide for the "${manifest.title}" page in PerkValet.
+The reader is a ${audience}. They want step-by-step instructions.
+
+Write in plain, direct language. Second person ("you", "your"). Short sentences.
+Use numbered steps for procedures. Use ## for section headings.
+Never use technical terms without explaining them.
+Never mention OAuth, webhooks, API tokens, or database.
+
+Page: ${manifest.title}
+Overview: ${manifest.summary}
+
+Sections to cover:
+${sectionsText}
+
+For each section write:
+1. A clear heading (## Section Name)
+2. What this section does (1-2 sentences)
+3. Step-by-step instructions for the most common task
+4. A "Something wrong?" subsection with the top 2-3 issues and plain-language fixes
+5. End each section with "Still stuck? Tap the ? button for instant help."
+
+Start with a brief overview paragraph, then cover each section.
+Write the complete help article in Markdown:`;
+
+    try {
+      const pageMsg = await client.messages.create({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 2000,
+        messages: [{ role: "user", content: pagePrompt }],
+      });
+
+      const pageHelp = pageMsg.content?.[0]?.text?.trim() || "";
+      if (pageHelp.length > 100) {
+        fs.writeFileSync(path.join(HELP_DIR, `${pageId}.md`), pageHelp);
+        pagesGenerated++;
+        console.log(`[Agent 3] Help page: ${pageId} (${pageHelp.length} chars)`);
+      }
+    } catch (e) {
+      console.error(`[Agent 3] Failed to generate help for ${pageId}:`, e?.message);
+    }
+  }
+
   const durationMs = Date.now() - start;
-  console.log(`[Agent 3] Complete — merchant: ${merchantHelp.length} chars, consumer: ${consumerHelp.length} chars (${durationMs}ms)`);
+  console.log(`[Agent 3] Complete — merchant: ${merchantHelp.length} chars, consumer: ${consumerHelp.length} chars, ${pagesGenerated} help pages (${durationMs}ms)`);
 
   return {
     durationMs,
     merchantHelpChars: merchantHelp.length,
     consumerHelpChars: consumerHelp.length,
+    helpPagesGenerated: pagesGenerated,
   };
 }
 
