@@ -502,6 +502,38 @@ function buildAdminRouter(deps) {
     }
   });
 
+  // PATCH /admin/merchants/:merchantId/team-setup — set team setup mode (pv_admin)
+  router.patch("/admin/merchants/:merchantId/team-setup", requireAdmin, async (req, res) => {
+    try {
+      const merchantId = parseIntParam(req.params.merchantId);
+      if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantId");
+
+      const { teamSetupMode } = req.body || {};
+      const validModes = ["individual", "shared", "solo", "external"];
+      if (!validModes.includes(teamSetupMode)) {
+        return sendError(res, 400, "VALIDATION_ERROR", `teamSetupMode must be one of: ${validModes.join(", ")}`);
+      }
+
+      const merchant = await prisma.merchant.update({
+        where: { id: merchantId },
+        data: {
+          teamSetupMode,
+          teamSetupComplete: true,
+        },
+        select: { id: true, name: true, teamSetupMode: true, teamSetupComplete: true },
+      });
+
+      console.log(JSON.stringify({
+        pvHook: "admin.merchant.team_setup_updated",
+        merchantId, teamSetupMode, ts: new Date().toISOString(),
+      }));
+
+      return res.json(merchant);
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
   // PATCH /admin/merchants/:merchantId/users/:userId — edit user profile (pv_admin)
   router.patch("/admin/merchants/:merchantId/users/:userId", requireAdmin, async (req, res) => {
     try {

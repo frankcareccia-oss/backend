@@ -15,8 +15,37 @@ const express = require("express");
 const { prisma } = require("../db/prisma");
 const { sendError } = require("../utils/errors");
 const { requireJwt, requireMerchantRole } = require("../middleware/auth");
+const { getMerchantCapabilities } = require("./merchant.capabilities");
 
 const router = express.Router();
+
+// ──────────────────────────────────────────────
+// GET /merchant/capabilities
+// ──────────────────────────────────────────────
+router.get(
+  "/merchant/capabilities",
+  requireJwt,
+  requireMerchantRole("owner", "merchant_admin"),
+  async (req, res) => {
+    try {
+      const merchant = await prisma.merchant.findUnique({
+        where: { id: req.merchantId },
+        select: { teamSetupMode: true, teamSyncEnabled: true, teamSetupComplete: true },
+      });
+      if (!merchant) return sendError(res, 404, "NOT_FOUND", "Merchant not found");
+
+      const caps = getMerchantCapabilities(merchant.teamSetupMode);
+      return res.json({
+        ...caps,
+        teamSyncEnabled: merchant.teamSyncEnabled || false,
+        teamSetupComplete: merchant.teamSetupComplete || false,
+      });
+    } catch (err) {
+      console.error("[merchant.capabilities] error:", err?.message || err);
+      return sendError(res, 500, "SERVER_ERROR", "Failed to load capabilities");
+    }
+  }
+);
 
 function getWeekBounds(weeksAgo = 0) {
   const now = new Date();

@@ -122,6 +122,12 @@ model Merchant {
   // Consumer check-ins
   checkins ConsumerCheckin[]
 
+  // Team setup — determines which associate features are available
+  teamSetupMode     String?   // individual | shared | solo | external
+  teamSyncEnabled   Boolean   @default(false)
+  teamSyncedAt      DateTime?
+  teamSetupComplete Boolean   @default(false)
+
   // Seed data (staging only)
   isSeedMerchant    Boolean @default(false)
   seedBaselineDaily Int     @default(80)
