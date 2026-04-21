@@ -94,35 +94,121 @@ function buildCloverOAuthRouter({ requireJwt, sendError, emitPvHook }) {
     }
   });
 
+  // Detect environment from base URL
+  const CLOVER_ENVIRONMENT = CLOVER_BASE.includes("sandbox") ? "sandbox" : "production";
+
+  /**
+   * Clover OAuth failure cases:
+   *   A — User clicked Cancel on Clover consent screen
+   *   B — Invalid/expired authorization code
+   *   C — Wrong account type (staff login, not owner/admin)
+   *   D — Clover API is down or token endpoint unreachable
+   *   E — State parameter tampered or expired (session conflict)
+   *   F — Merchant already connected to a different PV account
+   */
+  const CLOVER_ERROR_MESSAGES = {
+    cancelled: "You cancelled the Clover connection. No problem — click Connect again when you're ready.",
+    invalid_code: "The authorization expired. This happens if you take too long on the Clover page. Please try again.",
+    wrong_account: "Clover returned an error that usually means a staff-level login was used. Please sign in with the owner or admin account.",
+    clover_down: "Clover's servers didn't respond. This is on their end — wait a minute and try again.",
+    invalid_state: "Your session expired or was opened in another tab. Please go back to the setup page and try again.",
+    already_connected: "This Clover account is already connected to a different PerkValet merchant. Contact support if this is unexpected.",
+    unknown: "Something went wrong connecting to Clover. Please try again. If it keeps happening, click 'I need help'.",
+  };
+
+  /**
+   * Helper: record OAuth attempt on OnboardingSession (fire-and-forget).
+   */
+  async function recordOAuthAttempt(pvMerchantId, errorKey) {
+    try {
+      const session = await prisma.onboardingSession.findUnique({
+        where: { merchantId: pvMerchantId },
+      });
+      if (session) {
+        await prisma.onboardingSession.update({
+          where: { id: session.id },
+          data: {
+            oauthAttempts: { increment: 1 },
+            lastOAuthError: errorKey || null,
+            posEnvironment: CLOVER_ENVIRONMENT,
+          },
+        });
+      }
+    } catch (e) {
+      console.warn("[clover.oauth] could not update onboarding session:", e?.message);
+    }
+  }
+
   /**
    * GET /pos/connect/clover/callback — exchange code for token
    */
   router.get("/pos/connect/clover/callback", async (req, res) => {
     try {
-      const { code, merchant_id: cloverMerchantId, state } = req.query;
+      const { code, merchant_id: cloverMerchantId, state, error: oauthError } = req.query;
 
-      if (!code || !cloverMerchantId) {
-        return res.status(400).send("Missing code or merchant_id from Clover");
+      // Case A: User clicked Cancel
+      if (oauthError === "access_denied" || (!code && !cloverMerchantId)) {
+        // Try to extract merchantId from state for tracking
+        let pvMerchantId;
+        try {
+          const decoded = JSON.parse(Buffer.from(state || "", "base64").toString("utf8"));
+          pvMerchantId = decoded.merchantId;
+        } catch {}
+        if (pvMerchantId) await recordOAuthAttempt(pvMerchantId, "cancelled");
+
+        return res.redirect(`${ADMIN_APP_URL}/#/merchant/onboarding?oauth_error=cancelled`);
       }
 
-      // Decode state to get PV merchantId
+      if (!code || !cloverMerchantId) {
+        return res.redirect(`${ADMIN_APP_URL}/#/merchant/onboarding?oauth_error=invalid_code`);
+      }
+
+      // Case E: Decode state to get PV merchantId
       let pvMerchantId;
       try {
         const decoded = JSON.parse(Buffer.from(state, "base64").toString("utf8"));
         pvMerchantId = decoded.merchantId;
       } catch {
-        return res.status(400).send("Invalid OAuth state");
+        return res.redirect(`${ADMIN_APP_URL}/#/merchant/onboarding?oauth_error=invalid_state`);
+      }
+
+      // Case F: Check if this Clover merchant is already connected to a DIFFERENT PV merchant
+      const existingConn = await prisma.posConnection.findFirst({
+        where: {
+          posType: "clover",
+          externalMerchantId: cloverMerchantId,
+          status: "active",
+          merchantId: { not: pvMerchantId },
+        },
+      });
+      if (existingConn) {
+        await recordOAuthAttempt(pvMerchantId, "already_connected");
+        return res.redirect(`${ADMIN_APP_URL}/#/merchant/onboarding?oauth_error=already_connected`);
       }
 
       // Exchange code for access token
       const tokenUrl = `${CLOVER_API_BASE}/oauth/token?client_id=${CLOVER_APP_ID}&client_secret=${CLOVER_APP_SECRET}&code=${code}`;
-      const tokenRes = await fetch(tokenUrl);
-      const tokenData = await tokenRes.json();
+      let tokenRes, tokenData;
+      try {
+        tokenRes = await fetch(tokenUrl);
+        tokenData = await tokenRes.json();
+      } catch (fetchErr) {
+        // Case D: Clover API down
+        console.error("[clover.oauth] token fetch failed:", fetchErr?.message);
+        await recordOAuthAttempt(pvMerchantId, "clover_down");
+        return res.redirect(`${ADMIN_APP_URL}/#/merchant/onboarding?oauth_error=clover_down`);
+      }
 
       if (!tokenData.access_token) {
+        // Case B or C: invalid code or wrong account
         console.error("[clover.oauth] token exchange failed:", tokenData);
-        return res.status(400).send("Token exchange failed: " + JSON.stringify(tokenData));
+        const errorKey = tokenData.message?.includes("invalid") ? "invalid_code" : "wrong_account";
+        await recordOAuthAttempt(pvMerchantId, errorKey);
+        return res.redirect(`${ADMIN_APP_URL}/#/merchant/onboarding?oauth_error=${errorKey}`);
       }
+
+      // Success — record attempt and update environment
+      await recordOAuthAttempt(pvMerchantId, null);
 
       // Upsert PosConnection
       const conn = await prisma.posConnection.upsert({
@@ -186,6 +272,27 @@ function buildCloverOAuthRouter({ requireJwt, sendError, emitPvHook }) {
         posConnectionId: conn.id,
       });
 
+      // Update onboarding session with connection details
+      try {
+        const obSession = await prisma.onboardingSession.findUnique({
+          where: { merchantId: pvMerchantId },
+        });
+        if (obSession) {
+          await prisma.onboardingSession.update({
+            where: { id: obSession.id },
+            data: {
+              posConnectionId: conn.id,
+              externalMerchantId: cloverMerchantId,
+              posEnvironment: CLOVER_ENVIRONMENT,
+              currentStage: "map-stores",
+              currentStep: "4.1",
+            },
+          });
+        }
+      } catch (e) {
+        console.warn("[clover.oauth] could not update onboarding:", e?.message);
+      }
+
       // Trigger catalog sync (fire-and-forget)
       const { CloverAdapter } = require("./adapters/clover.adapter");
       const adapter = new CloverAdapter(conn);
@@ -201,7 +308,7 @@ function buildCloverOAuthRouter({ requireJwt, sendError, emitPvHook }) {
       return res.redirect(`${ADMIN_APP_URL}/#/merchant/settings?pos=clover_connected`);
     } catch (err) {
       console.error("[clover.oauth] callback error:", err);
-      return res.status(500).send("Connection failed: " + (err?.message || ""));
+      return res.redirect(`${ADMIN_APP_URL}/#/merchant/onboarding?oauth_error=unknown`);
     }
   });
 

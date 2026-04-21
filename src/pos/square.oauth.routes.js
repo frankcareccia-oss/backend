@@ -67,7 +67,7 @@ function registerSquareOAuthRoutes(app, { prisma, sendError, requireAuth, requir
       const redirectUri = process.env.SQUARE_REDIRECT_URI || `${req.protocol}://${req.get("host")}/pos/connect/square/callback`;
       const params = new URLSearchParams({
         client_id: SQUARE_APP_ID,
-        scope: "MERCHANT_PROFILE_READ PAYMENTS_READ CUSTOMERS_READ ORDERS_READ ITEMS_READ GIFTCARDS_READ GIFTCARDS_WRITE",
+        scope: "MERCHANT_PROFILE_READ PAYMENTS_READ CUSTOMERS_READ ORDERS_READ ITEMS_READ GIFTCARDS_READ GIFTCARDS_WRITE EMPLOYEES_READ",
         redirect_uri: redirectUri,
         state,
       });
@@ -81,15 +81,39 @@ function registerSquareOAuthRoutes(app, { prisma, sendError, requireAuth, requir
 
   // ─── GET /pos/connect/square/callback ──────────────────────────────────────
 
-  app.get("/pos/connect/square/callback", async (req, res) => {
-    const { code, state, error } = req.query;
+  const SQUARE_ENVIRONMENT = IS_SANDBOX ? "sandbox" : "production";
+  const adminBase = process.env.ADMIN_APP_URL || "https://admin.perksvalet.com";
 
-    if (error) {
-      return res.status(400).send(`Square OAuth error: ${error}`);
+  async function recordSquareOAuthAttempt(merchantId, errorKey) {
+    try {
+      const session = await prisma.onboardingSession.findUnique({
+        where: { merchantId },
+      });
+      if (session) {
+        await prisma.onboardingSession.update({
+          where: { id: session.id },
+          data: {
+            oauthAttempts: { increment: 1 },
+            lastOAuthError: errorKey || null,
+            posEnvironment: SQUARE_ENVIRONMENT,
+          },
+        });
+      }
+    } catch (e) {
+      console.warn("[square.oauth] could not update onboarding:", e?.message);
+    }
+  }
+
+  app.get("/pos/connect/square/callback", async (req, res) => {
+    const { code, state, error: oauthError } = req.query;
+
+    // User cancelled
+    if (oauthError === "access_denied" || (!code && !state)) {
+      return res.redirect(`${adminBase}/#/merchant/onboarding?oauth_error=cancelled`);
     }
 
     if (!code || !state) {
-      return res.status(400).send("Missing code or state");
+      return res.redirect(`${adminBase}/#/merchant/onboarding?oauth_error=invalid_code`);
     }
 
     let merchantId;
@@ -98,7 +122,7 @@ function registerSquareOAuthRoutes(app, { prisma, sendError, requireAuth, requir
       merchantId = decoded.merchantId;
       if (!merchantId) throw new Error("Invalid state");
     } catch {
-      return res.status(400).send("Invalid OAuth state");
+      return res.redirect(`${adminBase}/#/merchant/onboarding?oauth_error=invalid_state`);
     }
 
     try {
@@ -153,23 +177,49 @@ function registerSquareOAuthRoutes(app, { prisma, sendError, requireAuth, requir
         },
       });
 
-      // Auto-sync catalog from Square (fire-and-forget)
+      // Update onboarding session with connection details
       const conn = await prisma.posConnection.findUnique({
         where: { merchantId_posType: { merchantId, posType: "square" } },
       });
+
       if (conn) {
+        // Update onboarding
+        try {
+          const obSession = await prisma.onboardingSession.findUnique({
+            where: { merchantId },
+          });
+          if (obSession) {
+            await prisma.onboardingSession.update({
+              where: { id: obSession.id },
+              data: {
+                posConnectionId: conn.id,
+                externalMerchantId: externalMerchantId,
+                posEnvironment: SQUARE_ENVIRONMENT,
+                currentStage: "map-stores",
+                currentStep: "4.1",
+                lastOAuthError: null,
+              },
+            });
+          }
+        } catch (e) {
+          console.warn("[square.oauth] could not update onboarding:", e?.message);
+        }
+
+        // Record successful attempt
+        await recordSquareOAuthAttempt(merchantId, null);
+
+        // Auto-sync catalog (fire-and-forget)
         const adapter = new SquareAdapter(conn);
         syncCatalogFromPos(prisma, adapter, { merchantId, posConnectionId: conn.id, trigger: "onboard" }).catch((e) => {
           console.error("[square.oauth] catalog sync failed:", e?.message || String(e));
         });
       }
 
-      // Redirect back to admin UI — adjust URL as needed
-      const adminBase = process.env.ADMIN_APP_URL || "https://admin.perksvalet.com";
       res.redirect(`${adminBase}/#/merchant/settings?pos=connected`);
     } catch (e) {
       console.error("[square.oauth] callback error:", e?.message);
-      res.status(500).send(`Connection failed: ${e?.message}`);
+      if (merchantId) await recordSquareOAuthAttempt(merchantId, "unknown");
+      res.redirect(`${adminBase}/#/merchant/onboarding?oauth_error=unknown`);
     }
   });
 
