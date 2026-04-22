@@ -825,20 +825,35 @@ model Product {
   complianceText String?    @db.Text
   status      ProductStatus @default(draft)
 
+  // ── Origin tracking ──
+  /// The single most important field: false = POS created, PV reads only; true = PV created, may push to POS
+  pvOrigin          Boolean   @default(true)
+
   // POS catalog sync
   catalogSource     String?  @default("native") @db.VarChar(16) // native | pos
-  externalCatalogId String?  @db.VarChar(128)  // POS-specific item ID
+  externalCatalogId String?  @db.VarChar(128)  // POS-specific item ID (posProductId)
   posConnectionId   Int?
   posConnection     PosConnection? @relation(fields: [posConnectionId], references: [id])
   upc               String?  @db.VarChar(14)   // UPC-A, UPC-E, EAN-13, GTIN-14
-  priceCents        Int?                        // base price in cents
+  priceCents        Int?                        // base price in cents (POS authoritative if !pvOrigin)
+  posLastSyncedAt   DateTime?                   // when PV last pulled from POS
+  posPushedAt       DateTime?                   // when PV last pushed to POS (pvOrigin=true only)
+
+  // ── PV enrichment (always editable, never sent to POS) ──
+  pvDisplayName     String?  @db.VarChar(200)   // consumer display name (overrides name for consumer app)
+  pvAllergens       Json?                       // { gluten: bool, dairy: bool, nuts: bool, ... }
+  pvDietaryClaims   Json?                       // { vegan: bool, vegetarian: bool, glutenFree: bool, ... }
+  pvAvailableToday  Boolean  @default(true)     // manual availability toggle
+  pvPriceCents      Int?                        // PV-set price (pvOrigin=true products)
+  pvDuplicatedFromId Int?                       // if created by duplicating an archived product
 
   // Category (v3.5 model — required for reward qualification)
   categoryId  Int?
   category    ProductCategory? @relation(fields: [categoryId], references: [id])
 
-  startAt          DateTime?
+  startAt          DateTime?                    // go-live date (pvGoLiveAt)
   endAt            DateTime?
+  pvSuspendAt      DateTime?                    // auto-transition ACTIVE → SUSPENDED
   timeframeDays    Int?
   /// Set once when product first transitions to active. Never reset on deactivate/reactivate.
   firstActivatedAt DateTime?

@@ -830,6 +830,14 @@ if (require.main === module) app.listen(PORT, () => {
   const { runStampExpiry } = require("./src/cron/stamp.expiry.cron");
   cron.schedule("0 4 * * *", withCronLog("stamp-expiry", () => runStampExpiry()), { timezone: "UTC" });
 
+  // Product/Promotion Lifecycle — every 15 min (scheduled activations + suspensions)
+  const { runProductLifecycleCron } = require("./src/cron/product.lifecycle.cron");
+  cron.schedule("*/15 * * * *", withCronLog("lifecycle", () => runProductLifecycleCron()), { timezone: "UTC" });
+
+  // Product Sync — 3 AM UTC (nightly pull from Clover/Square)
+  const { runProductSyncCron } = require("./src/cron/product.sync.cron");
+  cron.schedule("0 3 * * *", withCronLog("product-sync", () => runProductSyncCron()), { timezone: "UTC" });
+
   // POS Team Sync — 5 AM UTC (nightly read-only employee pull from Clover/Square)
   const { runTeamSyncCron } = require("./src/cron/pos.team.sync.cron");
   cron.schedule("0 5 * * *", withCronLog("team-sync", () => runTeamSyncCron()), { timezone: "UTC" });

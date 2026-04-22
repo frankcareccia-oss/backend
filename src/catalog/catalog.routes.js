@@ -509,6 +509,61 @@ router.post(
   }
 );
 
+// POST /merchant/products/:productId/duplicate — create new draft from archived product
+router.post(
+  "/merchant/products/:productId/duplicate",
+  requireJwt,
+  requireMerchantRole("owner", "merchant_admin"),
+  async (req, res) => {
+    try {
+      const productId = parseIntParam(req.params.productId);
+      if (!productId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid productId");
+
+      const existing = await prisma.product.findFirst({
+        where: { id: productId, merchantId: req.merchantId },
+      });
+      if (!existing) return sendError(res, 404, "NOT_FOUND", "Product not found");
+      if (existing.status !== "archived")
+        return sendError(res, 409, "INVALID_STATE", "Only archived products can be duplicated");
+
+      // Generate new SKU
+      const count = await prisma.product.count({ where: { merchantId: req.merchantId } });
+      const sku = `PRD-${String(count + 1).padStart(4, "0")}`;
+
+      const product = await prisma.product.create({
+        data: {
+          merchantId: req.merchantId,
+          pvOrigin: existing.pvOrigin,
+          name: `${existing.name} (copy)`,
+          sku,
+          description: existing.description,
+          imageUrl: existing.imageUrl,
+          complianceText: existing.complianceText,
+          categoryId: existing.categoryId,
+          priceCents: existing.priceCents,
+          pvDisplayName: existing.pvDisplayName,
+          pvAllergens: existing.pvAllergens,
+          pvDietaryClaims: existing.pvDietaryClaims,
+          pvPriceCents: existing.pvPriceCents,
+          pvDuplicatedFromId: existing.id,
+          status: "draft",
+        },
+        include: { category: true },
+      });
+
+      emitPvHook("catalog.product.duplicated", {
+        tc: "TC-CAT-PROD-DUPLICATE-01", sev: "info", stable: "catalog:product:duplicated",
+        merchantId: req.merchantId, productId: product.id, sourceProductId: existing.id,
+        actorUserId: req.userId, actorRole: req.merchantRole,
+      });
+
+      return res.json({ product });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  }
+);
+
 // POST /merchant/products/generate-info
 // Calls Claude to draft a compliance blurb for a product.
 // Merchant reviews and edits before saving.

@@ -264,4 +264,41 @@ describe("Product Lifecycle State Machine", () => {
       expect(res.body.error.code).toBe("STATE_LOCKED");
     });
   });
+
+  // ── DUPLICATE TESTS ──
+
+  describe("duplicate archived product", () => {
+    it("duplicates an archived product as new draft", async () => {
+      const product = await createDraftProduct("Original Product");
+      await request(app).post(`/merchant/products/${product.id}/activate`).set(auth);
+      await request(app).post(`/merchant/products/${product.id}/archive`).set(auth);
+
+      const res = await request(app)
+        .post(`/merchant/products/${product.id}/duplicate`)
+        .set(auth);
+      expect(res.status).toBe(200);
+      expect(res.body.product.status).toBe("draft");
+      expect(res.body.product.name).toBe("Original Product (copy)");
+      expect(res.body.product.pvDuplicatedFromId).toBe(product.id);
+      expect(res.body.product.id).not.toBe(product.id);
+    });
+
+    it("cannot duplicate a non-archived product", async () => {
+      const product = await createDraftProduct("Not Archived");
+      const res = await request(app)
+        .post(`/merchant/products/${product.id}/duplicate`)
+        .set(auth);
+      expect(res.status).toBe(409);
+    });
+  });
+
+  // ── pvOrigin TESTS ──
+
+  describe("pvOrigin field", () => {
+    it("new products have pvOrigin=true by default", async () => {
+      const product = await createDraftProduct("PV Origin Test");
+      const dbProduct = await prisma.product.findUnique({ where: { id: product.id } });
+      expect(dbProduct.pvOrigin).toBe(true);
+    });
+  });
 });
