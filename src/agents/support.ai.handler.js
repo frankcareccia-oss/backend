@@ -409,14 +409,31 @@ router.post("/api/support/ticket", requireJwt, async (req, res) => {
 });
 
 // ──────────────────────────────────────────────
+// ──────────────────────────────────────────────
+// Support role check — pv_admin or support
+// ──────────────────────────────────────────────
+function requireSupportAccess(req, res) {
+  if (req.systemRole !== "pv_admin" && req.systemRole !== "support") {
+    sendError(res, 403, "FORBIDDEN", "Support or admin access required");
+    return false;
+  }
+  return true;
+}
+
+// ──────────────────────────────────────────────
 // GET /admin/support/tickets
-// List all tickets (pv_admin only)
+// List all tickets (pv_admin + support)
 // ──────────────────────────────────────────────
 router.get("/admin/support/tickets", requireJwt, async (req, res) => {
   try {
-    if (req.systemRole !== "pv_admin") return sendError(res, 403, "FORBIDDEN", "Admin only");
+    if (!requireSupportAccess(req, res)) return;
+
+    const { status: filterStatus } = req.query;
+    const where = {};
+    if (filterStatus) where.status = filterStatus;
 
     const tickets = await prisma.supportTicket.findMany({
+      where,
       orderBy: [{ status: "asc" }, { priority: "asc" }, { createdAt: "desc" }],
       include: { merchant: { select: { name: true } } },
     });
@@ -434,27 +451,89 @@ router.get("/admin/support/tickets", requireJwt, async (req, res) => {
 });
 
 // ──────────────────────────────────────────────
-// PATCH /admin/support/tickets/:id
-// Update ticket status (pv_admin only)
+// GET /admin/support/tickets/:id
+// Get ticket detail (pv_admin + support)
 // ──────────────────────────────────────────────
-router.patch("/admin/support/tickets/:id", requireJwt, async (req, res) => {
+router.get("/admin/support/tickets/:id", requireJwt, async (req, res) => {
   try {
-    if (req.systemRole !== "pv_admin") return sendError(res, 403, "FORBIDDEN", "Admin only");
+    if (!requireSupportAccess(req, res)) return;
 
     const id = parseInt(req.params.id, 10);
     if (!id) return sendError(res, 400, "VALIDATION_ERROR", "Invalid ticket ID");
 
-    const { status, resolutionNote } = req.body || {};
+    const ticket = await prisma.supportTicket.findUnique({
+      where: { id },
+      include: { merchant: { select: { id: true, name: true, status: true } } },
+    });
+    if (!ticket) return sendError(res, 404, "NOT_FOUND", "Ticket not found");
+
+    return res.json({
+      ticket: {
+        ...ticket,
+        merchantName: ticket.merchant?.name,
+        merchantStatus: ticket.merchant?.status,
+      },
+    });
+  } catch (err) {
+    return sendError(res, 500, "SERVER_ERROR", err.message);
+  }
+});
+
+// ──────────────────────────────────────────────
+// PATCH /admin/support/tickets/:id
+// Update ticket: status, assign, notes, resolve, close (pv_admin + support)
+// ──────────────────────────────────────────────
+router.patch("/admin/support/tickets/:id", requireJwt, async (req, res) => {
+  try {
+    if (!requireSupportAccess(req, res)) return;
+
+    const id = parseInt(req.params.id, 10);
+    if (!id) return sendError(res, 400, "VALIDATION_ERROR", "Invalid ticket ID");
+
+    const existing = await prisma.supportTicket.findUnique({ where: { id } });
+    if (!existing) return sendError(res, 404, "NOT_FOUND", "Ticket not found");
+
+    const { status, resolutionNote, assignToMe, note } = req.body || {};
     const data = {};
-    if (status) data.status = status;
-    if (resolutionNote) data.resolutionNote = resolutionNote;
-    if (status === "resolved") data.resolvedAt = new Date();
+
+    // Status transitions: open → in_progress → resolved → closed
+    const VALID_TICKET_TRANSITIONS = {
+      open:        ["in_progress", "resolved", "closed"],
+      in_progress: ["resolved", "closed"],
+      resolved:    ["closed", "open"], // reopen if needed
+      closed:      ["open"], // reopen if needed
+    };
+
+    if (status && status !== existing.status) {
+      const allowed = VALID_TICKET_TRANSITIONS[existing.status] || [];
+      if (!allowed.includes(status)) {
+        return sendError(res, 409, "INVALID_STATE", `Cannot transition from ${existing.status} to ${status}`);
+      }
+      data.status = status;
+      if (status === "resolved") data.resolvedAt = new Date();
+      if (status === "closed") data.closedAt = new Date();
+      if (status === "open") { data.resolvedAt = null; data.closedAt = null; }
+    }
+
+    if (resolutionNote !== undefined) data.resolutionNote = resolutionNote;
+    if (assignToMe) data.assignedToUserId = req.userId;
+
+    // Add internal note
+    if (note) {
+      const notes = Array.isArray(existing.internalNotes) ? existing.internalNotes : [];
+      notes.push({ userId: req.userId, note, ts: new Date().toISOString() });
+      data.internalNotes = notes;
+    }
+
+    if (Object.keys(data).length === 0) {
+      return sendError(res, 400, "VALIDATION_ERROR", "No fields to update");
+    }
 
     const ticket = await prisma.supportTicket.update({ where: { id }, data });
 
     emitPvHook("support.ticket.updated", {
       tc: "TC-SUPPORT-TICKET-02", sev: "info", stable: "support:ticket:updated",
-      ticketId: id, status: ticket.status,
+      ticketId: id, status: ticket.status, updatedBy: req.userId,
     });
 
     return res.json({ ticket });

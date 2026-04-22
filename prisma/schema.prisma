@@ -724,6 +724,9 @@ enum SystemRole {
   /// PerkValet global admin (routes to /admin)
   pv_admin
 
+  /// Support agent — can view/resolve tickets, read-only merchant access
+  support
+
   /// Normal user (merchant-scoped roles apply via MerchantUser / StoreUser)
   user
 }
@@ -2536,10 +2539,13 @@ model SupportTicket {
   posType             String?
   daysOnPlatform      Int?
   billingStage        String?
-  status              String   @default("open") // open, in_progress, resolved
+  status              String   @default("open") // open, in_progress, resolved, closed
   priority            String   @default("normal") // critical, high, normal
+  assignedToUserId    Int?
   resolvedAt          DateTime?
-  resolutionNote      String?
+  closedAt            DateTime?
+  resolutionNote      String?  @db.Text
+  internalNotes       Json     @default("[]") // [{ userId, note, ts }]
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
