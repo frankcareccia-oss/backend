@@ -67,6 +67,11 @@ function requireBillingStaff(req, res, next) {
   return sendError(res, 403, "FORBIDDEN", "Billing staff access required");
 }
 
+function requirePlatformRole(req, res, next) {
+  if (req.userId && ["pv_admin", "support", "pv_ar_clerk", "pv_ap_clerk"].includes(req.systemRole)) return next();
+  return sendError(res, 403, "FORBIDDEN", "Platform access required");
+}
+
 // Requires caller to be an active member of the merchant with one of the allowed merchant roles.
 // Attaches req.merchantRole, req.merchantId, and req.callerMerchantUser.
 //
@@ -134,4 +139,4 @@ async function requireConsumerJwt(req, res, next) {
   }
 }
 
-module.exports = { requireJwt, requireAdmin, requireBillingStaff, requireMerchantRole, requireConsumerJwt };
+module.exports = { requireJwt, requireAdmin, requireBillingStaff, requirePlatformRole, requireMerchantRole, requireConsumerJwt };

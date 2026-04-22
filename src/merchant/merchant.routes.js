@@ -28,6 +28,8 @@ function buildMerchantRouter(deps) {
     prisma,
     requireJwt,
     requireAdmin,
+    requireBillingStaff,
+    requirePlatformRole,
     sendError,
     handlePrismaError,
     parseIntParam,
@@ -568,7 +570,7 @@ function buildMerchantRouter(deps) {
     };
   }
 
-  router.get("/merchants", requireJwt, requireAdmin, async (req, res) => {
+  router.get("/merchants", requireJwt, requirePlatformRole, async (req, res) => {
     try {
       const statusFilterRaw = req.query?.status;
       const statusFilter = normalizeAdminMerchantStatus(statusFilterRaw);
@@ -708,7 +710,7 @@ function buildMerchantRouter(deps) {
     }
   });
 
-  router.get("/merchants/:merchantId", requireJwt, requireAdmin, async (req, res) => {
+  router.get("/merchants/:merchantId", requireJwt, requirePlatformRole, async (req, res) => {
     const merchantId = parseIntParam(req.params.merchantId);
     if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid merchantId");
 

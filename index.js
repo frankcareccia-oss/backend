@@ -605,6 +605,8 @@ app.use(
     prisma,
     requireJwt,
     requireAdmin,
+    requireBillingStaff,
+    requirePlatformRole,
     sendError,
     handlePrismaError,
     parseIntParam,

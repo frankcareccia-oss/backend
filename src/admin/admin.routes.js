@@ -768,7 +768,7 @@ function buildAdminRouter(deps) {
     }
   });
 
-  router.get("/admin/invoices", requireAdmin, async (req, res) => {
+  router.get("/admin/invoices", requireBillingStaff, async (req, res) => {
     try {
       const where = {};
 
@@ -804,7 +804,7 @@ function buildAdminRouter(deps) {
     }
   });
 
-  router.get("/admin/invoices/:invoiceId", requireAdmin, async (req, res) => {
+  router.get("/admin/invoices/:invoiceId", requireBillingStaff, async (req, res) => {
     const invoiceId = parseIntParam(req.params.invoiceId);
     if (!invoiceId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid invoiceId");
 
@@ -827,7 +827,7 @@ function buildAdminRouter(deps) {
     }
   });
 
-  router.get("/admin/invoices/:invoiceId/late-fee-preview", requireAdmin, async (req, res) => {
+  router.get("/admin/invoices/:invoiceId/late-fee-preview", requireBillingStaff, async (req, res) => {
     const invoiceId = parseIntParam(req.params.invoiceId);
     if (!invoiceId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid invoiceId");
 
