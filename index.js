@@ -1,5 +1,5 @@
 ﻿// index.js
-require("dotenv").config({ override: true });
+require("dotenv").config();
 
 const { buildShortPayRouter } = require("./src/payments/shortpay.routes");
 const buildAuthRouter = require("./src/auth/auth.routes");
