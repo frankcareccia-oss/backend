@@ -721,11 +721,17 @@ enum EntityStatus {
 }
 
 enum SystemRole {
-  /// PerkValet global admin (routes to /admin)
+  /// PerkValet global admin (full platform access)
   pv_admin
 
-  /// Support agent — can view/resolve tickets, read-only merchant access
+  /// Support agent — tickets, read-only merchant access
   support
+
+  /// Accounts receivable — invoices, billing, payment tracking
+  pv_ar_clerk
+
+  /// Accounts payable — vendor payments, expense tracking
+  pv_ap_clerk
 
   /// Normal user (merchant-scoped roles apply via MerchantUser / StoreUser)
   user

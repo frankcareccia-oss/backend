@@ -979,6 +979,146 @@ function buildAdminRouter(deps) {
     }
   });
 
+  // ══════════════════════════════════════════════════════════════
+  // PV TEAM — Platform user management (pv_admin only)
+  // ══════════════════════════════════════════════════════════════
+
+  const PV_SYSTEM_ROLES = ["pv_admin", "support", "pv_ar_clerk", "pv_ap_clerk"];
+
+  // GET /admin/team — list all platform users (non-merchant system roles)
+  router.get("/admin/team", requireAdmin, async (req, res) => {
+    try {
+      const users = await prisma.user.findMany({
+        where: { systemRole: { in: PV_SYSTEM_ROLES } },
+        select: {
+          id: true, email: true, firstName: true, lastName: true,
+          phoneRaw: true, systemRole: true, status: true,
+          createdAt: true, passwordUpdatedAt: true,
+        },
+        orderBy: { createdAt: "asc" },
+      });
+      return res.json({ users });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
+  // POST /admin/team — create a new platform user
+  router.post("/admin/team", requireAdmin, async (req, res) => {
+    try {
+      const { email, firstName, lastName, phoneRaw, systemRole } = req.body || {};
+
+      if (!email || !String(email).includes("@"))
+        return sendError(res, 400, "VALIDATION_ERROR", "Valid email required");
+      if (!firstName)
+        return sendError(res, 400, "VALIDATION_ERROR", "First name required");
+      if (!systemRole || !PV_SYSTEM_ROLES.includes(systemRole))
+        return sendError(res, 400, "VALIDATION_ERROR", `systemRole must be one of: ${PV_SYSTEM_ROLES.join(", ")}`);
+
+      // Check email uniqueness
+      const existing = await prisma.user.findUnique({ where: { email: email.toLowerCase().trim() } });
+      if (existing) return sendError(res, 409, "DUPLICATE_EMAIL", "A user with this email already exists");
+
+      // Generate temp password
+      const tempPassword = crypto.randomBytes(8).toString("hex");
+      const passwordHash = await bcrypt.hash(tempPassword, 10);
+
+      const user = await prisma.user.create({
+        data: {
+          email: email.toLowerCase().trim(),
+          passwordHash,
+          firstName: String(firstName).trim(),
+          lastName: lastName ? String(lastName).trim() : null,
+          phoneRaw: phoneRaw ? String(phoneRaw).trim() : null,
+          systemRole,
+        },
+        select: {
+          id: true, email: true, firstName: true, lastName: true,
+          phoneRaw: true, systemRole: true, status: true, createdAt: true,
+        },
+      });
+
+      console.log(JSON.stringify({
+        pvHook: "admin.team.user_created",
+        userId: user.id, email: user.email, systemRole,
+        ts: new Date().toISOString(),
+      }));
+
+      return res.status(201).json({ user, tempPassword });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
+  // PATCH /admin/team/:userId — update a platform user
+  router.patch("/admin/team/:userId", requireAdmin, async (req, res) => {
+    try {
+      const userId = parseIntParam(req.params.userId);
+      if (!userId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid userId");
+
+      const existing = await prisma.user.findUnique({ where: { id: userId } });
+      if (!existing) return sendError(res, 404, "NOT_FOUND", "User not found");
+      if (!PV_SYSTEM_ROLES.includes(existing.systemRole) && existing.systemRole !== "user")
+        return sendError(res, 403, "FORBIDDEN", "Cannot edit non-platform users here");
+
+      const { firstName, lastName, phoneRaw, systemRole, status } = req.body || {};
+      const data = {};
+
+      if (firstName !== undefined) data.firstName = String(firstName).trim() || null;
+      if (lastName !== undefined) data.lastName = String(lastName).trim() || null;
+      if (phoneRaw !== undefined) data.phoneRaw = String(phoneRaw).trim() || null;
+      if (systemRole !== undefined) {
+        if (!PV_SYSTEM_ROLES.includes(systemRole))
+          return sendError(res, 400, "VALIDATION_ERROR", `systemRole must be one of: ${PV_SYSTEM_ROLES.join(", ")}`);
+        data.systemRole = systemRole;
+      }
+      if (status !== undefined) {
+        if (!["active", "inactive"].includes(status))
+          return sendError(res, 400, "VALIDATION_ERROR", "status must be active or inactive");
+        data.status = status;
+      }
+
+      if (Object.keys(data).length === 0)
+        return sendError(res, 400, "VALIDATION_ERROR", "No fields to update");
+
+      const user = await prisma.user.update({
+        where: { id: userId },
+        data,
+        select: {
+          id: true, email: true, firstName: true, lastName: true,
+          phoneRaw: true, systemRole: true, status: true, createdAt: true,
+        },
+      });
+
+      return res.json({ user });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
+  // POST /admin/team/:userId/reset-password — generate new temp password
+  router.post("/admin/team/:userId/reset-password", requireAdmin, async (req, res) => {
+    try {
+      const userId = parseIntParam(req.params.userId);
+      if (!userId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid userId");
+
+      const existing = await prisma.user.findUnique({ where: { id: userId } });
+      if (!existing) return sendError(res, 404, "NOT_FOUND", "User not found");
+
+      const tempPassword = crypto.randomBytes(8).toString("hex");
+      const passwordHash = await bcrypt.hash(tempPassword, 10);
+
+      await prisma.user.update({
+        where: { id: userId },
+        data: { passwordHash, tokenVersion: { increment: 1 } },
+      });
+
+      return res.json({ tempPassword });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
   return router;
 }
 

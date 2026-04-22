@@ -63,7 +63,7 @@ function requireAdmin(req, res, next) {
 }
 
 function requireBillingStaff(req, res, next) {
-  if (req.userId && ["pv_admin", "pv_ar_clerk"].includes(req.systemRole)) return next();
+  if (req.userId && ["pv_admin", "pv_ar_clerk", "pv_ap_clerk"].includes(req.systemRole)) return next();
   return sendError(res, 403, "FORBIDDEN", "Billing staff access required");
 }
 
