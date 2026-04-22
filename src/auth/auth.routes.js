@@ -55,7 +55,10 @@ function buildAuthRouter(deps) {
         { expiresIn: JWT_EXPIRES_IN }
       );
 
-      const landing = user.systemRole === "pv_admin" ? "/admin" : "/merchant";
+      const pvPlatformRoles = ["pv_admin", "support", "pv_ar_clerk", "pv_ap_clerk"];
+      const landing = pvPlatformRoles.includes(user.systemRole)
+        ? (user.systemRole === "support" ? "/admin/support" : "/admin")
+        : "/merchant";
 
       return res.json({
         accessToken,
@@ -324,7 +327,10 @@ If you did not request this, you can ignore this email.`,
 
       if (!user) return sendError(res, 404, "NOT_FOUND", "User not found");
 
-      const landing = user.systemRole === "pv_admin" ? "/admin" : "/merchant";
+      const pvPlatformRoles = ["pv_admin", "support", "pv_ar_clerk", "pv_ap_clerk"];
+      const landing = pvPlatformRoles.includes(user.systemRole)
+        ? (user.systemRole === "support" ? "/admin/support" : "/admin")
+        : "/merchant";
 
       const merchantName =
         Array.isArray(user.merchantUsers) && user.merchantUsers.length
