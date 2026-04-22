@@ -2558,3 +2558,12 @@ model SupportTicket {
   @@index([status, priority, createdAt])
   @@index([merchantId])
 }
+
+model DemoRequest {
+  id        Int      @id @default(autoincrement())
+  email     String
+  source    String   @default("website") // website_pricing, website_hero, etc.
+  createdAt DateTime @default(now())
+
+  @@index([email])
+}

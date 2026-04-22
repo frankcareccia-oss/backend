@@ -599,6 +599,30 @@ app.use(
 
 app.get("/", (_req, res) => res.json({ status: "PerkValet backend running ?" }));
 
+// Demo request from website
+app.post("/notify", async (req, res) => {
+  try {
+    const { email, source } = req.body || {};
+    if (!email || typeof email !== "string" || !email.includes("@")) {
+      return res.status(400).json({ error: "Valid email required" });
+    }
+    const row = await prisma.demoRequest.create({
+      data: { email: email.trim().toLowerCase(), source: source || "website" },
+    });
+    // Notify team
+    const { sendMail } = require("./src/utils/mail");
+    sendMail({
+      to: "hello@perksvalet.com",
+      subject: `New demo request from ${email}`,
+      text: `New demo request:\n\nEmail: ${email}\nSource: ${source || "website"}\nTime: ${new Date().toISOString()}\n\nFollow up soon!`,
+    }).catch((e) => console.error("[notify] mail error:", e?.message));
+    res.json({ ok: true, id: row.id });
+  } catch (e) {
+    console.error("[notify] error:", e?.message);
+    res.status(500).json({ error: "Failed to process request" });
+  }
+});
+
 // Grocery MVP — JWT-protected
 const { buildGroceryRouter } = require("./src/grocery/grocery.routes");
 app.use(buildGroceryRouter({ sendError, emitPvHook, requireJwt }));
