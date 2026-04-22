@@ -41,6 +41,15 @@ const VALID_PRODUCT_TRANSITIONS = {
   archived:  [],
 };
 
+// Fields editable per state — enforced on PATCH
+const EDITABLE_BY_STATE = {
+  draft:     null, // null = all fields editable
+  staged:    ["startAt", "endAt"], // only scheduling
+  active:    [], // nothing editable — must archive + duplicate
+  suspended: [], // frozen
+  archived:  [], // terminal
+};
+
 /* ---------------------------------------------------------------
    Resolve merchantId from JWT merchant membership.
    Caller must already have requireJwt + requireMerchantRole run.
@@ -172,7 +181,26 @@ router.patch(
       });
       if (!existing) return sendError(res, 404, "NOT_FOUND", "Product not found");
 
+      // State-based edit restrictions
+      const editableFields = EDITABLE_BY_STATE[existing.status];
+      if (editableFields !== null && editableFields.length === 0) {
+        return sendError(res, 409, "STATE_LOCKED", `Cannot edit a product in "${existing.status}" state. ${existing.status === "active" ? "Archive it and create a duplicate to make changes." : ""}`);
+      }
+
       const { name, description, complianceText, imageUrl, categoryId: categoryIdRaw, startAt, endAt, timeframeDays } = req.body || {};
+
+      // In staged state, only startAt/endAt are editable
+      if (editableFields !== null) {
+        const attemptedFields = [
+          name !== undefined && "name", description !== undefined && "description",
+          complianceText !== undefined && "complianceText", imageUrl !== undefined && "imageUrl",
+          categoryIdRaw !== undefined && "categoryId", timeframeDays !== undefined && "timeframeDays",
+        ].filter(Boolean);
+        if (attemptedFields.length > 0) {
+          return sendError(res, 409, "STATE_LOCKED", `In "${existing.status}" state, only scheduling (startAt, endAt) can be changed. Revert to draft to edit other fields.`);
+        }
+      }
+
       const data = {};
 
       if (name !== undefined) {
@@ -322,7 +350,49 @@ router.post(
   }
 );
 
-// POST /merchant/products/:productId/activate — draft → active
+// POST /merchant/products/:productId/stage — draft → staged (requires startAt)
+router.post(
+  "/merchant/products/:productId/stage",
+  requireJwt,
+  requireMerchantRole("owner", "merchant_admin"),
+  async (req, res) => {
+    try {
+      const productId = parseIntParam(req.params.productId);
+      if (!productId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid productId");
+
+      const existing = await prisma.product.findFirst({
+        where: { id: productId, merchantId: req.merchantId },
+      });
+      if (!existing) return sendError(res, 404, "NOT_FOUND", "Product not found");
+
+      const allowed = VALID_PRODUCT_TRANSITIONS[existing.status] || [];
+      if (!allowed.includes("staged"))
+        return sendError(res, 409, "INVALID_STATE", `Cannot stage a product in "${existing.status}" state`);
+
+      // Gate: must have a go-live date
+      const startAt = req.body?.startAt ? new Date(req.body.startAt) : existing.startAt;
+      if (!startAt) return sendError(res, 400, "VALIDATION_ERROR", "startAt (go-live date) is required to stage a product");
+
+      const product = await prisma.product.update({
+        where: { id: productId },
+        data: { status: "staged", startAt },
+        include: { category: true },
+      });
+
+      emitPvHook("catalog.product.staged", {
+        tc: "TC-CAT-PROD-STAGE-01", sev: "info", stable: "catalog:product:staged",
+        merchantId: req.merchantId, productId: product.id, productName: product.name,
+        goLiveAt: startAt.toISOString(), actorUserId: req.userId, actorRole: req.merchantRole,
+      });
+
+      return res.json({ product });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  }
+);
+
+// POST /merchant/products/:productId/activate — draft/staged → active
 router.post(
   "/merchant/products/:productId/activate",
   requireJwt,
@@ -336,18 +406,99 @@ router.post(
         where: { id: productId, merchantId: req.merchantId },
       });
       if (!existing) return sendError(res, 404, "NOT_FOUND", "Product not found");
-      if (existing.status !== "draft")
-        return sendError(res, 409, "INVALID_STATE", `Only draft products can be activated (current: ${existing.status})`);
+
+      const allowed = VALID_PRODUCT_TRANSITIONS[existing.status] || [];
+      if (!allowed.includes("active"))
+        return sendError(res, 409, "INVALID_STATE", `Cannot activate a product in "${existing.status}" state`);
+
+      // Gate: must have a startAt
+      const startAt = existing.startAt || new Date();
 
       const product = await prisma.product.update({
         where: { id: productId },
-        data: { status: "active", firstActivatedAt: existing.firstActivatedAt ?? new Date() },
+        data: { status: "active", startAt, firstActivatedAt: existing.firstActivatedAt ?? new Date() },
         include: { category: true },
       });
 
       emitPvHook("catalog.product.activated", {
         tc: "TC-CAT-PROD-ACTIVATE-01", sev: "info", stable: "catalog:product:activated",
         merchantId: req.merchantId, productId: product.id, productName: product.name, sku: product.sku,
+        actorUserId: req.userId, actorRole: req.merchantRole,
+      });
+
+      return res.json({ product });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  }
+);
+
+// POST /merchant/products/:productId/archive — active/suspended → archived
+router.post(
+  "/merchant/products/:productId/archive",
+  requireJwt,
+  requireMerchantRole("owner", "merchant_admin"),
+  async (req, res) => {
+    try {
+      const productId = parseIntParam(req.params.productId);
+      if (!productId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid productId");
+
+      const existing = await prisma.product.findFirst({
+        where: { id: productId, merchantId: req.merchantId },
+      });
+      if (!existing) return sendError(res, 404, "NOT_FOUND", "Product not found");
+
+      const allowed = VALID_PRODUCT_TRANSITIONS[existing.status] || [];
+      if (!allowed.includes("archived"))
+        return sendError(res, 409, "INVALID_STATE", `Cannot archive a product in "${existing.status}" state`);
+
+      const product = await prisma.product.update({
+        where: { id: productId },
+        data: { status: "archived" },
+        include: { category: true },
+      });
+
+      emitPvHook("catalog.product.archived", {
+        tc: "TC-CAT-PROD-ARCHIVE-01", sev: "info", stable: "catalog:product:archived",
+        merchantId: req.merchantId, productId: product.id, productName: product.name,
+        actorUserId: req.userId, actorRole: req.merchantRole,
+      });
+
+      return res.json({ product });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  }
+);
+
+// POST /merchant/products/:productId/revert-to-draft — staged → draft
+router.post(
+  "/merchant/products/:productId/revert-to-draft",
+  requireJwt,
+  requireMerchantRole("owner", "merchant_admin"),
+  async (req, res) => {
+    try {
+      const productId = parseIntParam(req.params.productId);
+      if (!productId) return sendError(res, 400, "VALIDATION_ERROR", "Invalid productId");
+
+      const existing = await prisma.product.findFirst({
+        where: { id: productId, merchantId: req.merchantId },
+      });
+      if (!existing) return sendError(res, 404, "NOT_FOUND", "Product not found");
+
+      const allowed = VALID_PRODUCT_TRANSITIONS[existing.status] || [];
+      if (!allowed.includes("draft"))
+        return sendError(res, 409, "INVALID_STATE", `Cannot revert to draft from "${existing.status}" state`);
+
+      const product = await prisma.product.update({
+        where: { id: productId },
+        data: { status: "draft" },
+        include: { category: true },
+      });
+
+      emitPvHook("catalog.product.reverted_to_draft", {
+        tc: "TC-CAT-PROD-REVERT-01", sev: "info", stable: "catalog:product:reverted",
+        merchantId: req.merchantId, productId: product.id, productName: product.name,
         actorUserId: req.userId, actorRole: req.merchantRole,
       });
 
@@ -608,7 +759,7 @@ router.delete(
       const existing = await prisma.product.findFirst({ where: { id: productId, merchantId } });
       if (!existing) return sendError(res, 404, "NOT_FOUND", "Product not found");
       const adminDeactivateAllowed = VALID_PRODUCT_TRANSITIONS[existing.status] || [];
-      if (!adminDeactivateAllowed.includes("inactive"))
+      if (!adminDeactivateAllowed.includes("suspended"))
         return sendError(res, 409, "INVALID_STATE", `Cannot suspend a product with status "${existing.status}"`);
 
       const product = await prisma.product.update({
@@ -690,8 +841,9 @@ router.post(
     try {
       const existing = await prisma.product.findFirst({ where: { id: productId, merchantId } });
       if (!existing) return sendError(res, 404, "NOT_FOUND", "Product not found");
-      if (existing.status !== "draft")
-        return sendError(res, 409, "INVALID_STATE", `Only draft products can be activated (current: ${existing.status})`);
+      const allowed = VALID_PRODUCT_TRANSITIONS[existing.status] || [];
+      if (!allowed.includes("active"))
+        return sendError(res, 409, "INVALID_STATE", `Cannot activate a product in "${existing.status}" state`);
 
       const product = await prisma.product.update({
         where: { id: productId },

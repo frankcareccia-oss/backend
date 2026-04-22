@@ -36,6 +36,15 @@ const VALID_PROMO_TRANSITIONS = {
   suspended: ["active", "archived"],
   archived:  [],
 };
+
+// Fields editable per state — enforced on PATCH
+const PROMO_EDITABLE_BY_STATE = {
+  draft:     null, // null = all fields editable
+  staged:    ["startAt", "endAt"], // only scheduling
+  active:    [], // nothing — must archive + duplicate
+  suspended: [], // frozen
+  archived:  [], // terminal
+};
 const VALID_OS_SCOPES     = ["merchant", "store"];
 const VALID_OS_STATUSES   = ["draft", "active", "expired", "archived"];
 
@@ -694,8 +703,6 @@ router.patch(
       });
       // legalText destructured below with the rest of req.body
       if (!existing) return sendError(res, 404, "NOT_FOUND", "Promotion not found");
-      if (existing.status === "archived")
-        return sendError(res, 409, "ARCHIVED", "Cannot update an archived Promotion");
 
       const {
         name, description, legalText, status,
@@ -705,6 +712,26 @@ router.patch(
         promoItemIds,
         startAt, endAt,
       } = req.body || {};
+
+      // State-based edit restrictions (status transitions still allowed)
+      const editableFields = PROMO_EDITABLE_BY_STATE[existing.status];
+      if (editableFields !== null && editableFields.length === 0 && !status) {
+        return sendError(res, 409, "STATE_LOCKED", `Cannot edit a promotion in "${existing.status}" state. ${existing.status === "active" ? "Archive it and create a duplicate to make changes." : ""}`);
+      }
+      if (editableFields !== null && editableFields.length > 0) {
+        // staged: only startAt/endAt + status transitions
+        const attemptedFields = [
+          name !== undefined && "name", description !== undefined && "description",
+          legalText !== undefined && "legalText", threshold !== undefined && "threshold",
+          maxGrantsPerVisit !== undefined && "maxGrantsPerVisit", timeframeDays !== undefined && "timeframeDays",
+          rewardType !== undefined && "rewardType", rewardValue !== undefined && "rewardValue",
+          rewardSku !== undefined && "rewardSku", rewardNote !== undefined && "rewardNote",
+          categoryId !== undefined && "categoryId", promoItemIds !== undefined && "promoItemIds",
+        ].filter(Boolean);
+        if (attemptedFields.length > 0) {
+          return sendError(res, 409, "STATE_LOCKED", `In "${existing.status}" state, only scheduling (startAt, endAt) can be changed. Revert to draft to edit other fields.`);
+        }
+      }
 
       const data = {};
       if (name !== undefined) {
@@ -720,6 +747,12 @@ router.patch(
           const allowed = VALID_PROMO_TRANSITIONS[existing.status] || [];
           if (!allowed.includes(status))
             return sendError(res, 409, "INVALID_STATE", `Cannot transition from ${existing.status} to ${status}`);
+          // Gate: draft → staged requires startAt
+          if (status === "staged") {
+            const goLiveAt = startAt ? new Date(startAt) : existing.startAt;
+            if (!goLiveAt)
+              return sendError(res, 400, "VALIDATION_ERROR", "startAt (go-live date) is required to stage a promotion");
+          }
           if (status === "active" && !existing.firstActivatedAt)
             data.firstActivatedAt = new Date();
         }
