@@ -190,7 +190,7 @@ function buildAdminRouter(deps) {
   });
   // ─────────────────────────────────────────────────────────────────────────
 
-  router.get("/admin/billing-policy", requireAdmin, (_req, res) => {
+  router.get("/admin/billing-policy", requireBillingStaff, (_req, res) => {
     res.json(BILLING_POLICY);
   });
 
@@ -300,7 +300,7 @@ function buildAdminRouter(deps) {
     }
   });
 
-  router.get("/admin/merchants/:merchantId/billing-policy", requireAdmin, async (req, res) => {
+  router.get("/admin/merchants/:merchantId/billing-policy", requireBillingStaff, async (req, res) => {
     const merchantId = parseIntParam(req.params.merchantId);
 
     if (!merchantId) {
