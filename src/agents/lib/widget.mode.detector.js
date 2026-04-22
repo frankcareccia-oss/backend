@@ -42,8 +42,13 @@ function resolvePageId(route) {
   if (/\/merchants\/\d+\/products/.test(clean)) return "merchant_products";
   if (/\/merchants\/\d+\/promotions/.test(clean)) return "merchant_promotions";
   if (/\/merchants\/\d+\/stores/.test(clean)) return "merchant_stores";
+  if (/\/merchants\/\d+\/bundles/.test(clean)) return "merchant_bundles";
+  if (/\/merchants\/\d+\/invoices/.test(clean)) return "merchant_invoices";
+  if (/\/merchants\/\d+\/billing/.test(clean)) return "merchant_billing";
+  if (/\/merchants\/\d+\/setup/.test(clean)) return "merchant_settings";
+  if (/\/merchants\/\d+\/reports/.test(clean)) return "merchant_analytics";
   if (/\/merchants\/\d+\/ownership/.test(clean)) return "admin_ownership_transfer";
-  if (/\/merchants\/\d+/.test(clean)) return "admin_merchant_detail";
+  if (/\/merchants\/\d+$/.test(clean)) return "admin_merchant_detail";
 
   const normalized = clean.replace(/\/merchants\/\d+/, "/merchant");
 
