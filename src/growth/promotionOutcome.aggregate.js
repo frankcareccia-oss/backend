@@ -230,7 +230,7 @@ async function computeAllPromotionOutcomes(prisma) {
     where: {
       OR: [
         { status: "active" },
-        { status: "paused", endAt: { gte: thirtyDaysAgo } },
+        { status: "suspended", endAt: { gte: thirtyDaysAgo } },
       ],
       firstActivatedAt: { not: null },
     },

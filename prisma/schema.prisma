@@ -857,8 +857,10 @@ model Product {
 
 enum ProductStatus {
   draft
+  staged
   active
-  inactive
+  suspended
+  archived
 }
 
 /**
@@ -961,7 +963,7 @@ enum OfferSetScope {
 
 enum PromoStatus {
   active
-  paused
+  suspended
   archived
 }
 
@@ -971,7 +973,7 @@ enum PromotionStatus {
   draft      // Being configured; not visible to earn engine or consumers
   staged     // startAt set; scheduled; visible to admins only
   active     // Running; consumers can earn stamps
-  paused     // Temporarily halted; progress preserved
+  suspended  // Temporarily halted; progress preserved; POS item hidden
   archived   // Ended; never deleted; can be duplicated as new draft
 }
 

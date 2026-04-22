@@ -26,15 +26,19 @@ function validateImageUrl(raw) {
 }
 
 /* ---------------------------------------------------------------
-   Product status lifecycle: draft → active → inactive
-   draft:    being configured; not visible to earn engine or consumers
-   active:   live; qualifies for earn rules
-   inactive: deactivated; reactivatable
+   Product status lifecycle: draft → staged → active → suspended → archived
+   draft:     being configured; not visible to earn engine or consumers
+   staged:    scheduled; go-live date set; not yet in POS
+   active:    live; qualifies for earn rules; visible on register
+   suspended: temporarily hidden; POS item hidden; reactivatable
+   archived:  permanently ended; data preserved; duplicate only
 ---------------------------------------------------------------- */
 const VALID_PRODUCT_TRANSITIONS = {
-  draft:    ["active"],
-  active:   ["inactive"],
-  inactive: ["active"],
+  draft:     ["staged", "active"],
+  staged:    ["active", "draft"],
+  active:    ["suspended", "archived"],
+  suspended: ["active", "archived"],
+  archived:  [],
 };
 
 /* ---------------------------------------------------------------
@@ -51,7 +55,7 @@ router.get(
     try {
       const { status } = req.query;
       const where = { merchantId: req.merchantId };
-      if (status === "draft" || status === "active" || status === "inactive") where.status = status;
+      if (["draft", "staged", "active", "suspended", "archived"].includes(status)) where.status = status;
 
       const products = await prisma.product.findMany({
         where,
@@ -248,12 +252,12 @@ router.delete(
       if (!existing) return sendError(res, 404, "NOT_FOUND", "Product not found");
 
       const deactivateAllowed = VALID_PRODUCT_TRANSITIONS[existing.status] || [];
-      if (!deactivateAllowed.includes("inactive"))
-        return sendError(res, 409, "INVALID_STATE", `Cannot deactivate a product with status "${existing.status}"`);
+      if (!deactivateAllowed.includes("suspended"))
+        return sendError(res, 409, "INVALID_STATE", `Cannot suspend a product with status "${existing.status}"`);
 
       const product = await prisma.product.update({
         where: { id: productId },
-        data: { status: "inactive" },
+        data: { status: "suspended" },
       });
 
       emitPvHook("catalog.product.deactivated", {
@@ -433,7 +437,7 @@ router.get(
     try {
       const { status } = req.query;
       const where = { merchantId };
-      if (status === "draft" || status === "active" || status === "inactive") where.status = status;
+      if (["draft", "staged", "active", "suspended", "archived"].includes(status)) where.status = status;
 
       const products = await prisma.product.findMany({
         where,
@@ -605,11 +609,11 @@ router.delete(
       if (!existing) return sendError(res, 404, "NOT_FOUND", "Product not found");
       const adminDeactivateAllowed = VALID_PRODUCT_TRANSITIONS[existing.status] || [];
       if (!adminDeactivateAllowed.includes("inactive"))
-        return sendError(res, 409, "INVALID_STATE", `Cannot deactivate a product with status "${existing.status}"`);
+        return sendError(res, 409, "INVALID_STATE", `Cannot suspend a product with status "${existing.status}"`);
 
       const product = await prisma.product.update({
         where: { id: productId },
-        data: { status: "inactive" },
+        data: { status: "suspended" },
       });
 
       emitPvHook("catalog.product.deactivated", {

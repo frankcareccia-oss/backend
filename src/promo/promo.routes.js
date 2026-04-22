@@ -27,14 +27,14 @@ const router = express.Router();
 const VALID_ITEM_TYPES    = ["visit", "any_purchase", "single_product", "product_bundle"];
 const VALID_MECHANICS     = ["stamps", "points"];
 const VALID_REWARD_TYPES  = ["free_item", "discount_pct", "discount_fixed", "custom"];
-const VALID_PROMO_STATUSES = ["active", "paused", "archived"]; // PromoItem statuses
-const VALID_PROMOTION_STATUSES = ["draft", "staged", "active", "paused", "archived"];
+const VALID_PROMO_STATUSES = ["active", "suspended", "archived"]; // PromoItem statuses
+const VALID_PROMOTION_STATUSES = ["draft", "staged", "active", "suspended", "archived"];
 const VALID_PROMO_TRANSITIONS = {
-  draft:    ["staged", "archived"],
-  staged:   ["draft",  "active"],
-  active:   ["paused", "archived"],
-  paused:   ["active", "archived"],
-  archived: [],
+  draft:     ["staged", "active"],
+  staged:    ["draft",  "active"],
+  active:    ["suspended", "archived"],
+  suspended: ["active", "archived"],
+  archived:  [],
 };
 const VALID_OS_SCOPES     = ["merchant", "store"];
 const VALID_OS_STATUSES   = ["draft", "active", "expired", "archived"];
