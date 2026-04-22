@@ -224,12 +224,20 @@ function requireAdmin(req, res, next) {
   return sendError(res, 401, "UNAUTHORIZED", "Admin authorization required");
 }
 
-// Allows pv_admin and pv_ar_clerk (billing staff) via JWT
+// Allows pv_admin and AR/AP clerks (billing staff) via JWT
 function requireBillingStaff(req, res, next) {
-  if (req.userId && ["pv_admin", "pv_ar_clerk"].includes(req.systemRole)) {
+  if (req.userId && ["pv_admin", "pv_ar_clerk", "pv_ap_clerk"].includes(req.systemRole)) {
     return next();
   }
   return sendError(res, 403, "FORBIDDEN", "Billing staff access required");
+}
+
+// Allows all platform roles (admin, support, AR, AP) via JWT
+function requirePlatformRole(req, res, next) {
+  if (req.userId && ["pv_admin", "support", "pv_ar_clerk", "pv_ap_clerk"].includes(req.systemRole)) {
+    return next();
+  }
+  return sendError(res, 403, "FORBIDDEN", "Platform access required");
 }
 
 /* -----------------------------
