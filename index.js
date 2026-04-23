@@ -645,6 +645,64 @@ app.post("/notify", async (req, res) => {
   }
 });
 
+// Terms acceptance from Get Started wizard (no auth — prospect has no account yet)
+app.post("/terms-acceptance", async (req, res) => {
+  try {
+    const { email, posType, businessTypes, termsVersion } = req.body || {};
+    if (!posType || typeof posType !== "string") {
+      return res.status(400).json({ error: "posType required" });
+    }
+    if (!Array.isArray(businessTypes) || businessTypes.length === 0) {
+      return res.status(400).json({ error: "businessTypes required" });
+    }
+    const row = await prisma.termsAcceptance.create({
+      data: {
+        email: email ? email.trim().toLowerCase() : null,
+        posType,
+        businessTypes,
+        termsVersion: termsVersion || "2026-04",
+        ipAddress: req.headers["x-forwarded-for"] || req.ip,
+        userAgent: req.headers["user-agent"] || null,
+      },
+    });
+    res.json({ ok: true, id: row.id });
+  } catch (e) {
+    console.error("[terms-acceptance] error:", e?.message);
+    res.status(500).json({ error: "Failed to process request" });
+  }
+});
+
+// Waitlist signup from Get Started wizard (no auth)
+app.post("/waitlist", async (req, res) => {
+  try {
+    const { email, posType, businessTypes, source } = req.body || {};
+    if (!email || typeof email !== "string" || !email.includes("@")) {
+      return res.status(400).json({ error: "Valid email required" });
+    }
+    const row = await prisma.waitlistSignup.create({
+      data: {
+        email: email.trim().toLowerCase(),
+        posType: posType || null,
+        businessTypes: businessTypes || undefined,
+        source: source || "wizard",
+      },
+    });
+    const { sendMail } = require("./src/utils/mail");
+    const { waitlistConfirmation } = require("./src/utils/mail.templates");
+    sendMail({ to: email, ...waitlistConfirmation(email) })
+      .catch((e) => console.error("[waitlist] auto-reply error:", e?.message));
+    sendMail({
+      to: "hello@perksvalet.com",
+      subject: `New waitlist signup: ${email}`,
+      text: `New waitlist signup:\n\nEmail: ${email}\nPOS: ${posType || "unknown"}\nSource: ${source || "wizard"}\nTime: ${new Date().toISOString()}`,
+    }).catch((e) => console.error("[waitlist] team mail error:", e?.message));
+    res.json({ ok: true, id: row.id });
+  } catch (e) {
+    console.error("[waitlist] error:", e?.message);
+    res.status(500).json({ error: "Failed to process request" });
+  }
+});
+
 // Grocery MVP — JWT-protected
 const { buildGroceryRouter } = require("./src/grocery/grocery.routes");
 app.use(buildGroceryRouter({ sendError, emitPvHook, requireJwt }));
