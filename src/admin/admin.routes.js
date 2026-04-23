@@ -863,7 +863,13 @@ function buildAdminRouter(deps) {
     const { netTermsDays } = req.body || {};
 
     try {
-      const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
+      const invoice = await prisma.invoice.findUnique({
+        where: { id: invoiceId },
+        include: {
+          billingAccount: { include: { merchant: true } },
+          lineItems: true,
+        },
+      });
       if (!invoice) return sendError(res, 404, "NOT_FOUND", "Invoice not found");
 
       if (invoice.status !== "draft")
@@ -881,6 +887,24 @@ function buildAdminRouter(deps) {
           netTermsDays: terms,
         },
       });
+
+      // Send branded invoice email to billing contact
+      const billingEmail = invoice.billingAccount?.billingEmail;
+      if (billingEmail) {
+        const { sendMail } = require("../utils/mail");
+        const { invoiceIssued } = require("../utils/mail.templates");
+        const merchantName = invoice.billingAccount?.merchant?.name || "Merchant";
+        const tpl = invoiceIssued({
+          merchantName,
+          invoiceNumber: invoice.invoiceNumber || invoice.id,
+          totalCents: invoice.totalCents || 0,
+          dueAt,
+          lineItems: invoice.lineItems || [],
+        });
+        sendMail({ to: billingEmail, ...tpl }).catch((e) =>
+          console.error("[invoice:issue] mail error:", e?.message)
+        );
+      }
 
       return res.json({ invoice: updated });
     } catch (err) {

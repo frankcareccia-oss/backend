@@ -609,13 +609,16 @@ app.post("/notify", async (req, res) => {
     const row = await prisma.demoRequest.create({
       data: { email: email.trim().toLowerCase(), source: source || "website" },
     });
-    // Notify team
+    // Notify team + auto-respond to requester
     const { sendMail } = require("./src/utils/mail");
+    const { demoRequestConfirmation } = require("./src/utils/mail.templates");
     sendMail({
       to: "hello@perksvalet.com",
       subject: `New demo request from ${email}`,
       text: `New demo request:\n\nEmail: ${email}\nSource: ${source || "website"}\nTime: ${new Date().toISOString()}\n\nFollow up soon!`,
-    }).catch((e) => console.error("[notify] mail error:", e?.message));
+    }).catch((e) => console.error("[notify] team mail error:", e?.message));
+    const autoReply = demoRequestConfirmation(email);
+    sendMail({ to: email, ...autoReply }).catch((e) => console.error("[notify] auto-reply error:", e?.message));
     res.json({ ok: true, id: row.id });
   } catch (e) {
     console.error("[notify] error:", e?.message);
