@@ -148,4 +148,44 @@ router.post("/consumer/auth/otp/verify", async (req, res) => {
   }
 });
 
+// ──────────────────────────────────────────────
+// PATCH /consumer/profile
+// Body: { firstName?, lastName? }
+// ──────────────────────────────────────────────
+const { requireConsumerJwt } = require("../middleware/auth");
+
+router.patch("/consumer/profile", requireConsumerJwt, async (req, res) => {
+  try {
+    const consumerId = req.consumerId;
+    const { firstName, lastName } = req.body || {};
+
+    const data = {};
+    if (firstName !== undefined) data.firstName = String(firstName).trim() || null;
+    if (lastName !== undefined) data.lastName = String(lastName).trim() || null;
+
+    if (Object.keys(data).length === 0) {
+      return sendError(res, 400, "VALIDATION_ERROR", "Nothing to update");
+    }
+
+    const updated = await prisma.consumer.update({
+      where: { id: consumerId },
+      data,
+    });
+
+    return res.json({
+      ok: true,
+      consumer: {
+        id: updated.id,
+        phone: updated.phoneE164,
+        firstName: updated.firstName,
+        lastName: updated.lastName,
+        email: updated.email,
+      },
+    });
+  } catch (err) {
+    console.error("[consumer.auth] profile update error:", err);
+    return sendError(res, 500, "SERVER_ERROR", "Profile update failed");
+  }
+});
+
 module.exports = router;
