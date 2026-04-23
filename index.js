@@ -599,6 +599,25 @@ app.use(
 
 app.get("/", (_req, res) => res.json({ status: "PerkValet backend running ?" }));
 
+// Test email templates (admin only, remove after verification)
+app.post("/admin/test-emails", async (req, res) => {
+  const key = req.headers["x-admin-key"];
+  if (key !== process.env.ADMIN_API_KEY) return res.status(401).json({ error: "Unauthorized" });
+  const { to } = req.body || {};
+  if (!to) return res.status(400).json({ error: "to required" });
+  const { sendMail } = require("./src/utils/mail");
+  const t = require("./src/utils/mail.templates");
+  try {
+    const d = t.demoRequestConfirmation(to);
+    await sendMail({ to, ...d });
+    const i = t.invoiceIssued({ merchantName: "BLVD Coffee", invoiceNumber: "PV-2026-001", totalCents: 14900, dueAt: new Date(Date.now() + 30*86400000), lineItems: [{ description: "PerkValet Platform — Monthly (3 stores)", amountCents: 11900 }, { description: "SMS notifications (342 messages)", amountCents: 3000 }] });
+    await sendMail({ to, ...i });
+    const o = t.invoiceOverdue({ merchantName: "BLVD Coffee", invoiceNumber: "PV-2026-001", totalCents: 14900, dueAt: new Date(Date.now() - 7*86400000) });
+    await sendMail({ to, ...o });
+    res.json({ ok: true, sent: 3 });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // Demo request from website
 app.post("/notify", async (req, res) => {
   try {
