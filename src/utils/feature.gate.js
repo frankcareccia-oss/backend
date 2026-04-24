@@ -146,39 +146,39 @@ function upgradeRoute(merchant) {
 const TIER_TINT = {
   base: {
     cardBg: "#F7F7F5",        // cool off-white
-    cardBorder: "#D9D3CA",     // warm gray border
+    cardBorder: "#1D9E75",     // brand teal
     accent: "#6B7280",         // muted gray
     badge: null,               // no badge for base-available features
   },
   value_added: {
     cardBg: "#FFF8F0",         // warm cream
-    cardBorder: "#F36A1D",     // brand orange
-    accent: "#F36A1D",         // brand orange
+    cardBorder: "#E8671A",     // brand orange
+    accent: "#E8671A",         // brand orange
     badge: "Value-Added",
   },
   locked: {
     cardBg: "#F4F4F0",         // page background (blends in = dimmed)
     cardBorder: "#E5E2DC",     // faint border
     accent: "#C4BFB6",         // muted
-    badge: "Upgrade",
+    badge: null,               // no badge — lock icon + CTA is enough
     opacity: 0.65,
   },
 };
 
 // Dashboard cards and their feature keys for gating
 const DASHBOARD_CARDS = [
-  { key: "promotions",        label: "Promotions",           feature: null },
-  { key: "products",          label: "Products",             feature: null },
-  { key: "stores",            label: "Stores",               feature: null },
-  { key: "basic_reports",     label: "Reports",              feature: null },
-  { key: "qr_codes",         label: "QR Codes",             feature: null },
-  { key: "bundles",           label: "Bundles",              feature: "bundle_promotions" },
-  { key: "growth_advisor",    label: "Growth Advisor",       feature: "growth_advisor" },
-  { key: "simulator",         label: "Promotion Simulator",  feature: "promotion_simulator" },
-  { key: "advanced_analytics",label: "Advanced Analytics",   feature: "advanced_analytics" },
-  { key: "ai_descriptions",  label: "AI Descriptions",      feature: "ai_descriptions" },
-  { key: "team_attribution",  label: "Team Performance",     feature: "team_attribution" },
-  { key: "weekly_briefing",   label: "Weekly Briefing",      feature: "weekly_briefing" },
+  { key: "promotions",        label: "Promotions",           feature: null,                   desc: "Create and manage stamp programs",                        upgradeCta: null },
+  { key: "products",          label: "Products",             feature: null,                   desc: "Manage your product catalog",                             upgradeCta: null },
+  { key: "stores",            label: "Stores",               feature: null,                   desc: "Manage store locations and QR codes",                     upgradeCta: null },
+  { key: "basic_reports",     label: "Reports",              feature: null,                   desc: "30-day performance summary",                              upgradeCta: null },
+  { key: "qr_codes",          label: "QR Codes",             feature: null,                   desc: "Generate and print store QR codes",                       upgradeCta: null },
+  { key: "bundles",           label: "Bundles",              feature: "bundle_promotions",    desc: "Create product bundles with combo pricing",               upgradeCta: "Add your first bundle" },
+  { key: "growth_advisor",    label: "Growth Advisor",       feature: "growth_advisor",       desc: "AI-powered growth recommendations and insights",          upgradeCta: "See Growth Advisor in action" },
+  { key: "simulator",         label: "Promotion Simulator",  feature: "promotion_simulator",  desc: "Project ROI before launching promotions",                 upgradeCta: "Preview your promotion's impact" },
+  { key: "advanced_analytics",label: "Advanced Analytics",   feature: "advanced_analytics",   desc: "Trends, segmentation, and deep performance data",         upgradeCta: "Unlock advanced reporting" },
+  { key: "ai_descriptions",   label: "AI Descriptions",     feature: "ai_descriptions",      desc: "Auto-generate promotion copy and terms",                  upgradeCta: "Let AI write your promos" },
+  { key: "team_attribution",  label: "Team Performance",     feature: "team_attribution",     desc: "Employee attribution and capture rate tracking",           upgradeCta: "Track your team's impact" },
+  { key: "weekly_briefing",   label: "Weekly Briefing",      feature: "weekly_briefing",      desc: "AI-generated weekly business summary delivered to you",    upgradeCta: "Get your weekly briefing" },
 ];
 
 /**
@@ -192,10 +192,10 @@ function buildFeatureManifest(merchant) {
 
   return DASHBOARD_CARDS.map(card => {
     if (!card.feature) {
-      // Base feature — always available
       return {
         key: card.key,
         label: card.label,
+        desc: card.desc,
         tier: "base",
         allowed: true,
         tint: TIER_TINT.base,
@@ -208,6 +208,7 @@ function buildFeatureManifest(merchant) {
       return {
         key: card.key,
         label: card.label,
+        desc: card.desc,
         tier: "value_added",
         allowed: true,
         tint: TIER_TINT.value_added,
@@ -217,9 +218,11 @@ function buildFeatureManifest(merchant) {
     return {
       key: card.key,
       label: card.label,
+      desc: card.desc,
       tier: "value_added",
       allowed: false,
       reason: gate.reason,
+      upgradeCta: card.upgradeCta,
       tint: TIER_TINT.locked,
     };
   });

@@ -174,19 +174,19 @@ describe("TIER_TINT", () => {
     expect(TIER_TINT.locked).toBeDefined();
   });
 
-  test("base tint has neutral colors, no badge", () => {
-    expect(TIER_TINT.base.cardBg).toMatch(/^#/);
+  test("base tint has teal border, no badge", () => {
+    expect(TIER_TINT.base.cardBorder).toBe("#1D9E75");
     expect(TIER_TINT.base.badge).toBeNull();
   });
 
-  test("value_added tint has warm colors and badge", () => {
-    expect(TIER_TINT.value_added.cardBorder).toBe("#F36A1D"); // brand orange
+  test("value_added tint has brand orange and badge", () => {
+    expect(TIER_TINT.value_added.cardBorder).toBe("#E8671A");
     expect(TIER_TINT.value_added.badge).toBe("Value-Added");
   });
 
-  test("locked tint has dimmed opacity and Upgrade badge", () => {
+  test("locked tint has dimmed opacity and no badge", () => {
     expect(TIER_TINT.locked.opacity).toBe(0.65);
-    expect(TIER_TINT.locked.badge).toBe("Upgrade");
+    expect(TIER_TINT.locked.badge).toBeNull();
   });
 });
 
