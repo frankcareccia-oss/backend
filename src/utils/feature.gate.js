@@ -157,7 +157,7 @@ const TIER_TINT = {
     badge: "Value-Added",
   },
   locked: {
-    cardBg: "#F4F4F0",         // page background (blends in = dimmed)
+    cardBg: "#F0EDE8",         // warm muted gray — visually distinct from base cards
     cardBorder: "#E5E2DC",     // faint border
     accent: "#C4BFB6",         // muted
     badge: null,               // no badge — lock icon + CTA is enough

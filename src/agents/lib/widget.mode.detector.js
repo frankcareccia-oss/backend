@@ -24,6 +24,7 @@ const PAGE_ID_MAP = {
   "/merchant/bundles": "merchant_bundles",
   "/merchant/analytics": "merchant_analytics",
   "/merchant/growth-studio": "merchant_growth_studio",
+  "/merchant/plan": "merchant_plan",
   "/merchant/settings": "merchant_settings",
   "/merchant/invoices": "merchant_invoices",
   "/merchant/onboarding": "pos_connection",

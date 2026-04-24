@@ -834,6 +834,27 @@ function buildMerchantRouter(deps) {
       // Determine billing display mode
       const managedByMarketplace = merchant.billingSource === "clover" || merchant.billingSource === "square";
 
+      // Compute dashboard state for frontend rendering
+      // TRIAL → VALUE_ADDED → BASE → GRACE → LAPSED
+      const billingStatus = merchant.cloverBillingStatus || null;
+      let dashboardState;
+      if (inTrial) {
+        dashboardState = "trial";
+      } else if (merchant.trialExpired && merchant.planTier !== "value_added" && merchant.planTier !== "base") {
+        dashboardState = "trial_ended";
+      } else if (billingStatus === "lapsed" || billingStatus === "cancelled") {
+        // Grace period: cloverBillingUpdatedAt + 30 days total (7 grace + 23 lapsed)
+        const lapsedAt = merchant.cloverBillingUpdatedAt || now;
+        const graceDaysElapsed = Math.floor((now - new Date(lapsedAt)) / (24 * 60 * 60 * 1000));
+        dashboardState = graceDaysElapsed <= 7 ? "grace" : "lapsed";
+        // Days until suspension (day 31)
+        var suspensionDaysLeft = Math.max(0, 30 - graceDaysElapsed);
+      } else if (merchant.planTier === "value_added") {
+        dashboardState = "value_added";
+      } else {
+        dashboardState = "base";
+      }
+
       const { canAccess, canCreatePromotion, upgradeRoute, BASE_LIMITS, TIER_TINT, buildFeatureManifest } = require("../utils/feature.gate");
       const activePromoCount = await prisma.promotion.count({
         where: { merchantId: req.merchantId, status: "active" },
@@ -849,6 +870,8 @@ function buildMerchantRouter(deps) {
       });
 
       return res.json({
+        dashboardState,
+        ...(suspensionDaysLeft != null ? { suspensionDaysLeft } : {}),
         planTier: merchant.planTier,
         acquisitionPath: merchant.acquisitionPath,
         billingSource: merchant.billingSource,
@@ -886,6 +909,234 @@ function buildMerchantRouter(deps) {
 
         // Feature manifest — per-card allowed/locked status with tint
         features: buildFeatureManifest(merchant),
+      });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
+  // ─── Your Plan helpers ────────────────────────────────────────────────────
+  const MERCHANT_TYPE_LABELS = {
+    coffee_shop: "a coffee shop", restaurant: "a restaurant", fitness: "a fitness studio",
+    salon_spa: "a salon or spa", retail: "a retail store", grocery: "a grocery store",
+    pet_services: "a pet services business", automotive: "an automotive shop",
+    specialty_food: "a specialty food business", education_kids: "an education business",
+    bakery: "a bakery",
+  };
+  function friendlyMerchantType(t) { return MERCHANT_TYPE_LABELS[t] || "a business like yours"; }
+
+  // ─── Your Plan — personalized insights ────────────────────────────────────
+  // GET /merchant/plan — plan identity, activity stats, and personalized insight cards
+  router.get("/merchant/plan", requireJwt, requireMerchantRole("owner", "merchant_admin"), async (req, res) => {
+    try {
+      const merchant = await prisma.merchant.findUnique({
+        where: { id: req.merchantId },
+        select: {
+          id: true, name: true, merchantType: true, planTier: true,
+          acquisitionPath: true, billingSource: true,
+          trialStartedAt: true, trialEndsAt: true, trialExpired: true,
+          createdAt: true,
+          stores: { select: { id: true, name: true } },
+          posConnections: { select: { posType: true }, take: 1 },
+        },
+      });
+      const posType = merchant?.posConnections?.[0]?.posType || null;
+      if (!merchant) return sendError(res, 404, "NOT_FOUND", "Merchant not found");
+
+      const now = new Date();
+      const thirtyDaysAgo = new Date(now - 30 * 24 * 60 * 60 * 1000);
+      const inTrial = merchant.trialEndsAt && merchant.trialEndsAt > now && !merchant.trialExpired;
+      const trialDaysLeft = inTrial ? Math.ceil((merchant.trialEndsAt - now) / (24 * 60 * 60 * 1000)) : 0;
+      const tier = merchant.planTier || "base";
+
+      // ── Activity stats from pre-aggregated tables ──
+      const dailySummaries = await prisma.merchantDailySummary.findMany({
+        where: { merchantId: req.merchantId, storeId: null, date: { gte: thirtyDaysAgo } },
+      });
+
+      const stampsIssued = dailySummaries.reduce((s, r) => s + (r.stampsIssued || 0), 0);
+      const totalTransactions = dailySummaries.reduce((s, r) => s + (r.totalTransactions || 0), 0);
+      const attributedTransactions = dailySummaries.reduce((s, r) => s + (r.attributedTransactions || 0), 0);
+      const rewardsRedeemed = dailySummaries.reduce((s, r) => s + (r.rewardsRedeemed || 0), 0);
+      const newEnrollments = dailySummaries.reduce((s, r) => s + (r.newEnrollments || 0), 0);
+      const captureRate = totalTransactions > 0 ? attributedTransactions / totalTransactions : 0;
+
+      const activePromotions = await prisma.promotion.count({
+        where: { merchantId: req.merchantId, status: "active" },
+      });
+
+      // Engagement snapshot for repeat rate
+      let repeatVisitRate = 0;
+      const engagement = await prisma.consumerEngagementSummary.findFirst({
+        where: { merchantId: req.merchantId, storeId: null },
+        orderBy: { date: "desc" },
+      }).catch(() => null);
+      if (engagement) {
+        const total = (engagement.visitedOnce || 0) + (engagement.visited2to3 || 0)
+          + (engagement.visited4to7 || 0) + (engagement.visited8plus || 0);
+        const repeat = (engagement.visited2to3 || 0) + (engagement.visited4to7 || 0) + (engagement.visited8plus || 0);
+        repeatVisitRate = total > 0 ? repeat / total : 0;
+      }
+
+      // Peak/slowest hour from raw orders
+      let peakHour = null;
+      let slowestHour = null;
+      if (totalTransactions > 0) {
+        const orders = await prisma.posOrder.findMany({
+          where: { merchantId: req.merchantId, createdAt: { gte: thirtyDaysAgo } },
+          select: { createdAt: true },
+        });
+        if (orders.length > 10) {
+          const byHour = Array.from({ length: 24 }, () => 0);
+          for (const o of orders) byHour[new Date(o.createdAt).getUTCHours()]++;
+          // Only consider business hours (6am-10pm)
+          let maxH = 6, minH = 6, maxC = 0, minC = Infinity;
+          for (let h = 6; h <= 22; h++) {
+            if (byHour[h] > maxC) { maxC = byHour[h]; maxH = h; }
+            if (byHour[h] < minC && byHour[h] > 0) { minC = byHour[h]; minH = h; }
+          }
+          const fmt = (h) => `${h > 12 ? h - 12 : h}${h >= 12 ? "pm" : "am"}-${(h + 2) > 12 ? (h + 2) - 12 : h + 2}${(h + 2) >= 12 ? "pm" : "am"}`;
+          peakHour = fmt(maxH);
+          slowestHour = fmt(minH);
+        }
+      }
+
+      // ── Personalized insights ──
+      const candidates = [];
+      const locationCount = merchant.stores.length;
+
+      // MULTI-LOCATION — stamp sharing
+      if (locationCount > 1 && tier === "base") {
+        candidates.push({
+          priority: 10, emoji: "\uD83D\uDCCD",
+          observation: `You have ${locationCount} locations, but stamps don't transfer between them yet.`,
+          opportunity: "Customers who visit any of your stores could earn toward the same reward \u2014 making your whole footprint feel like one place.",
+          feature: "Multi-location stamp sharing",
+          cta: "See how multi-location works \u2192",
+        });
+      }
+
+      // HIGH CAPTURE RATE — team leaderboard
+      if (captureRate > 0.5 && tier === "base") {
+        candidates.push({
+          priority: 9, emoji: "\u2B50",
+          observation: `Your team is capturing phone numbers ${Math.round(captureRate * 100)}% of the time \u2014 that's strong.`,
+          opportunity: "Team attribution would show you exactly which staff member is driving that. Most merchants use it as a friendly leaderboard at the counter.",
+          feature: "Team performance tracking",
+          cta: "See team attribution \u2192",
+        });
+      }
+
+      // LOW CAPTURE RATE — leaderboard as solution
+      if (captureRate < 0.3 && captureRate > 0 && tier === "base") {
+        candidates.push({
+          priority: 8, emoji: "\uD83D\uDCF1",
+          observation: `About ${Math.round((1 - captureRate) * 100)}% of your transactions aren't being captured yet.`,
+          opportunity: "The associate leaderboard makes phone capture into a friendly competition. Most merchants see their capture rate jump within the first week.",
+          feature: "Associate leaderboard",
+          cta: "See how the leaderboard works \u2192",
+        });
+      }
+
+      // SLOW PERIOD — time-based promotions
+      if (slowestHour && tier === "base") {
+        candidates.push({
+          priority: 7, emoji: "\u23F0",
+          observation: `Your quietest time is around ${slowestHour}.`,
+          opportunity: "Double stamps during that window \u2014 or a happy hour special \u2014 can shift some of your peak traffic into slower periods.",
+          feature: "Time-based promotions",
+          cta: "See time-based promotions \u2192",
+        });
+      }
+
+      // AT PROMOTION LIMIT — unlimited programs
+      if (activePromotions >= 1 && tier === "base") {
+        candidates.push({
+          priority: 6, emoji: "\uD83C\uDFAF",
+          observation: "You're running your one active promotion right now.",
+          opportunity: "A morning special alongside your main loyalty program, or a separate program for your top regulars \u2014 Value-Added unlocks unlimited programs.",
+          feature: "Unlimited promotions",
+          cta: "See what's possible \u2192",
+        });
+      }
+
+      // GOOD REPEAT RATE — show them it's working
+      if (repeatVisitRate > 0.4 && tier === "base") {
+        candidates.push({
+          priority: 5, emoji: "\uD83D\uDD04",
+          observation: `${Math.round(repeatVisitRate * 100)}% of your enrolled customers have visited more than once. Your loyalty program is working.`,
+          opportunity: "Advanced analytics would show you which promotions are driving that repeat behavior \u2014 and which ones to double down on.",
+          feature: "Advanced analytics",
+          cta: "See advanced analytics \u2192",
+        });
+      }
+
+      // NEW MERCHANT — no data yet
+      if (stampsIssued === 0) {
+        candidates.push({
+          priority: 1, emoji: "\uD83D\uDE80",
+          observation: "You're just getting started \u2014 your insights will appear here after your first transactions.",
+          opportunity: `In the meantime, explore Growth Advisor \u2014 it'll suggest the right promotion type for ${friendlyMerchantType(merchant.merchantType)}.`,
+          feature: "Growth Advisor",
+          cta: "Open Growth Advisor \u2192",
+        });
+      }
+
+      const insights = candidates.sort((a, b) => b.priority - a.priority).slice(0, 3);
+
+      // VA merchants get appreciation instead of upsell
+      const vaAppreciation = tier === "value_added" ? {
+        activeFeatures: [
+          insights.length > 0 ? null : "Your Growth Advisor has suggestions waiting for you",
+          "Your Weekly Briefing arrives every Monday",
+          "Your team leaderboard updates daily",
+        ].filter(Boolean),
+      } : null;
+
+      const { upgradeRoute, BASE_LIMITS } = require("../utils/feature.gate");
+
+      emitPvHook("plan.page.viewed", {
+        tc: "TC-PLAN-01", sev: "info",
+        stable: "merchant:plan:" + req.merchantId,
+        merchantId: req.merchantId,
+        planTier: tier, inTrial,
+      });
+
+      return res.json({
+        // Section 1: Plan identity
+        merchantName: merchant.name,
+        businessType: merchant.merchantType || null,
+        businessTypeLabel: friendlyMerchantType(merchant.merchantType),
+        planTier: tier,
+        acquisitionPath: merchant.acquisitionPath,
+        billingSource: merchant.billingSource,
+        posType,
+        stores: merchant.stores,
+        locationCount,
+        inTrial,
+        trialDaysLeft,
+        trialEndsAt: merchant.trialEndsAt,
+        activeSince: merchant.createdAt,
+
+        // Section 2: Activity stats (last 30 days)
+        activity: {
+          stampsIssued,
+          consumersEnrolled: newEnrollments,
+          captureRate: Math.round(captureRate * 100),
+          activePromotions,
+          rewardsRedeemed,
+          repeatVisitRate: Math.round(repeatVisitRate * 100),
+          peakHour,
+          slowestHour,
+        },
+
+        // Section 3: Insights
+        insights: tier === "value_added" ? [] : insights,
+        vaAppreciation,
+
+        // Section 4: Upgrade info
+        upgrade: tier !== "value_added" ? upgradeRoute(merchant) : null,
+        promoLimit: tier === "value_added" ? null : BASE_LIMITS.activePromotions,
       });
     } catch (err) {
       return handlePrismaError(err, res);

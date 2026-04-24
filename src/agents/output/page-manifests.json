@@ -112,7 +112,31 @@
       {
         "id": "cards",
         "label": "Navigation cards",
-        "plain_description": "Each card links to a section of your account. Weekly Summary shows last week's performance. Analytics shows detailed charts. Products and Promotions are where you set up your loyalty programs."
+        "plain_description": "Weekly Summary — see what happened last week and what needs your attention this week.\n\nAnalytics — find out which customers are coming back, which locations perform best, and whether your promotions are driving real repeat visits.\n\nPromotions — where your loyalty program lives. Set your reward, pick your milestone, and go live in minutes.\n\nProducts — connect your menu items to your promotions so stamps go to the right purchases.\n\nGrowth Advisor — AI-powered recommendations tailored to your store. Tells you what to run next and why.\n\nStores — manage your locations, hours, and QR codes that customers scan to join.\n\nTeam — invite staff and control what each person can see and do in the portal.\n\nSettings — your profile, password, and account preferences."
+      },
+      {
+        "id": "your_plan",
+        "label": "Understanding your plan",
+        "plain_description": "The card colors tell you what's included in your plan at a glance.\n\n\ud83d\udfe2 Teal border — included in your plan. Tap to get started.\n\n\ud83d\udd12 Locked cards — available with Value-Added. These features are here so you can see what's possible. Tap any one to learn more or unlock it.\n\nDuring your free trial, everything is unlocked so you can explore the full platform. After your trial, your plan determines what stays active.\n\nNothing you've set up will ever be lost — your promotions, customers, and stamp history are always safe."
+      }
+    ]
+  },
+  "merchant_plan": {
+    "id": "merchant_plan",
+    "route": "/merchant/plan",
+    "intended_roles": ["owner", "merchant_admin"],
+    "title": "Your Plan",
+    "summary": "This is your personal view of what PerkValet is doing for your business. Your stats show what you\u2019ve accomplished, the insights are specific to your store, and Value-Added features are the ones that grow with you as your program matures.",
+    "sections": [
+      {
+        "id": "about",
+        "label": "About this page",
+        "plain_description": "Your stats show what you\u2019ve accomplished in the last 30 days \u2014 stamps, customers, capture rate.\n\nThe insights on this page are specific to your store \u2014 not generic suggestions. They\u2019re based on your real activity data and change as your business grows.\n\nValue-Added features are the ones that grow with you as your program matures \u2014 AI recommendations, advanced analytics, unlimited promotions, and team tools."
+      },
+      {
+        "id": "help",
+        "label": "Not sure which plan is right?",
+        "plain_description": "Email us at hello@perksvalet.com and we\u2019ll help you figure it out based on your goals. No pressure, no sales pitch \u2014 just an honest conversation about what makes sense for your business right now."
       }
     ]
   },
