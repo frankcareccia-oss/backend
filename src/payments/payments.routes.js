@@ -798,6 +798,38 @@ function registerPaymentsRoutes(app, { prisma, sendError, requireAuth, requireAd
                 stable: `invoice:${inv.id}`,
                 invoiceId: inv.id,
               });
+
+              // ── Plan upgrade completion ──
+              // If this invoice has a plan_upgrade line item, activate the merchant's new tier
+              const upgradeLines = await tx.invoiceLineItem.findMany({
+                where: { invoiceId: inv.id, sourceType: "plan_upgrade" },
+              });
+              if (upgradeLines.length > 0) {
+                const upgradeInv = await tx.invoice.findUnique({
+                  where: { id: inv.id },
+                  select: { merchantId: true },
+                });
+                if (upgradeInv) {
+                  const m = await tx.merchant.findUnique({
+                    where: { id: upgradeInv.merchantId },
+                    select: { discountCycles: true, discountCyclesUsed: true },
+                  });
+                  await tx.merchant.update({
+                    where: { id: upgradeInv.merchantId },
+                    data: {
+                      planTier: "value_added",
+                      // Increment discount cycles used
+                      ...(m?.discountCycles ? { discountCyclesUsed: (m.discountCyclesUsed || 0) + 1 } : {}),
+                    },
+                  });
+                  pvHook("plan.upgrade.completed", {
+                    tc: "TC-PLAN-UPG-02", sev: "info",
+                    stable: `merchant:upgrade:${upgradeInv.merchantId}`,
+                    merchantId: upgradeInv.merchantId,
+                    invoiceId: inv.id,
+                  });
+                }
+              }
             }
 
             // Cleanup stale pending attempts by marking them FAILED (not provider failure)

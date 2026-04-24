@@ -119,11 +119,25 @@ function buildAdminRouter(deps) {
   const PLATFORM_CONFIG_DEFAULTS = {
     consumer_jwt_ttl_days:    "90",
     consumer_otp_ttl_minutes: "15",
+    // Plan pricing — cents per month (0 = not set / TBD)
+    price_base_single_cents:          "0",    // Base plan, first location
+    price_base_additional_cents:      "0",    // Base plan, each additional location
+    price_va_single_cents:            "0",    // Value-Added plan, first location
+    price_va_additional_cents:        "0",    // Value-Added plan, each additional location
+    // Channel-specific overrides (0 = use default above)
+    price_va_standalone_single_cents: "0",    // VA for standalone (no POS) merchants, first location
+    price_va_standalone_additional_cents: "0", // VA for standalone, each additional location
   };
 
   const PLATFORM_CONFIG_META = {
-    consumer_jwt_ttl_days:    { label: "Consumer session length (days)", type: "number", min: 1, max: 365 },
-    consumer_otp_ttl_minutes: { label: "SMS code validity (minutes)",    type: "number", min: 1, max: 60  },
+    consumer_jwt_ttl_days:    { label: "Consumer session length (days)",    type: "number", min: 1, max: 365 },
+    consumer_otp_ttl_minutes: { label: "SMS code validity (minutes)",      type: "number", min: 1, max: 60  },
+    price_base_single_cents:          { label: "Base plan — first location (cents/mo)",       type: "number", min: 0, max: 99999, group: "pricing" },
+    price_base_additional_cents:      { label: "Base plan — each additional location (cents/mo)", type: "number", min: 0, max: 99999, group: "pricing" },
+    price_va_single_cents:            { label: "Value-Added — first location (cents/mo)",     type: "number", min: 0, max: 99999, group: "pricing" },
+    price_va_additional_cents:        { label: "Value-Added — each additional location (cents/mo)", type: "number", min: 0, max: 99999, group: "pricing" },
+    price_va_standalone_single_cents: { label: "Value-Added standalone — first location (cents/mo)", type: "number", min: 0, max: 99999, group: "pricing" },
+    price_va_standalone_additional_cents: { label: "Value-Added standalone — each additional (cents/mo)", type: "number", min: 0, max: 99999, group: "pricing" },
   };
 
   // Ensure all known keys exist in DB (upsert defaults on first use)

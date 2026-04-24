@@ -168,8 +168,10 @@ model Merchant {
   trialExpired           Boolean   @default(false)
 
   // Direct discount (Path B/C only)
-  discountPercent        Int?                            // 0-30, applied to invoices
-  discountExpiresAt      DateTime?                       // auto-revert to full price after this date
+  discountPercent        Int?                            // 0-100, applied to invoices
+  discountExpiresAt      DateTime?                       // auto-revert to full price after this date (legacy, prefer cycles)
+  discountCycles         Int?                            // total billing cycles discount applies (e.g. 6 = 6 months free)
+  discountCyclesUsed     Int           @default(0)       // how many cycles the discount has been applied
 }
 
 model Store {
@@ -823,6 +825,10 @@ enum InvoiceLineSourceType {
   usage_fee
   late_fee
   adjustment
+  plan_upgrade
+  plan_base
+  plan_value_added
+  plan_discount
 }
 
 enum PaymentStatus {

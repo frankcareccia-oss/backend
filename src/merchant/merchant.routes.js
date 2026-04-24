@@ -1143,6 +1143,173 @@ function buildMerchantRouter(deps) {
     }
   });
 
+  // ─── Plan Upgrade — create invoice + send pay-now email ──────────────────
+  router.post("/merchant/plan/upgrade", requireJwt, requireMerchantRole("owner"), async (req, res) => {
+    try {
+      const merchant = await prisma.merchant.findUnique({
+        where: { id: req.merchantId },
+        select: {
+          id: true, name: true, planTier: true, acquisitionPath: true, billingSource: true,
+          discountPercent: true, discountCycles: true, discountCyclesUsed: true,
+          stores: { select: { id: true } },
+          billingAccount: { select: { id: true } },
+          posConnections: { select: { posType: true }, take: 1 },
+        },
+      });
+      if (!merchant) return sendError(res, 404, "NOT_FOUND", "Merchant not found");
+
+      // Already VA
+      if (merchant.planTier === "value_added") {
+        return sendError(res, 409, "ALREADY_UPGRADED", "You're already on the Value-Added plan.");
+      }
+
+      // Marketplace merchants upgrade through their marketplace
+      if (merchant.billingSource === "clover" || merchant.billingSource === "square") {
+        return sendError(res, 409, "MARKETPLACE_BILLING", "Your plan is managed through your POS marketplace. Please upgrade there.");
+      }
+
+      if (!merchant.billingAccount) {
+        return sendError(res, 400, "NO_BILLING_ACCOUNT", "Billing account not set up. Contact support.");
+      }
+
+      // ── Calculate price from PlatformConfig ──
+      const configRows = await prisma.platformConfig.findMany();
+      const cfg = {};
+      for (const r of configRows) cfg[r.key] = r.value;
+
+      const locationCount = merchant.stores.length || 1;
+      const isStandalone = !merchant.posConnections?.[0]?.posType;
+
+      // Pick the right price keys
+      const singleKey = isStandalone ? "price_va_standalone_single_cents" : "price_va_single_cents";
+      const additionalKey = isStandalone ? "price_va_standalone_additional_cents" : "price_va_additional_cents";
+
+      const singleCents = Number(cfg[singleKey]) || Number(cfg["price_va_single_cents"]) || 0;
+      const additionalCents = Number(cfg[additionalKey]) || Number(cfg["price_va_additional_cents"]) || 0;
+
+      if (singleCents === 0) {
+        return sendError(res, 503, "PRICING_NOT_SET", "Plan pricing has not been configured yet. Contact hello@perksvalet.com.");
+      }
+
+      const listPriceCents = singleCents + (Math.max(0, locationCount - 1) * additionalCents);
+
+      // Apply merchant discount
+      let discountCents = 0;
+      let discountActive = false;
+      if (merchant.discountPercent && merchant.discountPercent > 0) {
+        const cyclesLeft = (merchant.discountCycles || 0) - (merchant.discountCyclesUsed || 0);
+        if (cyclesLeft > 0 || !merchant.discountCycles) {
+          discountCents = Math.round(listPriceCents * (merchant.discountPercent / 100));
+          discountActive = true;
+        }
+      }
+
+      const netCents = listPriceCents - discountCents;
+
+      // ── Create invoice ──
+      const now = new Date();
+      const dueAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000); // due in 7 days
+
+      const lineItems = [
+        {
+          description: `Value-Added Plan — ${locationCount === 1 ? "1 location" : locationCount + " locations"}`,
+          quantity: 1,
+          unitPriceCents: listPriceCents,
+          amountCents: listPriceCents,
+          sourceType: "plan_upgrade",
+        },
+      ];
+
+      if (discountActive && discountCents > 0) {
+        lineItems.push({
+          description: `Discount (${merchant.discountPercent}% off)`,
+          quantity: 1,
+          unitPriceCents: -discountCents,
+          amountCents: -discountCents,
+          sourceType: "plan_discount",
+        });
+      }
+
+      const invoice = await prisma.invoice.create({
+        data: {
+          merchantId: merchant.id,
+          billingAccountId: merchant.billingAccount.id,
+          status: "issued",
+          issuedAt: now,
+          netTermsDays: 7,
+          dueAt,
+          subtotalCents: netCents,
+          taxCents: 0,
+          totalCents: netCents,
+          amountPaidCents: 0,
+          lineItems: { create: lineItems },
+        },
+      });
+
+      // ── Mint guest pay token ──
+      const { mintRawToken, sha256Hex, computeGuestTokenExpiry } = require("../payments/guestToken");
+      const raw = mintRawToken(32);
+      const tokenHash = sha256Hex(raw);
+      const tokenExpiry = computeGuestTokenExpiry({ dueAt });
+
+      await prisma.guestPayToken.create({
+        data: { invoiceId: invoice.id, tokenHash, expiresAt: tokenExpiry },
+      });
+
+      const PUBLIC_BASE = String(process.env.PUBLIC_BASE_URL || "http://localhost:3001").replace(/\/+$/, "");
+      const payUrl = `${PUBLIC_BASE}/pay/${encodeURIComponent(raw)}`;
+
+      // ── Send pay-now email ──
+      const { sendMail } = require("../utils/mail");
+      const { upgradeInvoice } = require("../utils/mail.templates");
+
+      // Find merchant owner email + name
+      const ownerUser = await prisma.merchantUser.findFirst({
+        where: { merchantId: merchant.id, role: "owner" },
+        include: { user: { select: { email: true, firstName: true } } },
+      });
+      const toEmail = ownerUser?.user?.email;
+
+      if (toEmail) {
+        const emailData = upgradeInvoice({
+          merchantName: merchant.name,
+          firstName: ownerUser.user.firstName,
+          locationCount,
+          invoiceNumber: invoice.id,
+          totalCents: netCents,
+          dueAt,
+          payUrl,
+          lineItems: lineItems.map(li => ({ description: li.description, amountCents: li.amountCents })),
+        });
+        await sendMail({ to: toEmail, ...emailData }).catch(e => {
+          console.warn("[plan.upgrade] email send failed:", e?.message);
+        });
+      }
+
+      emitPvHook("plan.upgrade.requested", {
+        tc: "TC-PLAN-UPG-01", sev: "info",
+        stable: "merchant:upgrade:" + merchant.id,
+        merchantId: merchant.id,
+        invoiceId: invoice.id,
+        listPriceCents, discountCents, netCents,
+        locationCount, discountPercent: merchant.discountPercent || 0,
+      });
+
+      return res.json({
+        ok: true,
+        invoiceId: invoice.id,
+        totalCents: netCents,
+        payUrl,
+        emailSent: !!toEmail,
+        message: toEmail
+          ? `We've sent a payment link to ${toEmail}. Complete payment to activate Value-Added.`
+          : "Invoice created. Contact hello@perksvalet.com for payment options.",
+      });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
   // ─── Duplicate Customer Alerts ────────────────────────────────────────────
   // GET /merchants/me/alerts/duplicate-customers — pending alerts for this merchant
   router.get("/merchants/me/alerts/duplicate-customers", requireJwt, requireMerchantRole("merchant_admin", "store_admin", "cashier"), async (req, res) => {
