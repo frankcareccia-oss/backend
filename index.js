@@ -645,6 +645,14 @@ app.post("/notify", async (req, res) => {
   }
 });
 
+// Wizard analytics (public, no auth — fire-and-forget from client)
+app.post("/wizard/event", (req, res) => {
+  const { event, data } = req.body || {};
+  if (!event || typeof event !== "string") return res.status(400).json({ error: "event required" });
+  emitPvHook("wizard." + event, { tc: "TC-WIZARD-01", sev: "info", ...data });
+  res.json({ ok: true });
+});
+
 // Terms acceptance from Get Started wizard (no auth — prospect has no account yet)
 app.post("/terms-acceptance", async (req, res) => {
   try {
@@ -665,6 +673,7 @@ app.post("/terms-acceptance", async (req, res) => {
         userAgent: req.headers["user-agent"] || null,
       },
     });
+    emitPvHook("wizard.terms_accepted", { tc: "TC-WIZARD-02", sev: "info", posType, businessTypes });
     res.json({ ok: true, id: row.id });
   } catch (e) {
     console.error("[terms-acceptance] error:", e?.message);
@@ -696,6 +705,7 @@ app.post("/waitlist", async (req, res) => {
       subject: `New waitlist signup: ${email}`,
       text: `New waitlist signup:\n\nEmail: ${email}\nPOS: ${posType || "unknown"}\nSource: ${source || "wizard"}\nTime: ${new Date().toISOString()}`,
     }).catch((e) => console.error("[waitlist] team mail error:", e?.message));
+    emitPvHook("wizard.waitlist_signup", { tc: "TC-WIZARD-03", sev: "info", email: email.trim().toLowerCase(), posType, source });
     res.json({ ok: true, id: row.id });
   } catch (e) {
     console.error("[waitlist] error:", e?.message);
