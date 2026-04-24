@@ -233,4 +233,25 @@ describe("buildFeatureManifest", () => {
     const locked = manifest.filter(f => !f.allowed);
     expect(locked.length).toBeGreaterThan(0);
   });
+
+  test("weekly_summary upgrades to Weekly Briefing for VA merchant", () => {
+    const manifest = buildFeatureManifest({ id: 5, planTier: "value_added", acquisitionPath: "clover_marketplace" });
+    const weekly = manifest.find(f => f.key === "weekly_summary");
+    expect(weekly.label).toBe("Weekly Briefing");
+    expect(weekly.tier).toBe("value_added");
+    expect(weekly.tint).toEqual(TIER_TINT.value_added);
+    expect(weekly.inlineUpsell).toBeUndefined();
+  });
+
+  test("weekly_summary shows inline upsell for Base merchant", () => {
+    const manifest = buildFeatureManifest({ id: 6, planTier: "base", acquisitionPath: "clover_marketplace" });
+    const weekly = manifest.find(f => f.key === "weekly_summary");
+    expect(weekly.label).toBe("Weekly Summary");
+    expect(weekly.tier).toBe("base");
+    expect(weekly.allowed).toBe(true);
+    expect(weekly.tint).toEqual(TIER_TINT.base);
+    expect(weekly.inlineUpsell).toBeDefined();
+    expect(weekly.inlineUpsell.label).toBe("Weekly Briefing");
+    expect(weekly.inlineUpsell.upgradeCta).toBe("Get AI insights and recommendations");
+  });
 });

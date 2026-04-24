@@ -178,7 +178,8 @@ const DASHBOARD_CARDS = [
   { key: "advanced_analytics",label: "Advanced Analytics",   feature: "advanced_analytics",   desc: "Trends, segmentation, and deep performance data",         upgradeCta: "Unlock advanced reporting" },
   { key: "ai_descriptions",   label: "AI Descriptions",     feature: "ai_descriptions",      desc: "Auto-generate promotion copy and terms",                  upgradeCta: "Let AI write your promos" },
   { key: "team_attribution",  label: "Team Performance",     feature: "team_attribution",     desc: "Employee attribution and capture rate tracking",           upgradeCta: "Track your team's impact" },
-  { key: "weekly_briefing",   label: "Weekly Briefing",      feature: "weekly_briefing",      desc: "AI-generated weekly business summary delivered to you",    upgradeCta: "Get your weekly briefing" },
+  { key: "weekly_summary",     label: "Weekly Summary",       feature: null,                   desc: "Last week's recap, events, and items needing attention",   upgradeCta: null,
+    upgradesTo: { label: "Weekly Briefing", feature: "weekly_briefing", desc: "AI-powered weekly recap with insights and recommendations", upgradeCta: "Get AI insights and recommendations" } },
 ];
 
 /**
@@ -191,6 +192,36 @@ function buildFeatureManifest(merchant) {
   const tier = merchant?.planTier || TIER.BASE;
 
   return DASHBOARD_CARDS.map(card => {
+    // Cards with upgradesTo pattern: Base feature that enhances to VA content
+    if (card.upgradesTo) {
+      const vaGate = canAccess(merchant, card.upgradesTo.feature);
+      if (vaGate.allowed) {
+        // Merchant has VA — show the upgraded version
+        return {
+          key: card.key,
+          label: card.upgradesTo.label,
+          desc: card.upgradesTo.desc,
+          tier: "value_added",
+          allowed: true,
+          tint: TIER_TINT.value_added,
+        };
+      }
+      // Merchant is Base — show base version with inline upsell
+      return {
+        key: card.key,
+        label: card.label,
+        desc: card.desc,
+        tier: "base",
+        allowed: true,
+        tint: TIER_TINT.base,
+        inlineUpsell: {
+          label: card.upgradesTo.label,
+          desc: card.upgradesTo.desc,
+          upgradeCta: card.upgradesTo.upgradeCta,
+        },
+      };
+    }
+
     if (!card.feature) {
       return {
         key: card.key,
