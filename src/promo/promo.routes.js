@@ -19,6 +19,7 @@ const { emitPvHook } = require("../utils/hooks");
 const { detectConflicts } = require("./promo.conflict");
 const { draftPromoTerms, draftPromoDescription } = require("../utils/aiDraft");
 const { capturePromotionBaseline } = require("../growth/promotionOutcome.baseline");
+const { canAccess, canCreatePromotion, upgradeRoute } = require("../utils/feature.gate");
 
 const router = express.Router();
 
@@ -461,6 +462,30 @@ router.post(
           return sendError(res, 422, "INVALID_SKU", `rewardSku "${rewardSku}" not found or inactive for this merchant`);
       }
 
+      // ── Feature gate: promotion limits + advanced types ──
+      const merchant = await prisma.merchant.findUnique({
+        where: { id: req.merchantId },
+        select: { id: true, planTier: true, acquisitionPath: true },
+      });
+
+      // Gate advanced promotion types to Value-Added tier
+      const GATED_PROMO_TYPES = { tiered: "tiered_promotions", conditional: "conditional_promotions", referral: "referral_program", bundle: "bundle_promotions" };
+      if (GATED_PROMO_TYPES[promotionType]) {
+        const gate = canAccess(merchant, GATED_PROMO_TYPES[promotionType]);
+        if (!gate.allowed) {
+          return sendError(res, 403, "UPGRADE_REQUIRED", `${promotionType} promotions require the Value-Added plan`, { upgrade: upgradeRoute(merchant) });
+        }
+      }
+
+      // Gate active promotion count for Base tier
+      const activePromoCount = await prisma.promotion.count({
+        where: { merchantId: req.merchantId, status: "active" },
+      });
+      const promoGate = canCreatePromotion(merchant, activePromoCount);
+      if (!promoGate.allowed) {
+        return sendError(res, 403, "UPGRADE_REQUIRED", `Base plan allows ${promoGate.limit} active promotion. Upgrade for unlimited.`, { upgrade: upgradeRoute(merchant), limit: promoGate.limit, current: activePromoCount });
+      }
+
       // earnPerUnit: stamps always 1, points must be >= 1
       const earn = mechanic === "stamps" ? 1 : (Number.isInteger(earnPerUnit) && earnPerUnit >= 1 ? earnPerUnit : null);
       if (earn === null)
@@ -597,8 +622,14 @@ router.post(
 
       const merchant = await prisma.merchant.findUnique({
         where: { id: req.merchantId },
-        select: { name: true },
+        select: { id: true, name: true, planTier: true, acquisitionPath: true },
       });
+
+      // Feature gate: AI descriptions are Value-Added only
+      const aiGate = canAccess(merchant, "ai_descriptions");
+      if (!aiGate.allowed) {
+        return sendError(res, 403, "UPGRADE_REQUIRED", "AI-generated terms require the Value-Added plan", { upgrade: upgradeRoute(merchant) });
+      }
 
       const draft = await draftPromoTerms({
         merchantName: merchant?.name || null,
@@ -634,8 +665,14 @@ router.post(
 
       const merchant = await prisma.merchant.findUnique({
         where: { id: req.merchantId },
-        select: { name: true, merchantType: true },
+        select: { id: true, name: true, merchantType: true, planTier: true, acquisitionPath: true },
       });
+
+      // Feature gate: AI descriptions are Value-Added only
+      const aiGate = canAccess(merchant, "ai_descriptions");
+      if (!aiGate.allowed) {
+        return sendError(res, 403, "UPGRADE_REQUIRED", "AI-generated descriptions require the Value-Added plan", { upgrade: upgradeRoute(merchant) });
+      }
 
       const result = await draftPromoDescription({
         merchantName: merchant?.name || null,
@@ -752,6 +789,20 @@ router.patch(
             const goLiveAt = startAt ? new Date(startAt) : existing.startAt;
             if (!goLiveAt)
               return sendError(res, 400, "VALIDATION_ERROR", "startAt (go-live date) is required to stage a promotion");
+          }
+          // Feature gate: check promo limit when activating
+          if (status === "active" && existing.status !== "active") {
+            const merchantForGate = await prisma.merchant.findUnique({
+              where: { id: req.merchantId },
+              select: { id: true, planTier: true, acquisitionPath: true },
+            });
+            const activeCount = await prisma.promotion.count({
+              where: { merchantId: req.merchantId, status: "active" },
+            });
+            const promoGate = canCreatePromotion(merchantForGate, activeCount);
+            if (!promoGate.allowed) {
+              return sendError(res, 403, "UPGRADE_REQUIRED", `Base plan allows ${promoGate.limit} active promotion. Upgrade for unlimited.`, { upgrade: upgradeRoute(merchantForGate), limit: promoGate.limit, current: activeCount });
+            }
           }
           if (status === "active" && !existing.firstActivatedAt)
             data.firstActivatedAt = new Date();

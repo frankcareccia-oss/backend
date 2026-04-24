@@ -803,6 +803,89 @@ function buildMerchantRouter(deps) {
     }
   });
 
+  // ─── Billing Status ───────────────────────────────────────────────────────
+  // GET /merchant/billing — returns plan, billing source, trial, and upgrade info
+  router.get("/merchant/billing", requireJwt, requireMerchantRole("owner", "merchant_admin"), async (req, res) => {
+    try {
+      const merchant = await prisma.merchant.findUnique({
+        where: { id: req.merchantId },
+        select: {
+          id: true,
+          planTier: true,
+          acquisitionPath: true,
+          billingSource: true,
+          cloverSubscriptionId: true,
+          cloverPlanId: true,
+          cloverBillingStatus: true,
+          cloverBillingUpdatedAt: true,
+          trialStartedAt: true,
+          trialEndsAt: true,
+          trialExpired: true,
+          discountPercent: true,
+          discountExpiresAt: true,
+        },
+      });
+      if (!merchant) return sendError(res, 404, "NOT_FOUND", "Merchant not found");
+
+      const now = new Date();
+      const inTrial = merchant.trialEndsAt && merchant.trialEndsAt > now && !merchant.trialExpired;
+      const trialDaysLeft = inTrial ? Math.ceil((merchant.trialEndsAt - now) / (24 * 60 * 60 * 1000)) : 0;
+
+      // Determine billing display mode
+      const managedByMarketplace = merchant.billingSource === "clover" || merchant.billingSource === "square";
+
+      const { canAccess, canCreatePromotion, upgradeRoute, BASE_LIMITS } = require("../utils/feature.gate");
+      const activePromoCount = await prisma.promotion.count({
+        where: { merchantId: req.merchantId, status: "active" },
+      });
+
+      emitPvHook("merchant.billing.viewed", {
+        tc: "TC-BILL-01",
+        sev: "info",
+        stable: "merchant:billing:" + req.merchantId,
+        merchantId: req.merchantId,
+        planTier: merchant.planTier,
+        billingSource: merchant.billingSource,
+      });
+
+      return res.json({
+        planTier: merchant.planTier,
+        acquisitionPath: merchant.acquisitionPath,
+        billingSource: merchant.billingSource,
+        managedByMarketplace,
+        marketplaceName: merchant.billingSource === "clover" ? "Clover" : merchant.billingSource === "square" ? "Square" : null,
+
+        // Trial
+        inTrial,
+        trialDaysLeft,
+        trialEndsAt: merchant.trialEndsAt,
+        trialExpired: merchant.trialExpired,
+
+        // Clover-specific (only if relevant)
+        ...(merchant.billingSource === "clover" ? {
+          cloverBillingStatus: merchant.cloverBillingStatus,
+          cloverBillingUpdatedAt: merchant.cloverBillingUpdatedAt,
+        } : {}),
+
+        // Discount (Path B/C)
+        ...(merchant.discountPercent ? {
+          discountPercent: merchant.discountPercent,
+          discountExpiresAt: merchant.discountExpiresAt,
+          discountActive: merchant.discountExpiresAt ? merchant.discountExpiresAt > now : true,
+        } : {}),
+
+        // Usage / limits
+        activePromotions: activePromoCount,
+        promoLimit: merchant.planTier === "value_added" ? null : BASE_LIMITS.activePromotions,
+
+        // Upgrade info
+        upgrade: merchant.planTier !== "value_added" ? upgradeRoute(merchant) : null,
+      });
+    } catch (err) {
+      return handlePrismaError(err, res);
+    }
+  });
+
   // ─── Duplicate Customer Alerts ────────────────────────────────────────────
   // GET /merchants/me/alerts/duplicate-customers — pending alerts for this merchant
   router.get("/merchants/me/alerts/duplicate-customers", requireJwt, requireMerchantRole("merchant_admin", "store_admin", "cashier"), async (req, res) => {

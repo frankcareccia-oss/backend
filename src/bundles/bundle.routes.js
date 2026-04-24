@@ -13,6 +13,7 @@ const { requireJwt, requireAdmin, requireMerchantRole } = require("../middleware
 const { prisma } = require("../db/prisma");
 const { draftBundleTerms, draftBundleDescription } = require("../utils/aiDraft");
 const service = require("./bundle.service");
+const { canAccess, upgradeRoute } = require("../utils/feature.gate");
 
 const router = express.Router();
 
@@ -65,6 +66,11 @@ router.post(
   requireMerchantRole("owner", "merchant_admin"),
   async (req, res) => {
     try {
+      // Feature gate: bundles are Value-Added only
+      const merchant = await prisma.merchant.findUnique({ where: { id: req.merchantId }, select: { id: true, planTier: true, acquisitionPath: true } });
+      const gate = canAccess(merchant, "bundle_promotions");
+      if (!gate.allowed) return sendError(res, 403, "UPGRADE_REQUIRED", "Bundle promotions require the Value-Added plan", { upgrade: upgradeRoute(merchant) });
+
       const result = await service.createBundle(req.merchantId, req.body, req.userId, req.merchantRole);
       if (handleResult(res, result)) return;
       return res.status(201).json(result);

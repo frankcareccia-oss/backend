@@ -150,6 +150,26 @@ model Merchant {
 
   // AI Support
   supportTickets SupportTicket[]
+
+  // Acquisition, billing, and tier (marketplace submission)
+  acquisitionPath        String    @default("manual")    // clover_marketplace | clover_direct | square_marketplace | square_direct | manual
+  planTier               String    @default("base")      // base | value_added
+  billingSource          String    @default("stripe")    // clover | square | stripe | none
+
+  // Clover marketplace billing
+  cloverSubscriptionId   String?
+  cloverPlanId           String?                         // Clover tier ID from Developer Dashboard
+  cloverBillingStatus    String?                         // active | lapsed | cancelled
+  cloverBillingUpdatedAt DateTime?
+
+  // Trial
+  trialStartedAt         DateTime?
+  trialEndsAt            DateTime?
+  trialExpired           Boolean   @default(false)
+
+  // Direct discount (Path B/C only)
+  discountPercent        Int?                            // 0-30, applied to invoices
+  discountExpiresAt      DateTime?                       // auto-revert to full price after this date
 }
 
 model Store {
@@ -2564,6 +2584,31 @@ model DemoRequest {
   email     String
   source    String   @default("website") // website_pricing, website_hero, etc.
   createdAt DateTime @default(now())
+
+  @@index([email])
+}
+
+model TermsAcceptance {
+  id            Int      @id @default(autoincrement())
+  email         String?
+  merchantId    Int?
+  posType       String
+  businessTypes Json
+  termsVersion  String   @default("2026-04")
+  acceptedAt    DateTime @default(now())
+  ipAddress     String?
+  userAgent     String?
+
+  @@index([email])
+}
+
+model WaitlistSignup {
+  id            Int      @id @default(autoincrement())
+  email         String
+  posType       String?
+  businessTypes Json?
+  source        String   @default("wizard")
+  createdAt     DateTime @default(now())
 
   @@index([email])
 }

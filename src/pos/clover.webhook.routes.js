@@ -292,7 +292,71 @@ async function dispatchCloverEvent(event) {
     }
   }
 
+  // APP_SUBSCRIPTION events — Clover marketplace billing status changes
+  if (event.type === "APP_SUBSCRIPTION" || event.subType === "APP_SUBSCRIPTION") {
+    await handleCloverBillingEvent(event).catch(e => {
+      console.error("[clover.webhook] billing event error:", e?.message);
+    });
+  }
+
   return { processed: true };
+}
+
+/**
+ * Handle Clover APP_SUBSCRIPTION billing events.
+ * Clover sends these when a merchant's subscription status changes:
+ *   - active: merchant is paying
+ *   - lapsed: payment failed, in grace period
+ *   - cancelled: merchant cancelled or payment permanently failed
+ */
+async function handleCloverBillingEvent(event) {
+  const subscriptionId = event.subscriptionId || event.objectId || null;
+  const status = event.status || event.billingStatus || null; // active | lapsed | cancelled
+
+  if (!subscriptionId || !status) {
+    console.warn("[clover.webhook] billing event missing subscriptionId or status:", JSON.stringify(event).slice(0, 300));
+    return;
+  }
+
+  // Find merchant by cloverSubscriptionId
+  const merchant = await prisma.merchant.findFirst({
+    where: { cloverSubscriptionId: subscriptionId },
+    select: { id: true, planTier: true, cloverBillingStatus: true, trialEndsAt: true },
+  });
+
+  if (!merchant) {
+    console.warn("[clover.webhook] no merchant for cloverSubscriptionId:", subscriptionId);
+    return;
+  }
+
+  const prevStatus = merchant.cloverBillingStatus;
+  const now = new Date();
+
+  const updateData = {
+    cloverBillingStatus: status,
+    cloverBillingUpdatedAt: now,
+  };
+
+  // If cancelled → mark trial as expired (if still in trial)
+  if (status === "cancelled" && merchant.trialEndsAt && merchant.trialEndsAt > now) {
+    updateData.trialExpired = true;
+  }
+
+  await prisma.merchant.update({
+    where: { id: merchant.id },
+    data: updateData,
+  });
+
+  console.log(JSON.stringify({
+    pvHook: "clover.billing.updated",
+    ts: now.toISOString(),
+    tc: "TC-CLO-BILL-01",
+    sev: status === "cancelled" ? "warn" : "info",
+    merchantId: merchant.id,
+    subscriptionId,
+    prevStatus,
+    newStatus: status,
+  }));
 }
 
 /**

@@ -14,6 +14,7 @@ const { detectGrowthPatterns } = require("./growth.patterns");
 const { selectPlaybooks } = require("./growth.playbooks");
 const { buildGrowthSummary } = require("./growth.summary");
 const { draftGrowthSummary } = require("../utils/aiDraft");
+const { canAccess, upgradeRoute } = require("../utils/feature.gate");
 
 const router = express.Router();
 
@@ -25,6 +26,16 @@ router.get(
   async (req, res) => {
     try {
       const merchantId = req.merchantId;
+
+      // Feature gate: Growth Advisor is Value-Added only
+      const merchant = await prisma.merchant.findUnique({
+        where: { id: merchantId },
+        select: { id: true, planTier: true, acquisitionPath: true },
+      });
+      const gate = canAccess(merchant, "growth_advisor");
+      if (!gate.allowed) {
+        return sendError(res, 403, "UPGRADE_REQUIRED", "Growth Advisor requires the Value-Added plan", { upgrade: upgradeRoute(merchant) });
+      }
       const storeId = req.query.storeId ? parseInt(req.query.storeId, 10) : undefined;
 
       // Step 1: Aggregate metrics + v2 enrichment

@@ -18,6 +18,7 @@ const { prisma } = require("../db/prisma");
 const { sendError } = require("../utils/errors");
 const { requireJwt } = require("../middleware/auth");
 const { projectByObjective, checkDivergence, OBJECTIVES } = require("./simulator.projections");
+const { canAccess, upgradeRoute } = require("../utils/feature.gate");
 
 const router = express.Router();
 
@@ -302,12 +303,13 @@ router.get("/merchant/reporting/simulator/new/:promotionType", async (req, res) 
     const merchantId = await getMerchantId(req);
     if (!merchantId) return sendError(res, 403, "FORBIDDEN", "Not authorized");
 
+    // Feature gate: simulator is Value-Added only
+    const merchant = await prisma.merchant.findUnique({ where: { id: merchantId }, select: { id: true, planTier: true, acquisitionPath: true, merchantType: true } });
+    const gate = canAccess(merchant, "promotion_simulator");
+    if (!gate.allowed) return sendError(res, 403, "UPGRADE_REQUIRED", "Promotion Simulator requires the Value-Added plan", { upgrade: upgradeRoute(merchant) });
+
     const objective = req.query.objective || "bring-back";
     const baseline = await computeBaseline(merchantId);
-    const merchant = await prisma.merchant.findUnique({
-      where: { id: merchantId },
-      select: { merchantType: true },
-    });
 
     return res.json({
       promotionType: req.params.promotionType,
@@ -333,17 +335,17 @@ router.get("/merchant/reporting/simulator/:promotionId", async (req, res) => {
     const merchantId = await getMerchantId(req);
     if (!merchantId) return sendError(res, 403, "FORBIDDEN", "Not authorized");
 
+    // Feature gate: simulator is Value-Added only
+    const merchant = await prisma.merchant.findUnique({ where: { id: merchantId }, select: { id: true, planTier: true, acquisitionPath: true, merchantType: true } });
+    const gate = canAccess(merchant, "promotion_simulator");
+    if (!gate.allowed) return sendError(res, 403, "UPGRADE_REQUIRED", "Promotion Simulator requires the Value-Added plan", { upgrade: upgradeRoute(merchant) });
+
     const promotionId = parseInt(req.params.promotionId, 10);
 
     const promotion = await prisma.promotion.findFirst({
       where: { id: promotionId, merchantId },
     });
     if (!promotion) return sendError(res, 404, "NOT_FOUND", "Promotion not found");
-
-    const merchant = await prisma.merchant.findUnique({
-      where: { id: merchantId },
-      select: { merchantType: true },
-    });
 
     const enrolledCount = await prisma.consumerPromoProgress.count({ where: { promotionId } });
 

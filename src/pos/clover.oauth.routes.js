@@ -263,6 +263,35 @@ function buildCloverOAuthRouter({ requireJwt, sendError, emitPvHook }) {
         },
       });
 
+      // Detect acquisition path: marketplace installs include a subscription ID
+      const cloverSubscriptionId = req.query.subscription_id || null;
+      const acquisitionPath = cloverSubscriptionId ? "clover_marketplace" : "clover_direct";
+
+      const merchantUpdate = {
+        acquisitionPath,
+        billingSource: cloverSubscriptionId ? "clover" : "stripe",
+      };
+      if (cloverSubscriptionId) {
+        merchantUpdate.cloverSubscriptionId = cloverSubscriptionId;
+        merchantUpdate.cloverBillingStatus = "active";
+        merchantUpdate.cloverBillingUpdatedAt = new Date();
+      }
+      // Set trial for new connections (don't overwrite existing trial)
+      const existingMerchant = await prisma.merchant.findUnique({
+        where: { id: pvMerchantId },
+        select: { trialStartedAt: true },
+      });
+      if (!existingMerchant?.trialStartedAt) {
+        const now = new Date();
+        merchantUpdate.trialStartedAt = now;
+        merchantUpdate.trialEndsAt = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000); // 90 days
+      }
+
+      await prisma.merchant.update({
+        where: { id: pvMerchantId },
+        data: merchantUpdate,
+      });
+
       emitPvHook("clover.oauth.connected", {
         tc: "TC-CLO-02",
         sev: "info",
@@ -270,6 +299,8 @@ function buildCloverOAuthRouter({ requireJwt, sendError, emitPvHook }) {
         merchantId: pvMerchantId,
         cloverMerchantId,
         posConnectionId: conn.id,
+        acquisitionPath,
+        cloverSubscriptionId,
       });
 
       // Update onboarding session with connection details
