@@ -4,12 +4,15 @@
 
 const {
   TIER,
+  TIER_TINT,
+  DASHBOARD_CARDS,
   VALUE_ADDED_FEATURES,
   POS_REQUIRED_FEATURES,
   BASE_LIMITS,
   canAccess,
   canCreatePromotion,
   upgradeRoute,
+  buildFeatureManifest,
 } = require("../src/utils/feature.gate");
 
 // ── canAccess: tier gating ──────────────────────────────────────
@@ -159,5 +162,75 @@ describe("Feature registry", () => {
   test("TIER constants are correct", () => {
     expect(TIER.BASE).toBe("base");
     expect(TIER.VALUE_ADDED).toBe("value_added");
+  });
+});
+
+// ── TIER_TINT ───────────────────────────────────────────────────
+
+describe("TIER_TINT", () => {
+  test("has base, value_added, and locked tints", () => {
+    expect(TIER_TINT.base).toBeDefined();
+    expect(TIER_TINT.value_added).toBeDefined();
+    expect(TIER_TINT.locked).toBeDefined();
+  });
+
+  test("base tint has neutral colors, no badge", () => {
+    expect(TIER_TINT.base.cardBg).toMatch(/^#/);
+    expect(TIER_TINT.base.badge).toBeNull();
+  });
+
+  test("value_added tint has warm colors and badge", () => {
+    expect(TIER_TINT.value_added.cardBorder).toBe("#F36A1D"); // brand orange
+    expect(TIER_TINT.value_added.badge).toBe("Value-Added");
+  });
+
+  test("locked tint has dimmed opacity and Upgrade badge", () => {
+    expect(TIER_TINT.locked.opacity).toBe(0.65);
+    expect(TIER_TINT.locked.badge).toBe("Upgrade");
+  });
+});
+
+// ── buildFeatureManifest ────────────────────────────────────────
+
+describe("buildFeatureManifest", () => {
+  test("value_added merchant — all features allowed, no locked cards", () => {
+    const manifest = buildFeatureManifest({ id: 1, planTier: "value_added", acquisitionPath: "clover_marketplace" });
+    expect(manifest.length).toBe(DASHBOARD_CARDS.length);
+    expect(manifest.every(f => f.allowed)).toBe(true);
+
+    // Base features get base tint
+    const promos = manifest.find(f => f.key === "promotions");
+    expect(promos.tint).toEqual(TIER_TINT.base);
+
+    // Value-Added features get value_added tint
+    const advisor = manifest.find(f => f.key === "growth_advisor");
+    expect(advisor.tint).toEqual(TIER_TINT.value_added);
+  });
+
+  test("base merchant — base features allowed, VA features locked", () => {
+    const manifest = buildFeatureManifest({ id: 2, planTier: "base", acquisitionPath: "clover_marketplace" });
+
+    const promos = manifest.find(f => f.key === "promotions");
+    expect(promos.allowed).toBe(true);
+    expect(promos.tint).toEqual(TIER_TINT.base);
+
+    const advisor = manifest.find(f => f.key === "growth_advisor");
+    expect(advisor.allowed).toBe(false);
+    expect(advisor.reason).toBe("upgrade_required");
+    expect(advisor.tint).toEqual(TIER_TINT.locked);
+  });
+
+  test("manual merchant — POS features show pos_required", () => {
+    const manifest = buildFeatureManifest({ id: 3, planTier: "value_added", acquisitionPath: "manual" });
+
+    const team = manifest.find(f => f.key === "team_attribution");
+    expect(team.allowed).toBe(false);
+    expect(team.reason).toBe("pos_required");
+  });
+
+  test("null merchant — treats as base", () => {
+    const manifest = buildFeatureManifest(null);
+    const locked = manifest.filter(f => !f.allowed);
+    expect(locked.length).toBeGreaterThan(0);
   });
 });

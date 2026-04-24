@@ -834,7 +834,7 @@ function buildMerchantRouter(deps) {
       // Determine billing display mode
       const managedByMarketplace = merchant.billingSource === "clover" || merchant.billingSource === "square";
 
-      const { canAccess, canCreatePromotion, upgradeRoute, BASE_LIMITS } = require("../utils/feature.gate");
+      const { canAccess, canCreatePromotion, upgradeRoute, BASE_LIMITS, TIER_TINT, buildFeatureManifest } = require("../utils/feature.gate");
       const activePromoCount = await prisma.promotion.count({
         where: { merchantId: req.merchantId, status: "active" },
       });
@@ -880,6 +880,12 @@ function buildMerchantRouter(deps) {
 
         // Upgrade info
         upgrade: merchant.planTier !== "value_added" ? upgradeRoute(merchant) : null,
+
+        // Tier tinting — colors for card rendering
+        tint: TIER_TINT[merchant.planTier] || TIER_TINT.base,
+
+        // Feature manifest — per-card allowed/locked status with tint
+        features: buildFeatureManifest(merchant),
       });
     } catch (err) {
       return handlePrismaError(err, res);

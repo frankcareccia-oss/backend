@@ -141,12 +141,99 @@ function upgradeRoute(merchant) {
   return { type: "stripe" };
 }
 
+// ---------- tier UI tinting ----------
+
+const TIER_TINT = {
+  base: {
+    cardBg: "#F7F7F5",        // cool off-white
+    cardBorder: "#D9D3CA",     // warm gray border
+    accent: "#6B7280",         // muted gray
+    badge: null,               // no badge for base-available features
+  },
+  value_added: {
+    cardBg: "#FFF8F0",         // warm cream
+    cardBorder: "#F36A1D",     // brand orange
+    accent: "#F36A1D",         // brand orange
+    badge: "Value-Added",
+  },
+  locked: {
+    cardBg: "#F4F4F0",         // page background (blends in = dimmed)
+    cardBorder: "#E5E2DC",     // faint border
+    accent: "#C4BFB6",         // muted
+    badge: "Upgrade",
+    opacity: 0.65,
+  },
+};
+
+// Dashboard cards and their feature keys for gating
+const DASHBOARD_CARDS = [
+  { key: "promotions",        label: "Promotions",           feature: null },
+  { key: "products",          label: "Products",             feature: null },
+  { key: "stores",            label: "Stores",               feature: null },
+  { key: "basic_reports",     label: "Reports",              feature: null },
+  { key: "qr_codes",         label: "QR Codes",             feature: null },
+  { key: "bundles",           label: "Bundles",              feature: "bundle_promotions" },
+  { key: "growth_advisor",    label: "Growth Advisor",       feature: "growth_advisor" },
+  { key: "simulator",         label: "Promotion Simulator",  feature: "promotion_simulator" },
+  { key: "advanced_analytics",label: "Advanced Analytics",   feature: "advanced_analytics" },
+  { key: "ai_descriptions",  label: "AI Descriptions",      feature: "ai_descriptions" },
+  { key: "team_attribution",  label: "Team Performance",     feature: "team_attribution" },
+  { key: "weekly_briefing",   label: "Weekly Briefing",      feature: "weekly_briefing" },
+];
+
+/**
+ * Build a feature manifest for the frontend — each card with its tier, tint, and lock status.
+ *
+ * @param {object} merchant - Merchant row (planTier, acquisitionPath)
+ * @returns {Array<{ key, label, tier, allowed, tint, reason? }>}
+ */
+function buildFeatureManifest(merchant) {
+  const tier = merchant?.planTier || TIER.BASE;
+
+  return DASHBOARD_CARDS.map(card => {
+    if (!card.feature) {
+      // Base feature — always available
+      return {
+        key: card.key,
+        label: card.label,
+        tier: "base",
+        allowed: true,
+        tint: TIER_TINT.base,
+      };
+    }
+
+    const gate = canAccess(merchant, card.feature);
+
+    if (gate.allowed) {
+      return {
+        key: card.key,
+        label: card.label,
+        tier: "value_added",
+        allowed: true,
+        tint: TIER_TINT.value_added,
+      };
+    }
+
+    return {
+      key: card.key,
+      label: card.label,
+      tier: "value_added",
+      allowed: false,
+      reason: gate.reason,
+      tint: TIER_TINT.locked,
+    };
+  });
+}
+
 module.exports = {
   TIER,
+  TIER_TINT,
+  DASHBOARD_CARDS,
   VALUE_ADDED_FEATURES,
   POS_REQUIRED_FEATURES,
   BASE_LIMITS,
   canAccess,
   canCreatePromotion,
   upgradeRoute,
+  buildFeatureManifest,
 };
