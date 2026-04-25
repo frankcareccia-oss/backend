@@ -542,4 +542,113 @@ router.patch("/admin/support/tickets/:id", requireJwt, async (req, res) => {
   }
 });
 
+// ──────────────────────────────────────────────
+// POST /api/support/chat
+// Three-layer chatbot — rule engine → Haiku → escalation
+// ──────────────────────────────────────────────
+router.post("/api/support/chat", requireJwt, async (req, res) => {
+  try {
+    const { message, conversationHistory, currentPage } = req.body || {};
+    if (!message || typeof message !== "string" || !message.trim()) {
+      return sendError(res, 400, "VALIDATION_ERROR", "Message is required");
+    }
+
+    const merchantId = req.merchantId || await resolveMerchantId(req.userId);
+    if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Merchant context required");
+
+    // Build merchant context
+    const merchant = await prisma.merchant.findUnique({
+      where: { id: merchantId },
+      select: {
+        id: true, name: true, merchantType: true, planTier: true,
+        stores: { select: { id: true } },
+        posConnections: { select: { posType: true }, take: 1 },
+      },
+    });
+
+    const merchantUser = await prisma.merchantUser.findFirst({
+      where: { userId: req.userId, merchantId, status: "active" },
+      select: { role: true },
+    });
+
+    const pageId = resolvePageId(currentPage || "");
+
+    const merchantContext = {
+      merchantId,
+      merchantName: merchant?.name || "Merchant",
+      businessType: merchant?.merchantType || null,
+      merchantRole: merchantUser?.role || "owner",
+      planTier: merchant?.planTier || "base",
+      posType: merchant?.posConnections?.[0]?.posType || null,
+      locationCount: merchant?.stores?.length || 1,
+      currentPage: currentPage || "",
+      pageId,
+    };
+
+    const { processChat } = require("./chat.engine");
+    const result = await processChat(
+      message.trim(),
+      merchantContext,
+      conversationHistory || [],
+    );
+
+    return res.json(result);
+  } catch (err) {
+    console.error("[support.chat] error:", err?.message);
+    return sendError(res, 500, "SERVER_ERROR", "Chat failed");
+  }
+});
+
+// ──────────────────────────────────────────────
+// POST /api/support/chat/escalate
+// Create ticket from chatbot conversation
+// ──────────────────────────────────────────────
+router.post("/api/support/chat/escalate", requireJwt, async (req, res) => {
+  try {
+    const { conversationHistory, layerAttempts, currentPage } = req.body || {};
+
+    const merchantId = req.merchantId || await resolveMerchantId(req.userId);
+    if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Merchant context required");
+
+    const merchant = await prisma.merchant.findUnique({
+      where: { id: merchantId },
+      select: {
+        id: true, name: true, planTier: true,
+        posConnections: { select: { posType: true }, take: 1 },
+        stores: { select: { id: true } },
+      },
+    });
+
+    const merchantUser = await prisma.merchantUser.findFirst({
+      where: { userId: req.userId, merchantId, status: "active" },
+      select: { role: true },
+    });
+
+    const merchantContext = {
+      merchantId,
+      merchantName: merchant?.name,
+      merchantRole: merchantUser?.role || "owner",
+      planTier: merchant?.planTier || "base",
+      posType: merchant?.posConnections?.[0]?.posType || null,
+      locationCount: merchant?.stores?.length || 1,
+      currentPage: currentPage || "unknown",
+    };
+
+    const { createEscalationTicket } = require("./chat.engine");
+    const ticket = await createEscalationTicket(
+      merchantContext,
+      conversationHistory || [],
+      layerAttempts || [],
+    );
+
+    return res.json({
+      ticketId: ticket.id,
+      message: "Your support request has been created. We'll get back to you shortly — and we have the full context of our conversation.",
+    });
+  } catch (err) {
+    console.error("[support.chat.escalate] error:", err?.message);
+    return sendError(res, 500, "SERVER_ERROR", "Failed to create ticket");
+  }
+});
+
 module.exports = router;

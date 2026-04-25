@@ -149,7 +149,8 @@ model Merchant {
   onboardingSession OnboardingSession?
 
   // AI Support
-  supportTickets SupportTicket[]
+  supportTickets   SupportTicket[]
+  chatInteractions ChatInteraction[]
 
   // Acquisition, billing, and tier (marketplace submission)
   acquisitionPath        String    @default("manual")    // clover_marketplace | clover_direct | square_marketplace | square_direct | manual
@@ -2583,6 +2584,30 @@ model SupportTicket {
 
   @@index([status, priority, createdAt])
   @@index([merchantId])
+}
+
+/// Chatbot interaction log — every L2 and L3 interaction stored for admin review.
+/// Used for: pattern promotion (L2→L1), quality monitoring, and product improvement.
+model ChatInteraction {
+  id            Int      @id @default(autoincrement())
+  merchantId    Int
+  merchant      Merchant @relation(fields: [merchantId], references: [id])
+  layer         Int      // 2 or 3
+  userMessage   String   @db.Text
+  botResponse   String   @db.Text
+  page          String?  // route where chat happened
+  role          String?  // merchant role at time of chat
+  planTier      String?  // plan tier at time of chat
+  intent        String?  // L1's best intent guess (may be null)
+  l1Confidence  Float?   // L1's confidence score (null if no L1 attempt)
+  resolved      Boolean? // merchant feedback: did this help?
+  ticketId      Int?     // if escalated to ticket
+  promotedToL1  Boolean  @default(false) // admin promoted this answer to Layer 1
+  createdAt     DateTime @default(now())
+
+  @@index([merchantId, createdAt])
+  @@index([layer, createdAt])
+  @@index([promotedToL1])
 }
 
 model DemoRequest {

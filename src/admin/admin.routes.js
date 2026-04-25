@@ -127,6 +127,8 @@ function buildAdminRouter(deps) {
     // Channel-specific overrides (0 = use default above)
     price_va_standalone_single_cents: "0",    // VA for standalone (no POS) merchants, first location
     price_va_standalone_additional_cents: "0", // VA for standalone, each additional location
+    // Chatbot AI model (Layer 2)
+    chat_model: "claude-haiku-4-5-20251001",
   };
 
   const PLATFORM_CONFIG_META = {
@@ -138,6 +140,7 @@ function buildAdminRouter(deps) {
     price_va_additional_cents:        { label: "Value-Added — each additional location (cents/mo)", type: "number", min: 0, max: 99999, group: "pricing" },
     price_va_standalone_single_cents: { label: "Value-Added standalone — first location (cents/mo)", type: "number", min: 0, max: 99999, group: "pricing" },
     price_va_standalone_additional_cents: { label: "Value-Added standalone — each additional (cents/mo)", type: "number", min: 0, max: 99999, group: "pricing" },
+    chat_model: { label: "Chatbot AI model", type: "text", group: "chatbot" },
   };
 
   // Ensure all known keys exist in DB (upsert defaults on first use)
