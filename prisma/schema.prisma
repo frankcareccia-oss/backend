@@ -184,6 +184,10 @@ model Merchant {
   brandTagline           String?       @db.VarChar(200)
   brandScrapedAt         DateTime?
   brandOverrides         Json?                           // merchant manual overrides
+
+  // Your Voice — triggered email customization
+  winbackDays            Int           @default(30)      // days before win-back email triggers
+  emailTemplates         EmailTemplate[]
 }
 
 model Store {
@@ -2656,4 +2660,26 @@ model WaitlistSignup {
   createdAt     DateTime @default(now())
 
   @@index([email])
+}
+
+// ── Your Voice — owner-voiced triggered email templates ──
+model EmailTemplate {
+  id           Int      @id @default(autoincrement())
+  merchantId   Int
+  eventType    String   // welcome | first_reward | milestone | winback | expiry_warning
+  language     String   @default("en") // en | es
+  subject      String
+  body         String   @db.Text
+  styleChoice  String?  // warm_neighborly | cool_minimal | funny_casual | heartfelt_genuine
+  personalNote String?  @db.Text
+  isActive     Boolean  @default(true)
+  isCustom     Boolean  @default(false) // false = PV default, true = merchant customized
+  generatedAt  DateTime @default(now())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  merchant Merchant @relation(fields: [merchantId], references: [id])
+
+  @@unique([merchantId, eventType, language])
+  @@index([merchantId, eventType])
 }

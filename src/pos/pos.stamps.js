@@ -13,6 +13,7 @@
 
 const { writeEventLog } = require("../eventlog/eventlog");
 const { recordPromotionEvent } = require("../growth/promotionOutcome.events");
+const { sendTriggeredEmail } = require("../services/triggered.emails");
 const { writeOutboxEvent } = require("../events/event.outbox.service");
 const { issueGiftCardReward } = require("./pos.giftcard");
 const { recordCloverRewardEarned } = require("./pos.clover.discount");
@@ -382,6 +383,32 @@ async function accumulateStamps(prisma, { consumerId, merchantId, storeId, visit
         candidateCount: allProgress.length,
       },
     });
+
+    // Triggered emails (fire-and-forget)
+    if (result.milestoneEarned) {
+      // First reward earned email
+      prisma.consumer.findUnique({ where: { id: consumerId }, select: { id: true, firstName: true, email: true, phoneE164: true, preferredLocale: true } })
+        .then(consumer => {
+          if (!consumer) return;
+          const rewardDesc = promo.rewardNote || promo.rewardType || "a reward";
+          sendTriggeredEmail("first_reward", consumer, merchantId, { rewardDescription: rewardDesc }).catch(() => {});
+        }).catch(() => {});
+    }
+    // Milestone visit emails (10, 25, 50, 100)
+    {
+      const totalVisits = result.stampCount + (result.milestoneEarned ? promo.threshold : 0); // approximate
+      // Check actual visit count for milestone
+      prisma.visit.count({ where: { consumerId, store: { merchantId } } })
+        .then(count => {
+          if ([10, 25, 50, 100].includes(count)) {
+            prisma.consumer.findUnique({ where: { id: consumerId }, select: { id: true, firstName: true, email: true, phoneE164: true, preferredLocale: true } })
+              .then(consumer => {
+                if (!consumer) return;
+                sendTriggeredEmail("milestone", consumer, merchantId, { visitCount: String(count) }).catch(() => {});
+              }).catch(() => {});
+          }
+        }).catch(() => {});
+    }
 
     // Growth Advisor — Promotion Outcomes events (fire-and-forget)
     recordPromotionEvent(prisma, {

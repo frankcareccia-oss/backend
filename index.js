@@ -964,6 +964,10 @@ if (require.main === module) app.listen(PORT, () => {
   const { runProductSyncCron } = require("./src/cron/product.sync.cron");
   cron.schedule("0 3 * * *", withCronLog("product-sync", () => runProductSyncCron()), { timezone: "UTC" });
 
+  // Win-back Emails — 9 AM UTC daily (check for inactive consumers)
+  const { runWinbackCron } = require("./src/cron/winback.cron");
+  cron.schedule("0 9 * * *", withCronLog("winback", () => runWinbackCron()), { timezone: "UTC" });
+
   // POS Team Sync — 5 AM UTC (nightly read-only employee pull from Clover/Square)
   const { runTeamSyncCron } = require("./src/cron/pos.team.sync.cron");
   cron.schedule("0 5 * * *", withCronLog("team-sync", () => runTeamSyncCron()), { timezone: "UTC" });

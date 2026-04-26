@@ -129,6 +129,8 @@ function buildAdminRouter(deps) {
     price_va_standalone_additional_cents: "0", // VA for standalone, each additional location
     // Chatbot AI model (Layer 2)
     chat_model: "claude-haiku-4-5-20251001",
+    // Your Voice — personalization threshold
+    min_visits_for_personalization: "4",
   };
 
   const PLATFORM_CONFIG_META = {
@@ -141,6 +143,7 @@ function buildAdminRouter(deps) {
     price_va_standalone_single_cents: { label: "Value-Added standalone — first location (cents/mo)", type: "number", min: 0, max: 99999, group: "pricing" },
     price_va_standalone_additional_cents: { label: "Value-Added standalone — each additional (cents/mo)", type: "number", min: 0, max: 99999, group: "pricing" },
     chat_model: { label: "Chatbot AI model", type: "text", group: "chatbot" },
+    min_visits_for_personalization: { label: "Min visits for email personalization", type: "number", min: 2, max: 20, group: "voice" },
   };
 
   // Ensure all known keys exist in DB (upsert defaults on first use)

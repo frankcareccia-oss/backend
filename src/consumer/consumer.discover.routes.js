@@ -11,6 +11,7 @@ const express = require("express");
 const { prisma } = require("../db/prisma");
 const { sendError } = require("../utils/errors");
 const { requireConsumerJwt } = require("../middleware/auth");
+const { sendTriggeredEmail } = require("../services/triggered.emails");
 
 const router = express.Router();
 
@@ -278,6 +279,18 @@ router.post("/consumer/promotions/enroll", requireConsumerJwt, async (req, res) 
       triggeredBy: triggeredBy || "app",
       rewardFaceValue: promo.rewardValue,
     }));
+
+    // Fire welcome email (async — don't block response)
+    const consumer = await prisma.consumer.findUnique({
+      where: { id: consumerId },
+      select: { id: true, firstName: true, email: true, phoneE164: true, preferredLocale: true },
+    });
+    if (consumer) {
+      sendTriggeredEmail("welcome", consumer, promo.merchantId, {
+        threshold: String(promo.threshold),
+        rewardDescription: buildRewardDesc(promo),
+      }).catch(e => console.error("[triggered.emails] welcome send failed:", e?.message));
+    }
 
     return res.json({
       enrolled: true,
