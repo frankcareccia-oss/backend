@@ -809,6 +809,8 @@ const merchantOnboardingRouter = require("./src/merchant/merchant.onboarding.rou
 app.use(merchantOnboardingRouter);
 const merchantBrandRouter = require("./src/merchant/merchant.brand.routes");
 app.use(merchantBrandRouter);
+const merchantVoiceRouter = require("./src/merchant/merchant.voice.routes");
+app.use(merchantVoiceRouter);
 const promotionOutcomeRouter = require("./src/growth/promotionOutcome.routes");
 app.use(promotionOutcomeRouter);
 
