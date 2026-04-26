@@ -12,6 +12,7 @@ const { prisma } = require("../db/prisma");
 const { sendError } = require("../utils/errors");
 const { sendSms } = require("../utils/sms");
 const { normalizePhone } = require("../../utils/phone");
+const { t } = require("../i18n/t");
 
 const router = express.Router();
 
@@ -56,9 +57,16 @@ router.post("/consumer/auth/otp/start", async (req, res) => {
       data: { phoneE164: normalized.e164, code, expiresAt },
     });
 
+    // Look up existing consumer's locale preference (new users default to "en")
+    const existingConsumer = await prisma.consumer.findUnique({
+      where: { phoneE164: normalized.e164 },
+      select: { preferredLocale: true },
+    });
+    const locale = existingConsumer?.preferredLocale || "en";
+
     await sendSms({
       to: normalized.e164,
-      body: `Your PerkValet code is ${code}. It expires in 10 minutes.`,
+      body: t("sms.otpCode", locale, { code, minutes: otpMinutes }),
     });
 
     return res.json({ ok: true, hint: "Code sent" });
@@ -150,18 +158,19 @@ router.post("/consumer/auth/otp/verify", async (req, res) => {
 
 // ──────────────────────────────────────────────
 // PATCH /consumer/profile
-// Body: { firstName?, lastName? }
+// Body: { firstName?, lastName?, preferredLocale? }
 // ──────────────────────────────────────────────
 const { requireConsumerJwt } = require("../middleware/auth");
 
 router.patch("/consumer/profile", requireConsumerJwt, async (req, res) => {
   try {
     const consumerId = req.consumerId;
-    const { firstName, lastName } = req.body || {};
+    const { firstName, lastName, preferredLocale } = req.body || {};
 
     const data = {};
     if (firstName !== undefined) data.firstName = String(firstName).trim() || null;
     if (lastName !== undefined) data.lastName = String(lastName).trim() || null;
+    if (preferredLocale !== undefined) data.preferredLocale = String(preferredLocale).substring(0, 5);
 
     if (Object.keys(data).length === 0) {
       return sendError(res, 400, "VALIDATION_ERROR", "Nothing to update");

@@ -14,6 +14,7 @@
 
 const { prisma } = require("../db/prisma");
 const { decrypt } = require("../utils/encrypt");
+const { t, formatDate, formatCurrency } = require("../i18n/t");
 
 const CLOVER_API_BASE = process.env.CLOVER_API_BASE || "https://apisandbox.dev.clover.com";
 const SQUARE_API_BASE = (process.env.SQUARE_APP_ID || "").startsWith("sandbox-")
@@ -56,7 +57,7 @@ async function sendExpiryNotifications(now) {
         expiresAt: { not: null, lte: cutoff, gt: now },
       },
       include: {
-        consumer: { select: { id: true, firstName: true, email: true, phoneE164: true } },
+        consumer: { select: { id: true, firstName: true, email: true, phoneE164: true, preferredLocale: true } },
         merchant: { select: { name: true } },
       },
     });
@@ -82,7 +83,7 @@ async function sendExpiryNotifications(now) {
         expiresAt: { not: null, lte: cutoff, gt: now },
       },
       include: {
-        consumer: { select: { id: true, firstName: true, email: true, phoneE164: true } },
+        consumer: { select: { id: true, firstName: true, email: true, phoneE164: true, preferredLocale: true } },
         posConnection: { select: { merchant: { select: { name: true } } } },
       },
     });
@@ -119,17 +120,19 @@ async function sendNotificationIfNeeded({ consumerId, rewardId, rewardType, noti
     if (existing) continue;
 
     // Build message
+    const locale = consumer.preferredLocale || "en";
     const daysLeft = Math.ceil((expiresAt - new Date()) / (1000 * 60 * 60 * 24));
-    const valueStr = rewardValue ? `$${(rewardValue / 100).toFixed(2)}` : "";
-    const expiryDate = expiresAt.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    const valueStr = rewardValue ? formatCurrency(rewardValue, locale) : "";
+    const expiryDate = formatDate(expiresAt, locale);
 
     if (channel === "email") {
       const { sendNotificationEmail } = require("../utils/mail");
       if (typeof sendNotificationEmail === "function") {
+        const valueClause = valueStr ? ` worth ${valueStr}` : "";
         await sendNotificationEmail({
           to: consumer.email,
-          subject: `Your PerkValet reward at ${merchantName} expires in ${daysLeft} day${daysLeft === 1 ? "" : "s"}`,
-          body: `Hi ${consumer.firstName || "there"}, your ${rewardDescription}${valueStr ? ` worth ${valueStr}` : ""} at ${merchantName} expires on ${expiryDate}. Open PerkValet to activate it before it expires.`,
+          subject: t("email.rewardExpirySubject", locale, { merchantName, count: daysLeft }),
+          body: t("email.rewardExpiryBody", locale, { name: consumer.firstName || "there", description: rewardDescription, valueClause, merchantName, date: expiryDate }),
         }).catch(e => console.error("[cron.expiry] email send error:", e?.message));
       }
     }
@@ -139,7 +142,7 @@ async function sendNotificationIfNeeded({ consumerId, rewardId, rewardType, noti
       if (typeof sendSms === "function") {
         await sendSms({
           to: consumer.phoneE164,
-          body: `PerkValet: Your ${valueStr || ""} reward at ${merchantName} expires ${expiryDate}. Open your app to activate.`,
+          body: t("sms.rewardExpiry", locale, { value: valueStr, merchantName, date: expiryDate }),
         }).catch(e => console.error("[cron.expiry] sms send error:", e?.message));
       }
     }

@@ -334,6 +334,9 @@ model Consumer {
   rewardDiscounts  PosRewardDiscount[]
   checkins         ConsumerCheckin[]
 
+  // I18N
+  preferredLocale  String  @default("en") @db.VarChar(5)
+
   // Seed data
   isSeedConsumer   Boolean @default(false)
   seedMerchantId   Int?

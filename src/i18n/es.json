@@ -1,0 +1,69 @@
+{
+  "sms": {
+    "otpCode": "Tu código de PerkValet es {{code}}. Vence en {{minutes}} minutos.",
+    "rewardExpiry": "PerkValet: Tu premio {{value}} en {{merchantName}} vence el {{date}}. Abre la app para activarlo."
+  },
+  "email": {
+    "rewardExpirySubject": "Tu premio de PerkValet en {{merchantName}} vence en {{count}} día",
+    "rewardExpirySubject_plural": "Tu premio de PerkValet en {{merchantName}} vence en {{count}} días",
+    "rewardExpiryBody": "Hola {{name}}, tu {{description}}{{valueClause}} en {{merchantName}} vence el {{date}}. Abre PerkValet para activarlo antes de que expire.",
+    "passwordResetSubject": "Restablece tu contraseña de PerkValet",
+    "deviceVerifySubject": "Verifica tu dispositivo"
+  },
+  "chat": {
+    "howto_create_promotion": "Para crear una promoción, ve a **Promociones** desde tu panel y toca **Crear Promoción**. Elige el tipo de recompensa, establece el hito de sellos y publica cuando estés listo.",
+    "howto_create_product": "Ve a **Productos** desde tu panel, luego toca **Agregar Producto**. Establece el nombre, categoría y precio. Los productos se vinculan a tus promociones para que los sellos vayan a las compras correctas.",
+    "howto_add_store": "Ve a **Mis Tiendas** y toca **Agregar Tienda**. Ingresa el nombre, dirección y horario. Si tienes una conexión POS, la tienda se sincronizará automáticamente.",
+    "howto_add_user": "Ve a **Equipo** desde tu panel y toca **Invitar Miembro**. Ingresa su correo electrónico y elige su rol. Recibirán un correo para configurar su cuenta.",
+    "howto_qr_code": "Tus códigos QR están en **Mis Tiendas**. Toca tu tienda y busca la sección **Código QR**. Puedes descargar e imprimir el código para tu mostrador.",
+    "howto_create_bundle": "Ve a **Paquetes** desde tu panel y toca **Crear Paquete**. Selecciona los productos a incluir y establece el precio del paquete.",
+    "where_settings": "Tu configuración está en **Configuración** — toca el ícono de engranaje en tu panel. Desde allí puedes actualizar tu perfil, cambiar tu contraseña y configurar las preferencias de tu cuenta.",
+    "where_analytics": "Tus analíticas están en **Analíticas** — toca el ícono de gráfico en tu panel. Verás KPIs, tendencias y rendimiento de promociones de los últimos 30 días.",
+    "where_billing": "Tus facturas están en **Facturas** desde tu panel. Los detalles de tu plan y opciones de mejora están en la página **Tu Plan**.",
+    "feature_growth_advisor": "**Asesor de Crecimiento** te da recomendaciones impulsadas por IA adaptadas a tu tienda. Sugiere qué promoción lanzar y por qué, basándose en tus datos reales.",
+    "feature_weekly": "Tu **Resumen Semanal** muestra el rendimiento de la semana pasada, los eventos de esta semana y lo que necesita tu atención. Se actualiza cada lunes.",
+    "feature_simulator": "El **Simulador de Promociones** te permite proyectar el ROI de una promoción antes de lanzarla. Ve los sellos esperados, recompensas e impacto en ingresos.",
+    "plan_upgrade": "Visita tu página **Tu Plan** para ver qué incluye tu plan actual y qué desbloquea Valor Agregado. Puedes mejorar directamente desde esa página.",
+    "troubleshoot_stamps": "Si los sellos no se están acumulando, verifica lo siguiente:\n1. ¿La promoción está **Activa**? (no en Borrador ni Pausada)\n2. ¿El cliente está dando su número de teléfono al pagar?\n3. ¿Tu conexión POS está funcionando? Revisa **Mis Tiendas** para ver el estado de conexión.\n\nSi todo se ve bien y los sellos aún no funcionan, puedo crear una solicitud de soporte.",
+    "troubleshoot_login": "Prueba estos pasos:\n1. Asegúrate de usar el correo correcto (no importan mayúsculas)\n2. Usa **¿Olvidaste tu contraseña?** en la página de inicio de sesión\n3. Revisa tu correo para el enlace de restablecimiento — expira en 15 minutos\n\nSi aún no puedes acceder, puedo crear una solicitud de soporte.",
+    "roleBlocked": "Esa acción requiere acceso de {{roles}}. Consulta con el propietario de la cuenta para obtener los permisos correctos.",
+    "tierBlocked_bundle": "Los Paquetes son una función de Valor Agregado. Visita **Tu Plan** para saber más.",
+    "tierBlocked_growth_advisor": "El Asesor de Crecimiento es una función de Valor Agregado. Visita **Tu Plan** para ver qué desbloquearías.",
+    "tierBlocked_simulator": "El Simulador de Promociones es una función de Valor Agregado. Visita **Tu Plan** para saber más.",
+    "escalationOffer": "No pude resolver eso. ¿Te gustaría que cree una solicitud de soporte? Nuestro equipo te responderá rápidamente — e incluiré todo lo que hemos conversado para que tengan el contexto completo.",
+    "escalationConfirm": "Tu solicitud de soporte ha sido creada. Te responderemos pronto — y tenemos el contexto completo de nuestra conversación.",
+    "ticketConfirm": "Tu solicitud ha sido recibida — te daremos seguimiento pronto.",
+    "actionLabel_promotions": "Ir a Promociones",
+    "actionLabel_products": "Ir a Productos",
+    "actionLabel_stores": "Ir a Mis Tiendas",
+    "actionLabel_team": "Ir a Equipo",
+    "actionLabel_bundles": "Ir a Paquetes",
+    "actionLabel_settings": "Ir a Configuración",
+    "actionLabel_analytics": "Ir a Analíticas",
+    "actionLabel_plan": "Ir a Tu Plan",
+    "actionLabel_viewPlan": "Ver Tu Plan",
+    "actionLabel_growthAdvisor": "Abrir Asesor de Crecimiento",
+    "actionLabel_weekly": "Ir a Resumen Semanal"
+  },
+  "diagnosis": {
+    "sessionExpired": "Tu sesión ha expirado. Esto sucede después de estar inactivo por un tiempo.",
+    "stepLogout": "Cierra sesión usando el botón de Cerrar Sesión",
+    "stepLogin": "Vuelve a iniciar sesión con tu correo y contraseña",
+    "noPermission": "No tienes permiso para esta acción. Esto generalmente significa que necesitas que el propietario de la cuenta realice este paso.",
+    "stepCheckOwner": "Consulta con la persona que configuró tu cuenta de PerkValet",
+    "stepOwnerAction": "Es posible que necesite iniciar sesión y realizar esta acción",
+    "stepUpgradeAccess": "O puede mejorar tu nivel de acceso en la configuración de Equipo",
+    "serverError": "Algo salió mal de nuestro lado. Esto generalmente es temporal.",
+    "stepRefresh": "Actualiza la página e intenta de nuevo",
+    "stepKeepsHappening": "Si sigue ocurriendo, lo investigaremos",
+    "escalationMessage": "Hemos capturado los detalles — nuestro equipo lo investigará.",
+    "generic": "Notamos que algo no funcionó como se esperaba. Aquí hay algunas cosas que puedes intentar.",
+    "stepRefreshPage": "Actualiza la página",
+    "stepLogoutLogin": "Cierra sesión y vuelve a iniciar sesión",
+    "stepContactSupport": "Si el problema continúa, toca el botón de abajo para contactar soporte"
+  },
+  "widget": {
+    "explainPage": "Explica qué hay en esta página",
+    "somethingBroken": "Algo no está funcionando"
+  }
+}

@@ -21,6 +21,7 @@ const { sendError } = require("../utils/errors");
 const { requireJwt } = require("../middleware/auth");
 const { emitPvHook } = require("../utils/hooks");
 const { detectWidgetMode, resolvePageId } = require("./lib/widget.mode.detector");
+const { t } = require("../i18n/t");
 
 const router = express.Router();
 
@@ -79,35 +80,35 @@ function findRelevantKnowledge(kg, context) {
 }
 
 // Deterministic diagnosis (fallback when AI unavailable)
-function deterministicDiagnosis(context, relevantKg) {
+function deterministicDiagnosis(context, relevantKg, locale = "en") {
   // Check for specific error patterns
   const lastStatus = context.apiEvents?.filter(e => e.direction === "in").pop()?.status;
 
   if (lastStatus === 401) {
     return {
-      diagnosis: "Your session has expired. This happens after being inactive for a while.",
+      diagnosis: t("diagnosis.sessionExpired", locale),
       confidence: "high",
-      resolution_steps: ["Log out using the Logout button", "Log back in with your email and password"],
+      resolution_steps: [t("diagnosis.stepLogout", locale), t("diagnosis.stepLogin", locale)],
       requires_pv_support: false,
     };
   }
 
   if (lastStatus === 403) {
     return {
-      diagnosis: "You don't have permission for this action. This usually means you need the account owner to do this step.",
+      diagnosis: t("diagnosis.noPermission", locale),
       confidence: "high",
-      resolution_steps: ["Check with the person who set up your PerkValet account", "They may need to log in and perform this action", "Or they can upgrade your access level in Team settings"],
+      resolution_steps: [t("diagnosis.stepCheckOwner", locale), t("diagnosis.stepOwnerAction", locale), t("diagnosis.stepUpgradeAccess", locale)],
       requires_pv_support: false,
     };
   }
 
   if (lastStatus >= 500) {
     return {
-      diagnosis: "Something went wrong on our end. This is usually temporary.",
+      diagnosis: t("diagnosis.serverError", locale),
       confidence: "medium",
-      resolution_steps: ["Refresh the page and try again", "If it keeps happening, we'll look into it"],
+      resolution_steps: [t("diagnosis.stepRefresh", locale), t("diagnosis.stepKeepsHappening", locale)],
       requires_pv_support: lastStatus >= 500,
-      escalation_message: "We've captured the details — our team will investigate.",
+      escalation_message: t("diagnosis.escalationMessage", locale),
     };
   }
 
@@ -127,17 +128,17 @@ function deterministicDiagnosis(context, relevantKg) {
 
   // Generic
   return {
-    diagnosis: "We noticed something didn't work as expected. Here are some things to try.",
+    diagnosis: t("diagnosis.generic", locale),
     confidence: "low",
-    resolution_steps: ["Refresh the page", "Log out and log back in", "If the issue continues, tap the button below to contact support"],
+    resolution_steps: [t("diagnosis.stepRefreshPage", locale), t("diagnosis.stepLogoutLogin", locale), t("diagnosis.stepContactSupport", locale)],
     requires_pv_support: false,
   };
 }
 
 // AI-powered diagnosis
-async function aiDiagnosis(context, relevantKg) {
+async function aiDiagnosis(context, relevantKg, locale = "en") {
   if (!process.env.ANTHROPIC_API_KEY) {
-    return deterministicDiagnosis(context, relevantKg);
+    return deterministicDiagnosis(context, relevantKg, locale);
   }
 
   try {
@@ -152,6 +153,7 @@ Rules:
 - Never mention OAuth, tokens, webhooks, API, or database.
 - Be warm but direct. They're busy. Get to the point.
 - If the issue requires our support team, say so clearly.
+${locale !== "en" ? `- IMPORTANT: Respond entirely in language code "${locale}".` : ""}
 
 Knowledge base:
 ${JSON.stringify(relevantKg, null, 2)}
@@ -177,7 +179,7 @@ Respond in JSON only, no markdown:
     }
   } catch (e) {
     console.error("[support.ai] AI diagnosis failed, using fallback:", e?.message);
-    return deterministicDiagnosis(context, relevantKg);
+    return deterministicDiagnosis(context, relevantKg, locale);
   }
 }
 
@@ -198,6 +200,7 @@ async function resolveMerchantId(userId) {
 router.post("/api/support/mode", requireJwt, async (req, res) => {
   try {
     const context = req.body || {};
+    const locale = context.locale || "en";
     const currentPage = context.session?.pathname || "";
     const hasActiveError = context.apiEvents?.some(e => e.direction === "in" && e.status >= 400 && (Date.now() - new Date(e.ts).getTime()) < 60000) || false;
 
@@ -229,8 +232,8 @@ router.post("/api/support/mode", requireJwt, async (req, res) => {
       return res.json({
         mode: "ask_first",
         options: [
-          { id: "explain", label: "Explain what's on this page" },
-          { id: "broken", label: "Something isn't working" },
+          { id: "explain", label: t("widget.explainPage", locale) },
+          { id: "broken", label: t("widget.somethingBroken", locale) },
         ],
       });
     }
@@ -239,8 +242,8 @@ router.post("/api/support/mode", requireJwt, async (req, res) => {
       return res.json({
         mode: "ask_first",
         options: [
-          { id: "explain", label: "Explain what's on this page" },
-          { id: "broken", label: "Something isn't working" },
+          { id: "explain", label: t("widget.explainPage", locale) },
+          { id: "broken", label: t("widget.somethingBroken", locale) },
         ],
       });
     }
@@ -319,6 +322,7 @@ router.get("/api/support/help/:pageId", requireJwt, async (req, res) => {
 router.post("/api/support/diagnose", requireJwt, async (req, res) => {
   try {
     const context = req.body || {};
+    const locale = context.locale || "en";
     const kg = loadKnowledgeGraph();
     const relevantKg = findRelevantKnowledge(kg, context);
 
@@ -331,7 +335,7 @@ router.post("/api/support/diagnose", requireJwt, async (req, res) => {
       hasError: !!(context.api?.lastError && context.api.lastError !== "—"),
     });
 
-    const result = await aiDiagnosis(context, relevantKg);
+    const result = await aiDiagnosis(context, relevantKg, locale);
 
     emitPvHook("support.diagnosis.delivered", {
       tc: "TC-SUPPORT-DIAG-02", sev: "info", stable: "support:diagnosis:delivered",
@@ -353,7 +357,8 @@ router.post("/api/support/diagnose", requireJwt, async (req, res) => {
 // ──────────────────────────────────────────────
 router.post("/api/support/ticket", requireJwt, async (req, res) => {
   try {
-    const { context, diagnosis } = req.body || {};
+    const { context, diagnosis, locale: reqLocale } = req.body || {};
+    const locale = reqLocale || "en";
     const merchantId = req.merchantId || await resolveMerchantId(req.userId);
 
     if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Merchant context required");
@@ -400,7 +405,7 @@ router.post("/api/support/ticket", requireJwt, async (req, res) => {
     return res.json({
       ticketId: ticket.id,
       priority,
-      message: "Your request is in — we'll follow up shortly.",
+      message: t("chat.ticketConfirm", locale),
     });
   } catch (err) {
     console.error("[support.ticket] error:", err?.message);
@@ -548,7 +553,7 @@ router.patch("/admin/support/tickets/:id", requireJwt, async (req, res) => {
 // ──────────────────────────────────────────────
 router.post("/api/support/chat", requireJwt, async (req, res) => {
   try {
-    const { message, conversationHistory, currentPage } = req.body || {};
+    const { message, conversationHistory, currentPage, locale: reqLocale } = req.body || {};
     if (!message || typeof message !== "string" || !message.trim()) {
       return sendError(res, 400, "VALIDATION_ERROR", "Message is required");
     }
@@ -585,11 +590,13 @@ router.post("/api/support/chat", requireJwt, async (req, res) => {
       pageId,
     };
 
+    const locale = reqLocale || "en";
     const { processChat } = require("./chat.engine");
     const result = await processChat(
       message.trim(),
       merchantContext,
       conversationHistory || [],
+      locale,
     );
 
     return res.json(result);
@@ -605,7 +612,7 @@ router.post("/api/support/chat", requireJwt, async (req, res) => {
 // ──────────────────────────────────────────────
 router.post("/api/support/chat/escalate", requireJwt, async (req, res) => {
   try {
-    const { conversationHistory, layerAttempts, currentPage } = req.body || {};
+    const { conversationHistory, layerAttempts, currentPage, locale: reqLocale } = req.body || {};
 
     const merchantId = req.merchantId || await resolveMerchantId(req.userId);
     if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Merchant context required");
@@ -643,7 +650,7 @@ router.post("/api/support/chat/escalate", requireJwt, async (req, res) => {
 
     return res.json({
       ticketId: ticket.id,
-      message: "Your support request has been created. We'll get back to you shortly — and we have the full context of our conversation.",
+      message: t("chat.escalationConfirm", reqLocale || "en"),
     });
   } catch (err) {
     console.error("[support.chat.escalate] error:", err?.message);

@@ -14,6 +14,7 @@ const fs = require("fs");
 const path = require("path");
 const { prisma } = require("../db/prisma");
 const { emitPvHook } = require("../utils/hooks");
+const { t } = require("../i18n/t");
 
 // ── Knowledge loading ────────────────────────────────────────────────────────
 
@@ -36,39 +37,39 @@ const INTENT_PATTERNS = [
   // HOW TO — Promotions
   { keywords: ["add promotion", "create promotion", "new promotion", "set up promotion", "make promotion", "start promotion", "launch promotion"],
     intent: "howto_create_promotion", page: "merchant_promotions", requiredRole: ["owner", "merchant_admin"],
-    answer: "To create a promotion, go to **Promotions** from your dashboard and tap **Create Promotion**. Choose your reward type, set the stamp milestone, and publish when ready.",
-    action: { label: "Go to Promotions", to: "/merchant/promotions" } },
+    tKey: "chat.howto_create_promotion",
+    action: { labelKey: "chat.actionLabel_promotions", to: "/merchant/promotions" } },
 
   // HOW TO — Products
   { keywords: ["add product", "create product", "new product", "add item", "add menu"],
     intent: "howto_create_product", page: "merchant_products", requiredRole: ["owner", "merchant_admin"],
-    answer: "Go to **Products** from your dashboard, then tap **Add Product**. Set the name, category, and price. Products link to your promotions so stamps go to the right purchases.",
-    action: { label: "Go to Products", to: "/merchant/products" } },
+    tKey: "chat.howto_create_product",
+    action: { labelKey: "chat.actionLabel_products", to: "/merchant/products" } },
 
   // HOW TO — Stores
   { keywords: ["add store", "new store", "add location", "new location"],
     intent: "howto_add_store", page: "merchant_stores", requiredRole: ["owner", "merchant_admin"],
-    answer: "Go to **My Stores** and tap **Add Store**. Enter the store name, address, and hours. If you have a POS connection, the store will sync automatically.",
-    action: { label: "Go to My Stores", to: "/merchant/stores" } },
+    tKey: "chat.howto_add_store",
+    action: { labelKey: "chat.actionLabel_stores", to: "/merchant/stores" } },
 
   // HOW TO — Team
   { keywords: ["add user", "invite user", "add staff", "add employee", "invite team", "add team member"],
     intent: "howto_add_user", page: "merchant_users", requiredRole: ["owner", "merchant_admin"],
-    answer: "Go to **Team** from your dashboard and tap **Invite Member**. Enter their email and choose their role. They'll get an email to set up their account.",
-    action: { label: "Go to Team", to: "/merchant/users" } },
+    tKey: "chat.howto_add_user",
+    action: { labelKey: "chat.actionLabel_team", to: "/merchant/users" } },
 
   // HOW TO — QR Codes
   { keywords: ["qr code", "print qr", "get qr", "generate qr", "download qr"],
     intent: "howto_qr_code", page: "merchant_stores",
-    answer: "Your QR codes are in **My Stores**. Tap your store, then look for the **QR Code** section. You can download and print the code for your counter.",
-    action: { label: "Go to My Stores", to: "/merchant/stores" } },
+    tKey: "chat.howto_qr_code",
+    action: { labelKey: "chat.actionLabel_stores", to: "/merchant/stores" } },
 
   // HOW TO — Bundles
   { keywords: ["create bundle", "add bundle", "make bundle", "new bundle"],
     intent: "howto_create_bundle", page: "merchant_bundles", requiredRole: ["owner", "merchant_admin"],
-    answer: "Go to **Bundles** from your dashboard and tap **Create Bundle**. Select the products to include and set the bundle price.",
-    action: { label: "Go to Bundles", to: "/merchant/bundles" },
-    requiresTier: "value_added", tierMessage: "Bundles are a Value-Added feature. Visit **Your Plan** to learn more." },
+    tKey: "chat.howto_create_bundle",
+    action: { labelKey: "chat.actionLabel_bundles", to: "/merchant/bundles" },
+    requiresTier: "value_added", tierTKey: "chat.tierBlocked_bundle" },
 
   // WHERE TO — Navigation
   { keywords: ["where is", "find", "how do i get to", "navigate to", "go to"],
@@ -76,61 +77,69 @@ const INTENT_PATTERNS = [
 
   { keywords: ["settings", "password", "change password", "profile"],
     intent: "where_settings",
-    answer: "Your settings are at **Settings** — tap the gear icon on your dashboard. From there you can update your profile, change your password, and configure account preferences.",
-    action: { label: "Go to Settings", to: "/merchant/settings" } },
+    tKey: "chat.where_settings",
+    action: { labelKey: "chat.actionLabel_settings", to: "/merchant/settings" } },
 
   { keywords: ["analytics", "reports", "stats", "performance", "numbers", "data"],
     intent: "where_analytics",
-    answer: "Your analytics are in **Analytics** — tap the chart icon on your dashboard. You'll see KPIs, trends, and promotion performance for the last 30 days.",
-    action: { label: "Go to Analytics", to: "/merchant/analytics" } },
+    tKey: "chat.where_analytics",
+    action: { labelKey: "chat.actionLabel_analytics", to: "/merchant/analytics" } },
 
   { keywords: ["invoice", "bill", "billing", "payment", "pay"],
     intent: "where_billing",
-    answer: "Your invoices are in **Invoices** from your dashboard. Your plan details and upgrade options are on the **Your Plan** page.",
-    action: { label: "Go to Your Plan", to: "/merchant/plan" } },
+    tKey: "chat.where_billing",
+    action: { labelKey: "chat.actionLabel_plan", to: "/merchant/plan" } },
 
   // FEATURE QUESTIONS
   { keywords: ["growth advisor", "growth studio", "recommendation"],
     intent: "feature_growth_advisor",
-    answer: "**Growth Advisor** gives you AI-powered recommendations tailored to your store. It suggests what promotion to run next and why, based on your actual data.",
-    action: { label: "Open Growth Advisor", to: "/merchant/growth-studio" },
-    requiresTier: "value_added", tierMessage: "Growth Advisor is a Value-Added feature. Visit **Your Plan** to see what you'd unlock." },
+    tKey: "chat.feature_growth_advisor",
+    action: { labelKey: "chat.actionLabel_growthAdvisor", to: "/merchant/growth-studio" },
+    requiresTier: "value_added", tierTKey: "chat.tierBlocked_growth_advisor" },
 
   { keywords: ["weekly summary", "weekly briefing", "weekly report", "monday report"],
     intent: "feature_weekly",
-    answer: "Your **Weekly Summary** shows last week's performance, this week's events, and anything that needs your attention. It's updated every Monday.",
-    action: { label: "Go to Weekly Summary", to: "/merchant/weekly" } },
+    tKey: "chat.feature_weekly",
+    action: { labelKey: "chat.actionLabel_weekly", to: "/merchant/weekly" } },
 
   { keywords: ["simulator", "simulate", "projection", "roi", "what if"],
     intent: "feature_simulator",
-    answer: "The **Promotion Simulator** lets you project the ROI of a promotion before you launch it. See expected stamps, rewards, and revenue impact.",
-    requiresTier: "value_added", tierMessage: "The Promotion Simulator is a Value-Added feature. Visit **Your Plan** to learn more." },
+    tKey: "chat.feature_simulator",
+    requiresTier: "value_added", tierTKey: "chat.tierBlocked_simulator" },
 
   // PLAN / UPGRADE
   { keywords: ["upgrade", "value added", "value-added", "plan", "pricing", "cost", "price"],
     intent: "plan_upgrade",
-    answer: "Visit your **Your Plan** page to see what's included in your current plan and what Value-Added unlocks. You can upgrade right from that page.",
-    action: { label: "Go to Your Plan", to: "/merchant/plan" } },
+    tKey: "chat.plan_upgrade",
+    action: { labelKey: "chat.actionLabel_plan", to: "/merchant/plan" } },
 
   // TROUBLESHOOTING
   { keywords: ["not working", "broken", "error", "problem", "issue", "bug", "wrong", "stuck", "can't", "won't"],
     intent: "troubleshoot_generic",
-    answer: null }, // Falls through to Layer 2
+    tKey: null }, // Falls through to Layer 2
 
   { keywords: ["stamps not", "stamp not", "stamps aren't", "stamps are not", "not earning stamps", "not accumulating", "not getting stamps", "stamps missing", "stamps not showing", "no stamps"],
     intent: "troubleshoot_stamps",
-    answer: "If stamps aren't accumulating, check these things:\n1. Is the promotion **Active**? (not Draft or Paused)\n2. Is the customer giving their phone number at checkout?\n3. Is your POS connection healthy? Check **My Stores** for the connection status.\n\nIf everything looks right and stamps still aren't working, let me create a support request." },
+    tKey: "chat.troubleshoot_stamps" },
 
   { keywords: ["can't login", "can't log in", "login problem", "password not working", "locked out"],
     intent: "troubleshoot_login",
-    answer: "Try these steps:\n1. Make sure you're using the right email (case doesn't matter)\n2. Use **Forgot password?** on the login page to reset\n3. Check your email for the reset link — it expires in 15 minutes\n\nIf you're still locked out, let me create a support request." },
+    tKey: "chat.troubleshoot_login" },
 ];
+
+/**
+ * Resolve an action object, translating labelKey → label for the given locale.
+ */
+function resolveAction(action, locale) {
+  if (!action) return null;
+  return { label: t(action.labelKey, locale), to: action.to };
+}
 
 /**
  * Score a merchant's message against intent patterns.
  * Returns { matched, intent, answer, action, confidence, tierBlocked } or null.
  */
-function matchIntent(message, merchantContext) {
+function matchIntent(message, merchantContext, locale = "en") {
   // Strip articles and filler so "add a promotion" matches "add promotion"
   const msg = message.toLowerCase().trim().replace(/\b(a|an|the|my|our|some)\b/g, " ").replace(/\s+/g, " ").trim();
   let bestMatch = null;
@@ -161,7 +170,7 @@ function matchIntent(message, merchantContext) {
         matched: true,
         intent: bestMatch.intent,
         confidence: 0.9,
-        answer: `That action requires ${bestMatch.requiredRole.join(" or ")} access. Check with the account owner to get the right permissions.`,
+        answer: t("chat.roleBlocked", locale, { roles: bestMatch.requiredRole.join(" or ") }),
         action: null,
         tierBlocked: false,
         layer: 1,
@@ -175,22 +184,22 @@ function matchIntent(message, merchantContext) {
       matched: true,
       intent: bestMatch.intent,
       confidence: 0.85,
-      answer: bestMatch.tierMessage,
-      action: { label: "View Your Plan", to: "/merchant/plan" },
+      answer: t(bestMatch.tierTKey, locale),
+      action: resolveAction({ labelKey: "chat.actionLabel_viewPlan", to: "/merchant/plan" }, locale),
       tierBlocked: true,
       layer: 1,
     };
   }
 
-  // No answer = fall through to Layer 2
-  if (!bestMatch.answer) return null;
+  // No tKey = fall through to Layer 2
+  if (!bestMatch.tKey) return null;
 
   return {
     matched: true,
     intent: bestMatch.intent,
     confidence: bestScore >= 2 ? 0.9 : 0.7,
-    answer: bestMatch.answer,
-    action: bestMatch.action || null,
+    answer: t(bestMatch.tKey, locale),
+    action: resolveAction(bestMatch.action, locale),
     tierBlocked: false,
     layer: 1,
   };
@@ -228,7 +237,7 @@ function matchPageContext(message, pageId, manifests) {
 
 // ── Layer 2: Claude Haiku with merchant context ──────────────────────────────
 
-async function layer2Response(message, merchantContext, conversationHistory, layer1Attempt) {
+async function layer2Response(message, merchantContext, conversationHistory, layer1Attempt, locale = "en") {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return null;
 
@@ -266,7 +275,8 @@ RULES:
 - Never discuss technical implementation (APIs, webhooks, databases).
 ${layer1Attempt ? `\nLayer 1 tried to answer but wasn't confident enough. Its best guess was intent "${layer1Attempt.intent}" with confidence ${layer1Attempt.confidence}. Build on that context if relevant.` : ""}
 
-Respond naturally — no JSON, no markdown headers. Just a helpful answer like a knowledgeable colleague would give.`;
+Respond naturally — no JSON, no markdown headers. Just a helpful answer like a knowledgeable colleague would give.
+${locale !== "en" ? `\nIMPORTANT: The merchant's language is set to "${locale}". Respond entirely in that language.` : ""}`;
 
   try {
     const Anthropic = require("@anthropic-ai/sdk");
@@ -300,14 +310,15 @@ Respond naturally — no JSON, no markdown headers. Just a helpful answer like a
  * @param {string} message - The merchant's message
  * @param {object} merchantContext - { merchantId, merchantName, merchantRole, planTier, posType, locationCount, businessType, currentPage, pageId }
  * @param {Array} conversationHistory - Previous turns [{ role: "user"|"assistant", content }]
+ * @param {string} locale - Language code (default "en")
  * @returns {object} { answer, action?, layer, intent?, confidence?, escalate? }
  */
-async function processChat(message, merchantContext, conversationHistory) {
+async function processChat(message, merchantContext, conversationHistory, locale = "en") {
   const manifests = loadPageManifests();
   const startTime = Date.now();
 
   // ── Layer 1: Rule-based ──
-  let layer1Result = matchIntent(message, merchantContext);
+  let layer1Result = matchIntent(message, merchantContext, locale);
 
   // Try page-context matching if intent match failed
   if (!layer1Result) {
@@ -327,7 +338,7 @@ async function processChat(message, merchantContext, conversationHistory) {
   }
 
   // ── Layer 2: Claude Haiku ──
-  const l2Answer = await layer2Response(message, merchantContext, conversationHistory, layer1Result);
+  const l2Answer = await layer2Response(message, merchantContext, conversationHistory, layer1Result, locale);
 
   if (l2Answer) {
     // Store L2 interaction for admin review + promotion potential
@@ -378,7 +389,7 @@ async function processChat(message, merchantContext, conversationHistory) {
 
   return {
     matched: false,
-    answer: "I wasn't able to figure that one out. Would you like me to create a support request? Our team will get back to you quickly — and I'll include everything we've discussed so they have full context.",
+    answer: t("chat.escalationOffer", locale),
     layer: 3,
     intent: layer1Result?.intent || "unknown",
     confidence: 0,
