@@ -22,6 +22,17 @@ const { scrapeBrand } = require("./brand.scraper");
 
 const router = express.Router();
 
+// Resolve merchantId from JWT user (same pattern as other merchant routes)
+async function getMerchantId(req) {
+  if (req.merchantId) return req.merchantId;
+  if (!req.userId) return null;
+  const mu = await prisma.merchantUser.findFirst({
+    where: { userId: req.userId, status: "active" },
+    select: { merchantId: true },
+  });
+  return mu?.merchantId || null;
+}
+
 // Reserved slugs that cannot be used by merchants
 const RESERVED_SLUGS = new Set([
   "app", "admin", "api", "pos", "login", "help", "support",
@@ -49,7 +60,7 @@ function slugify(name) {
 // ──────────────────────────────────────────────
 router.get("/merchant/brand", requireJwt, async (req, res) => {
   try {
-    const merchantId = req.merchantId;
+    const merchantId = await getMerchantId(req);
     if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Merchant context required");
 
     const merchant = await prisma.merchant.findUnique({
@@ -87,7 +98,7 @@ router.get("/merchant/brand", requireJwt, async (req, res) => {
 // ──────────────────────────────────────────────
 router.patch("/merchant/brand", requireJwt, async (req, res) => {
   try {
-    const merchantId = req.merchantId;
+    const merchantId = await getMerchantId(req);
     if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Merchant context required");
 
     // Only owner or merchant_admin can update brand
@@ -202,8 +213,9 @@ router.get("/merchant/brand/check-slug/:slug", requireJwt, async (req, res) => {
     if (slug.length < 3) return res.json({ available: false, reason: "too_short" });
     if (RESERVED_SLUGS.has(slug)) return res.json({ available: false, reason: "reserved" });
 
+    const myMerchantId = await getMerchantId(req);
     const existing = await prisma.merchant.findUnique({ where: { merchantSlug: slug } });
-    const available = !existing || existing.id === req.merchantId;
+    const available = !existing || existing.id === myMerchantId;
 
     return res.json({ available, slug });
   } catch (err) {
@@ -217,7 +229,7 @@ router.get("/merchant/brand/check-slug/:slug", requireJwt, async (req, res) => {
 // ──────────────────────────────────────────────
 router.post("/merchant/brand/scrape", requireJwt, async (req, res) => {
   try {
-    const merchantId = req.merchantId;
+    const merchantId = await getMerchantId(req);
     if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Merchant context required");
 
     const { websiteUrl } = req.body || {};
