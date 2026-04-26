@@ -173,6 +173,17 @@ model Merchant {
   discountExpiresAt      DateTime?                       // auto-revert to full price after this date (legacy, prefer cycles)
   discountCycles         Int?                            // total billing cycles discount applies (e.g. 6 = 6 months free)
   discountCyclesUsed     Int           @default(0)       // how many cycles the discount has been applied
+
+  // Branded consumer experience
+  websiteUrl             String?       @db.VarChar(500)
+  merchantSlug           String?       @unique @db.VarChar(100)
+  brandLogo              String?       @db.VarChar(500)  // URL to logo image
+  brandColor             String?       @db.VarChar(7)    // hex e.g. #2D5A3D
+  brandAccent            String?       @db.VarChar(7)    // hex accent color
+  brandFont              String?       @db.VarChar(100)  // Google Font family name
+  brandTagline           String?       @db.VarChar(200)
+  brandScrapedAt         DateTime?
+  brandOverrides         Json?                           // merchant manual overrides
 }
 
 model Store {

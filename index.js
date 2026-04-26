@@ -807,6 +807,8 @@ const supportAiRouter = require("./src/agents/support.ai.handler");
 app.use(supportAiRouter);
 const merchantOnboardingRouter = require("./src/merchant/merchant.onboarding.routes");
 app.use(merchantOnboardingRouter);
+const merchantBrandRouter = require("./src/merchant/merchant.brand.routes");
+app.use(merchantBrandRouter);
 const promotionOutcomeRouter = require("./src/growth/promotionOutcome.routes");
 app.use(promotionOutcomeRouter);
 
