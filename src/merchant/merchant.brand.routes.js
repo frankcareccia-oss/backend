@@ -84,7 +84,7 @@ router.get("/merchant/brand", requireJwt, async (req, res) => {
       ...merchant,
       suggestedSlug,
       brandedUrl: merchant.merchantSlug
-        ? `${process.env.CONSUMER_APP_URL || "https://perksvalet.com"}/m/${merchant.merchantSlug}`
+        ? `${process.env.CONSUMER_APP_URL || "https://perksvalet.com"}/#/m/${merchant.merchantSlug}`
         : null,
     });
   } catch (err) {
@@ -194,7 +194,7 @@ router.patch("/merchant/brand", requireJwt, async (req, res) => {
     return res.json({
       ...updated,
       brandedUrl: updated.merchantSlug
-        ? `${process.env.CONSUMER_APP_URL || "https://perksvalet.com"}/m/${updated.merchantSlug}`
+        ? `${process.env.CONSUMER_APP_URL || "https://perksvalet.com"}/#/m/${updated.merchantSlug}`
         : null,
     });
   } catch (err) {
