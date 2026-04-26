@@ -77,4 +77,42 @@ async function sendMail({ to, subject, text, html }) {
   return { ok: true, messageId: info.messageId };
 }
 
-module.exports = { sendMail };
+/**
+ * Send a consumer-facing notification email.
+ * When merchantBrand is provided, the email uses merchant branding.
+ * Otherwise it uses PerkValet default branding.
+ *
+ * @param {object} opts
+ * @param {string} opts.to - Recipient email
+ * @param {string} opts.subject - Email subject
+ * @param {string} opts.body - Plain text body
+ * @param {object} [opts.merchantBrand] - { name, logo, color } for branded emails
+ */
+async function sendNotificationEmail({ to, subject, body, merchantBrand }) {
+  const brandName = merchantBrand?.name || "PerkValet";
+  const brandColor = merchantBrand?.color || "#0D9488";
+  const brandLogo = merchantBrand?.logo;
+  const poweredBy = merchantBrand ? "Powered by PerkValet" : "";
+
+  const html = `
+    <div style="font-family: system-ui, sans-serif; max-width: 480px; margin: 0 auto; padding: 0;">
+      <div style="background: ${brandColor}; padding: 20px 24px; text-align: center;">
+        ${brandLogo
+          ? `<img src="${brandLogo}" alt="${brandName}" style="height: 40px; border-radius: 6px;" />`
+          : `<div style="color: #fff; font-weight: 800; font-size: 20px;">${brandName}</div>`
+        }
+      </div>
+      <div style="padding: 24px; color: #333; font-size: 15px; line-height: 1.6;">
+        ${body.replace(/\n/g, "<br/>")}
+      </div>
+      <div style="padding: 16px 24px; text-align: center; border-top: 1px solid #eee; color: #999; font-size: 12px;">
+        ${poweredBy ? `${poweredBy}<br/>` : ""}
+        <a href="https://perksvalet.com" style="color: #0D9488;">perksvalet.com</a>
+      </div>
+    </div>
+  `.trim();
+
+  return sendMail({ to, subject, text: body, html });
+}
+
+module.exports = { sendMail, sendNotificationEmail };

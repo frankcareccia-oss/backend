@@ -58,7 +58,7 @@ async function sendExpiryNotifications(now) {
       },
       include: {
         consumer: { select: { id: true, firstName: true, email: true, phoneE164: true, preferredLocale: true } },
-        merchant: { select: { name: true } },
+        merchant: { select: { name: true, brandLogo: true, brandColor: true } },
       },
     });
 
@@ -70,6 +70,7 @@ async function sendExpiryNotifications(now) {
         notificationType: trigger.type,
         consumer: reward.consumer,
         merchantName: reward.merchant.name,
+        merchantBrand: { name: reward.merchant.name, logo: reward.merchant.brandLogo, color: reward.merchant.brandColor },
         rewardDescription: reward.discountName,
         rewardValue: reward.amountCents,
         expiresAt: reward.expiresAt,
@@ -84,7 +85,7 @@ async function sendExpiryNotifications(now) {
       },
       include: {
         consumer: { select: { id: true, firstName: true, email: true, phoneE164: true, preferredLocale: true } },
-        posConnection: { select: { merchant: { select: { name: true } } } },
+        posConnection: { select: { merchant: { select: { name: true, brandLogo: true, brandColor: true } } } },
       },
     });
 
@@ -96,6 +97,7 @@ async function sendExpiryNotifications(now) {
         notificationType: trigger.type,
         consumer: card.consumer,
         merchantName: card.posConnection.merchant.name,
+        merchantBrand: { name: card.posConnection.merchant.name, logo: card.posConnection.merchant.brandLogo, color: card.posConnection.merchant.brandColor },
         rewardDescription: "Gift card credit",
         rewardValue: null,
         expiresAt: card.expiresAt,
@@ -107,7 +109,7 @@ async function sendExpiryNotifications(now) {
 /**
  * Send a notification if not already sent (dedup via RewardNotification).
  */
-async function sendNotificationIfNeeded({ consumerId, rewardId, rewardType, notificationType, consumer, merchantName, rewardDescription, rewardValue, expiresAt }) {
+async function sendNotificationIfNeeded({ consumerId, rewardId, rewardType, notificationType, consumer, merchantName, merchantBrand, rewardDescription, rewardValue, expiresAt }) {
   const channels = [];
   if (consumer.email) channels.push("email");
   if (consumer.phoneE164) channels.push("sms");
@@ -133,6 +135,7 @@ async function sendNotificationIfNeeded({ consumerId, rewardId, rewardType, noti
           to: consumer.email,
           subject: t("email.rewardExpirySubject", locale, { merchantName, count: daysLeft }),
           body: t("email.rewardExpiryBody", locale, { name: consumer.firstName || "there", description: rewardDescription, valueClause, merchantName, date: expiryDate }),
+          merchantBrand: merchantBrand?.logo ? merchantBrand : undefined,
         }).catch(e => console.error("[cron.expiry] email send error:", e?.message));
       }
     }

@@ -293,7 +293,7 @@ router.get("/api/brand/:slug", async (req, res) => {
     const merchant = await prisma.merchant.findUnique({
       where: { merchantSlug: slug },
       select: {
-        id: true, name: true,
+        id: true, name: true, planTier: true, status: true,
         brandLogo: true, brandColor: true, brandAccent: true,
         brandFont: true, brandTagline: true,
         stores: {
@@ -305,6 +305,11 @@ router.get("/api/brand/:slug", async (req, res) => {
     });
 
     if (!merchant) return sendError(res, 404, "NOT_FOUND", "Merchant not found");
+
+    // Feature gate: branded pages require Value-Added (or trial)
+    if (merchant.planTier !== "value_added" && merchant.status !== "active") {
+      return sendError(res, 403, "UPGRADE_REQUIRED", "Branded pages require the Value-Added plan");
+    }
 
     return res.json({
       merchantId: merchant.id,
@@ -318,6 +323,94 @@ router.get("/api/brand/:slug", async (req, res) => {
     });
   } catch (err) {
     return sendError(res, 500, "SERVER_ERROR", err.message);
+  }
+});
+
+// ──────────────────────────────────────────────
+// POST /api/brand/:slug/view (PUBLIC)
+// Log a branded page view for analytics
+// ──────────────────────────────────────────────
+router.post("/api/brand/:slug/view", async (req, res) => {
+  try {
+    const merchant = await prisma.merchant.findUnique({
+      where: { merchantSlug: req.params.slug },
+      select: { id: true },
+    });
+    if (!merchant) return res.status(404).json({ ok: false });
+
+    emitPvHook("brand.page.view", {
+      tc: "TC-BRAND-04", sev: "info",
+      stable: `brand:${req.params.slug}:view`,
+      merchantId: merchant.id,
+      slug: req.params.slug,
+      referrer: req.get("referer") || null,
+    });
+
+    return res.json({ ok: true });
+  } catch {
+    return res.json({ ok: false });
+  }
+});
+
+// ──────────────────────────────────────────────
+// GET /api/brand/:slug/manifest.json (PUBLIC)
+// Dynamic PWA manifest for "Add to Home Screen"
+// ──────────────────────────────────────────────
+router.get("/api/brand/:slug/manifest.json", async (req, res) => {
+  try {
+    const merchant = await prisma.merchant.findUnique({
+      where: { merchantSlug: req.params.slug },
+      select: { name: true, brandLogo: true, brandColor: true, brandTagline: true },
+    });
+    if (!merchant) return res.status(404).json({ error: "Not found" });
+
+    const appUrl = process.env.CONSUMER_APP_URL || "https://perksvalet.com";
+    const manifest = {
+      name: `${merchant.name} Loyalty`,
+      short_name: merchant.name,
+      description: merchant.brandTagline || `Loyalty rewards at ${merchant.name}`,
+      start_url: `/m/${req.params.slug}`,
+      scope: `/m/${req.params.slug}`,
+      display: "standalone",
+      theme_color: merchant.brandColor || "#0D9488",
+      background_color: merchant.brandColor || "#0D9488",
+      icons: merchant.brandLogo ? [
+        { src: merchant.brandLogo, sizes: "192x192", type: "image/png" },
+        { src: merchant.brandLogo, sizes: "512x512", type: "image/png" },
+      ] : [
+        { src: `${appUrl}/perksvalet-192.png`, sizes: "192x192", type: "image/png" },
+      ],
+    };
+
+    res.setHeader("Content-Type", "application/manifest+json");
+    res.setHeader("Cache-Control", "public, max-age=3600");
+    return res.json(manifest);
+  } catch (err) {
+    return res.status(500).json({ error: "Failed to generate manifest" });
+  }
+});
+
+// ──────────────────────────────────────────────
+// GET /api/brand/:slug/meta (PUBLIC)
+// Social sharing meta data for og:tags
+// ──────────────────────────────────────────────
+router.get("/api/brand/:slug/meta", async (req, res) => {
+  try {
+    const merchant = await prisma.merchant.findUnique({
+      where: { merchantSlug: req.params.slug },
+      select: { name: true, brandLogo: true, brandTagline: true },
+    });
+    if (!merchant) return res.status(404).json({ error: "Not found" });
+
+    const appUrl = process.env.CONSUMER_APP_URL || "https://perksvalet.com";
+    return res.json({
+      title: `${merchant.name} Loyalty`,
+      description: merchant.brandTagline || `Join ${merchant.name}'s loyalty program — earn rewards with every visit.`,
+      image: merchant.brandLogo || `${appUrl}/perksvalet-og.png`,
+      url: `${appUrl}/m/${req.params.slug}`,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: "Failed to load meta" });
   }
 });
 
