@@ -84,7 +84,7 @@ router.get("/merchant/brand", requireJwt, async (req, res) => {
       ...merchant,
       suggestedSlug,
       brandedUrl: merchant.merchantSlug
-        ? `${process.env.CONSUMER_APP_URL || "https://perksvalet.com"}/#/m/${merchant.merchantSlug}`
+        ? `${process.env.CONSUMER_APP_URL || "https://consumer-app-ac05.onrender.com"}/#/m/${merchant.merchantSlug}`
         : null,
     });
   } catch (err) {
@@ -194,7 +194,7 @@ router.patch("/merchant/brand", requireJwt, async (req, res) => {
     return res.json({
       ...updated,
       brandedUrl: updated.merchantSlug
-        ? `${process.env.CONSUMER_APP_URL || "https://perksvalet.com"}/#/m/${updated.merchantSlug}`
+        ? `${process.env.CONSUMER_APP_URL || "https://consumer-app-ac05.onrender.com"}/#/m/${updated.merchantSlug}`
         : null,
     });
   } catch (err) {
@@ -376,7 +376,7 @@ router.get("/brand/:slug/manifest.json", async (req, res) => {
     });
     if (!merchant) return res.status(404).json({ error: "Not found" });
 
-    const appUrl = process.env.CONSUMER_APP_URL || "https://perksvalet.com";
+    const appUrl = process.env.CONSUMER_APP_URL || "https://consumer-app-ac05.onrender.com";
     const manifest = {
       name: `${merchant.name} Loyalty`,
       short_name: merchant.name,
@@ -414,7 +414,7 @@ router.get("/brand/:slug/meta", async (req, res) => {
     });
     if (!merchant) return res.status(404).json({ error: "Not found" });
 
-    const appUrl = process.env.CONSUMER_APP_URL || "https://perksvalet.com";
+    const appUrl = process.env.CONSUMER_APP_URL || "https://consumer-app-ac05.onrender.com";
     return res.json({
       title: `${merchant.name} Loyalty`,
       description: merchant.brandTagline || `Join ${merchant.name}'s loyalty program — earn rewards with every visit.`,
