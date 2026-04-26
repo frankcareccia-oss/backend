@@ -2,13 +2,13 @@
  * merchant.brand.routes.js — Brand settings for merchant-branded consumer experience
  *
  * Merchant-facing:
- *   GET    /api/merchant/brand         — get current brand settings
- *   PATCH  /api/merchant/brand         — update brand settings
- *   GET    /api/merchant/brand/check-slug/:slug — check slug availability
- *   POST   /api/merchant/brand/scrape  — auto-extract brand from website
+ *   GET    /merchant/brand         — get current brand settings
+ *   PATCH  /merchant/brand         — update brand settings
+ *   GET    /merchant/brand/check-slug/:slug — check slug availability
+ *   POST   /merchant/brand/scrape  — auto-extract brand from website
  *
  * Public (consumer-facing):
- *   GET    /api/brand/:slug            — get brand data for branded consumer page
+ *   GET    /brand/:slug            — get brand data for branded consumer page
  */
 
 "use strict";
@@ -44,10 +44,10 @@ function slugify(name) {
 }
 
 // ──────────────────────────────────────────────
-// GET /api/merchant/brand
+// GET /merchant/brand
 // Get brand settings for the current merchant
 // ──────────────────────────────────────────────
-router.get("/api/merchant/brand", requireJwt, async (req, res) => {
+router.get("/merchant/brand", requireJwt, async (req, res) => {
   try {
     const merchantId = req.merchantId;
     if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Merchant context required");
@@ -82,10 +82,10 @@ router.get("/api/merchant/brand", requireJwt, async (req, res) => {
 });
 
 // ──────────────────────────────────────────────
-// PATCH /api/merchant/brand
+// PATCH /merchant/brand
 // Update brand settings
 // ──────────────────────────────────────────────
-router.patch("/api/merchant/brand", requireJwt, async (req, res) => {
+router.patch("/merchant/brand", requireJwt, async (req, res) => {
   try {
     const merchantId = req.merchantId;
     if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Merchant context required");
@@ -192,10 +192,10 @@ router.patch("/api/merchant/brand", requireJwt, async (req, res) => {
 });
 
 // ──────────────────────────────────────────────
-// GET /api/merchant/brand/check-slug/:slug
+// GET /merchant/brand/check-slug/:slug
 // Check if a slug is available
 // ──────────────────────────────────────────────
-router.get("/api/merchant/brand/check-slug/:slug", requireJwt, async (req, res) => {
+router.get("/merchant/brand/check-slug/:slug", requireJwt, async (req, res) => {
   try {
     const slug = (req.params.slug || "").toLowerCase().replace(/[^a-z0-9-]/g, "");
 
@@ -212,10 +212,10 @@ router.get("/api/merchant/brand/check-slug/:slug", requireJwt, async (req, res) 
 });
 
 // ──────────────────────────────────────────────
-// POST /api/merchant/brand/scrape
+// POST /merchant/brand/scrape
 // Auto-extract brand assets from merchant's website
 // ──────────────────────────────────────────────
-router.post("/api/merchant/brand/scrape", requireJwt, async (req, res) => {
+router.post("/merchant/brand/scrape", requireJwt, async (req, res) => {
   try {
     const merchantId = req.merchantId;
     if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Merchant context required");
@@ -282,10 +282,10 @@ router.post("/api/merchant/brand/scrape", requireJwt, async (req, res) => {
 });
 
 // ──────────────────────────────────────────────
-// GET /api/brand/:slug (PUBLIC — no auth)
+// GET /brand/:slug (PUBLIC — no auth)
 // Consumer-facing: get brand data for branded page rendering
 // ──────────────────────────────────────────────
-router.get("/api/brand/:slug", async (req, res) => {
+router.get("/brand/:slug", async (req, res) => {
   try {
     const slug = req.params.slug;
     if (!slug) return sendError(res, 400, "VALIDATION_ERROR", "Slug is required");
@@ -327,10 +327,10 @@ router.get("/api/brand/:slug", async (req, res) => {
 });
 
 // ──────────────────────────────────────────────
-// POST /api/brand/:slug/view (PUBLIC)
+// POST /brand/:slug/view (PUBLIC)
 // Log a branded page view for analytics
 // ──────────────────────────────────────────────
-router.post("/api/brand/:slug/view", async (req, res) => {
+router.post("/brand/:slug/view", async (req, res) => {
   try {
     const merchant = await prisma.merchant.findUnique({
       where: { merchantSlug: req.params.slug },
@@ -353,10 +353,10 @@ router.post("/api/brand/:slug/view", async (req, res) => {
 });
 
 // ──────────────────────────────────────────────
-// GET /api/brand/:slug/manifest.json (PUBLIC)
+// GET /brand/:slug/manifest.json (PUBLIC)
 // Dynamic PWA manifest for "Add to Home Screen"
 // ──────────────────────────────────────────────
-router.get("/api/brand/:slug/manifest.json", async (req, res) => {
+router.get("/brand/:slug/manifest.json", async (req, res) => {
   try {
     const merchant = await prisma.merchant.findUnique({
       where: { merchantSlug: req.params.slug },
@@ -391,10 +391,10 @@ router.get("/api/brand/:slug/manifest.json", async (req, res) => {
 });
 
 // ──────────────────────────────────────────────
-// GET /api/brand/:slug/meta (PUBLIC)
+// GET /brand/:slug/meta (PUBLIC)
 // Social sharing meta data for og:tags
 // ──────────────────────────────────────────────
-router.get("/api/brand/:slug/meta", async (req, res) => {
+router.get("/brand/:slug/meta", async (req, res) => {
   try {
     const merchant = await prisma.merchant.findUnique({
       where: { merchantSlug: req.params.slug },
