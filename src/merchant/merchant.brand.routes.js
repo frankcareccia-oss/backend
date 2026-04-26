@@ -5,6 +5,7 @@
  *   GET    /api/merchant/brand         — get current brand settings
  *   PATCH  /api/merchant/brand         — update brand settings
  *   GET    /api/merchant/brand/check-slug/:slug — check slug availability
+ *   POST   /api/merchant/brand/scrape  — auto-extract brand from website
  *
  * Public (consumer-facing):
  *   GET    /api/brand/:slug            — get brand data for branded consumer page
@@ -17,6 +18,7 @@ const { prisma } = require("../db/prisma");
 const { sendError } = require("../utils/errors");
 const { requireJwt } = require("../middleware/auth");
 const { emitPvHook } = require("../utils/hooks");
+const { scrapeBrand } = require("./brand.scraper");
 
 const router = express.Router();
 
@@ -204,6 +206,76 @@ router.get("/api/merchant/brand/check-slug/:slug", requireJwt, async (req, res) 
     const available = !existing || existing.id === req.merchantId;
 
     return res.json({ available, slug });
+  } catch (err) {
+    return sendError(res, 500, "SERVER_ERROR", err.message);
+  }
+});
+
+// ──────────────────────────────────────────────
+// POST /api/merchant/brand/scrape
+// Auto-extract brand assets from merchant's website
+// ──────────────────────────────────────────────
+router.post("/api/merchant/brand/scrape", requireJwt, async (req, res) => {
+  try {
+    const merchantId = req.merchantId;
+    if (!merchantId) return sendError(res, 400, "VALIDATION_ERROR", "Merchant context required");
+
+    const { websiteUrl } = req.body || {};
+    if (!websiteUrl || !/^https?:\/\/.+/.test(websiteUrl)) {
+      return sendError(res, 400, "VALIDATION_ERROR", "Valid website URL is required");
+    }
+
+    // Rate limit: 1 scrape per merchant per hour
+    const merchant = await prisma.merchant.findUnique({
+      where: { id: merchantId },
+      select: { brandScrapedAt: true, name: true },
+    });
+    if (merchant?.brandScrapedAt) {
+      const hourAgo = new Date(Date.now() - 60 * 60 * 1000);
+      if (merchant.brandScrapedAt > hourAgo) {
+        return sendError(res, 429, "RATE_LIMITED", "Brand scraping is limited to once per hour. Try again later.");
+      }
+    }
+
+    emitPvHook("merchant.brand.scrape.started", {
+      tc: "TC-BRAND-02", sev: "info",
+      stable: `merchant:${merchantId}:brand:scrape`,
+      merchantId, websiteUrl,
+    });
+
+    const scraped = await scrapeBrand(websiteUrl);
+
+    // Auto-generate slug from scraped business name or merchant name
+    const nameForSlug = scraped.businessName || merchant?.name || "";
+    const suggestedSlug = slugify(nameForSlug);
+
+    // Save websiteUrl and scrape timestamp (don't overwrite existing brand settings automatically)
+    await prisma.merchant.update({
+      where: { id: merchantId },
+      data: { websiteUrl, brandScrapedAt: new Date() },
+    });
+
+    emitPvHook("merchant.brand.scrape.completed", {
+      tc: "TC-BRAND-03", sev: "info",
+      stable: `merchant:${merchantId}:brand:scrape`,
+      merchantId,
+      foundLogo: !!scraped.logo,
+      foundColor: !!scraped.primaryColor,
+      foundFont: !!scraped.font,
+    });
+
+    return res.json({
+      scraped: {
+        logo: scraped.logo,
+        primaryColor: scraped.primaryColor,
+        accentColor: scraped.accentColor,
+        font: scraped.font,
+        tagline: scraped.tagline,
+        businessName: scraped.businessName,
+        socialLinks: scraped.socialLinks,
+      },
+      suggestedSlug,
+    });
   } catch (err) {
     return sendError(res, 500, "SERVER_ERROR", err.message);
   }
